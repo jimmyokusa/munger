@@ -10,6 +10,13 @@
             "if": "Bash(git commit*)",
             "timeout": 15,
             "statusMessage": "Checking DESIGN.md/TASKS.md review markers..."
+          },
+          {
+            "type": "command",
+            "command": "bash /Users/jimmyok/workspace/munger/.claude/hooks/check-code-push-review.sh",
+            "if": "Bash(git push*)",
+            "timeout": 15,
+            "statusMessage": "Checking code review marker before push..."
           }
         ]
       }
