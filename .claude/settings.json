@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/jimmyok/workspace/munger/.claude/hooks/check-review-markers.sh",
+            "if": "Bash(git commit*)",
+            "timeout": 15,
+            "statusMessage": "Checking DESIGN.md/TASKS.md review markers..."
+          }
+        ]
+      }
+    ]
+  }
+}
