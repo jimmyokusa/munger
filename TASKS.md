@@ -5,18 +5,20 @@ this file is the working log underneath it — update a task's status (and
 add a date/note) as it moves, rather than waiting until the whole milestone
 is done. Full rationale for each item lives in `DESIGN.md`.
 
-Status values: `todo` / `in-progress` / `done` / `blocked`.
+Status values: `todo` (not started, actionable anytime) / `in-progress` /
+`done` / `blocked` (cannot be advanced by the coding agent regardless of
+effort — needs the user, e.g. an external account signup).
 
 ## M0 — Project scaffolding
 
 | Task | Status | Date / Notes |
 |---|---|---|
-| Repo layout per DESIGN.md §7 | todo | |
-| `config.py` — every threshold/toggle as named constants | todo | |
-| `requirements.txt` | todo | |
-| `tests/` directory | todo | |
-| `.gitignore` for `state.json`, `journal.db` | todo | |
-| Alpaca paper-trading account + API key provisioning | todo | external dependency for M8–M12; do early since account approval can be slow — not on the critical path for M1–M7 but shouldn't be left until M8 either |
+| Repo layout per DESIGN.md §7 | done | 2026-07-21 — clarified DESIGN.md §7 during review: the tree is the `munger` repo root itself, no nested package directory |
+| `config.py` — every threshold/toggle as named constants | done | 2026-07-21 — reviewed by python-reviewer + staff-engineer-reviewer; runtime paths anchored to `BASE_DIR` per review finding |
+| `requirements.txt` | done | 2026-07-21 — pinned with `~=` per python-reviewer finding (was unpinned) |
+| `tests/` directory | done | 2026-07-21 — `tests/test_config.py`, 7 passing tests |
+| `.gitignore` for `state.json`, `journal.db`, `screen_results*.csv`, `KILL_SWITCH` flag file | done | 2026-07-21 |
+| Alpaca paper-trading account + API key provisioning | blocked | needs the user to actually create the account — not something I can do. Tracked here because M0 is a natural time to knock it out early, but **does not gate M1+** — M1–M7 have no dependency on it, only M8 (execution) does. Definition of done: paper account created; `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` set as env vars (e.g. via a gitignored `.env`); confirmed the keys' reported account mode is actually `paper` (informal check now, formalized as the M10 startup assertion later). Shouldn't be left until M8 itself, since account approval can be slow. |
 
 ## M1 — Universe module
 

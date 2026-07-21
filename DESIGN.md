@@ -322,10 +322,11 @@ the strike counters, SQLite (via the standard-library `sqlite3`, no extra
 dependency) for the trade journal — SQLite rather than CSV because
 idempotency (§3.5) depends on reading the journal reliably, and a torn CSV
 write is a real corruption risk once it's load-bearing rather than just an
-audit log. Repo layout:
+audit log. Repo layout — this tree describes the `munger` repo root
+directly, not a nested package directory:
 
 ```
-graham_munger_bot/
+munger/               # this repo's root
 ├── config.py          # every threshold and toggle, nothing hard-coded elsewhere
 ├── universe.py        # module 3.1
 ├── data.py            # module 3.2

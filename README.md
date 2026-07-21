@@ -21,10 +21,12 @@ Python 3.11+, yfinance, pandas, alpaca-py, pytest. Repo layout per
 Built and worked through one at a time, in order. Each should be usable and
 inspectable on its own before moving to the next.
 
-- [ ] **M0 — Project scaffolding.** Repo layout from DESIGN.md §7;
+- [x] **M0 — Project scaffolding.** Repo layout from DESIGN.md §7;
       `config.py` with every threshold/toggle as a named constant (nothing
-      hard-coded elsewhere); `requirements.txt`; `tests/`; `state.json`
-      gitignored.
+      hard-coded elsewhere); `requirements.txt`; `tests/`; `.gitignore` for
+      `state.json`, `journal.db`, `screen_results*.csv`, and the
+      `KILL_SWITCH` flag file. (Alpaca account provisioning is tracked in
+      `TASKS.md` but doesn't gate this milestone or M1+ — see there.)
 - [ ] **M1 — Universe module.** `get_universe()`: S&P 500 constituents via
       Wikipedia scrape with a static fallback file shipped in-repo; ticker
       normalization (`BRK.B` → `BRK-B`); optional sector exclusion list;
