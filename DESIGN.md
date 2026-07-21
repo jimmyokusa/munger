@@ -77,6 +77,15 @@ the scrape fails), normalizes ticker symbols to the broker's format (e.g.,
 sectors — Munger's circle-of-competence rule made concrete: if you don't
 understand banks, exclude Financials.
 
+The scrape can fail two different ways: it can raise (network error,
+Wikipedia down), or it can *succeed with a corrupted result* — a page
+restructure that shifts which column holds the ticker symbol produces a
+list that parses cleanly but is garbage. Only the first case is caught by
+falling back on exception. Validate the parsed result before accepting it —
+row count within a sane band (e.g. 490–510 tickers) and every entry
+matching a plausible ticker pattern — and fall back to the static file on
+either failure mode, not just an outright exception.
+
 Interface: `get_universe() -> list[str]`
 
 ### 3.2 Data Module
@@ -92,10 +101,21 @@ margin, free cash flow, dividend yield, and a count of consecutive years of
 positive net income (from annual income statements; yfinance provides
 roughly four years).
 
-Design requirements: fetch concurrently (thread pool, ~10–15 workers),
-tolerate individual-ticker failures without aborting the run, treat missing
-data as a failed check rather than a pass (conservatism: no data, no buy),
-and cache raw responses per run for debuggability.
+Design requirements: fetch concurrently (thread pool, ~10–15 workers) with
+retry-and-backoff on transient/rate-limit errors before giving up on a
+ticker, tolerate individual-ticker failures without aborting the run, treat
+missing data as a failed check rather than a pass (conservatism: no data,
+no buy), and cache raw responses per run for debuggability.
+
+"No data" and "bad data" are distinct failure classes and must stay
+distinguishable downstream, not collapse into the same boolean. A ticker
+with no P/E because the provider returned nothing (transient hiccup) and a
+ticker with a P/E of 50,000 (implausible value, possibly a data-corruption
+signal worth investigating) both end up `buyable=False`, but an operator
+reading `screen_results.csv` needs to tell them apart. Tag each with a
+distinct fail-reason code — e.g. `data_missing:pe` vs.
+`data_invalid_outlier:pe` — carried through to the screener's output (see
+§3.3) rather than a single generic "failed validation" flag.
 
 Interface: `fetch_metrics(symbol) -> Metrics | None`
 
@@ -118,7 +138,10 @@ from the defensive-investor criteria in Chapter 14:
 
 All thresholds live in a single config file. The screener records which
 gate failed for every stock — this audit trail matters more than the
-pass/fail bit.
+pass/fail bit. Fail reasons originating from the data layer (§3.2) keep
+their `data_missing:*` / `data_invalid_outlier:*` distinction rather than
+being flattened into a generic gate-failure code, so `screen_results.csv`
+always shows whether a ticker failed on valuation or on data quality.
 
 **Stage 2 — Munger quality floor and score.** Hard floors that must be met:
 ROE ≥ 15%, gross margin ≥ 30%, positive free cash flow. Stocks passing both
@@ -140,8 +163,20 @@ Interface: `run_screen(tickers) -> DataFrame`
 
 ### 3.4 Portfolio Engine
 
-The heart of the system, and where the philosophy lives. Three
-responsibilities:
+The heart of the system, and where the philosophy lives. `state.json` holds
+only the strike-streak counters — the *only* mutable state the system has
+(see §3.6). Current holdings are never read from local state; they are
+fetched live from the broker at the start of every run. This keeps the
+two-strike logic honest against what is actually held rather than a
+potentially stale local copy, and it means a partial fill, a manual
+intervention, or a corporate action is reflected automatically on the next
+run instead of silently drifting out of sync with a cached snapshot. If the
+broker's reported holdings ever diverge from what the previous run's
+journal expected to be true, log a reconciliation warning (see §3.6) — this
+is the cheapest signal that something upstream (a failed order, a manual
+trade, a bug) needs attention.
+
+Three responsibilities:
 
 **Target construction.** Roughly 15 positions, equal-weighted at ~1/15 of
 equity each, with a hard cap of 12% in any single name and a 2% cash buffer
@@ -170,11 +205,31 @@ never sells one holding to buy a higher-scoring one — no churn, ever.
 
 Thin wrapper around the broker. Version 1 targets Alpaca's paper-trading
 API using the `alpaca-py` SDK: notional (dollar-amount, fractional-share)
-market orders, DAY time-in-force, and `close_position` for liquidations.
-Every order attempt is wrapped in error handling so one rejected order
-never aborts the run. The paper/live flag lives in config and defaults to
-paper; the design intent is that live trading is only enabled after several
-months of clean paper runs.
+market orders with a limit-price band, DAY time-in-force, and
+`close_position` for liquidations. Every order attempt is wrapped in error
+handling so one rejected order never aborts the run. The paper/live flag
+lives in config and defaults to paper; the design intent is that live
+trading is only enabled after several months of clean paper runs.
+
+Idempotency is enforced primarily by a **deterministic `client_order_id`**
+on every submitted order — a hash of run-date + ticker + side (e.g.
+`2026q3-AAPL-buy`) — so the broker itself rejects a duplicate submission
+from a crashed-and-restarted run. This is a stronger guarantee than a
+client-side pre-check alone: checking only "today's open orders" before
+submitting misses the case where a run submits a buy, Alpaca fills it
+immediately, and the process crashes before the journal write — on restart
+the order is no longer open, so a pre-check sees nothing and would
+double-buy. The pre-check (today's open orders, today's filled orders, and
+current positions) remains as a secondary guard, but `client_order_id` is
+the guarantee that actually holds under that failure mode. If the pre-check
+query to the broker itself fails or times out, the run **aborts** rather
+than proceeding blind — this call must fail closed, since submitting orders
+without knowing current state defeats the whole point of the check.
+
+Every order — buys and liquidations alike — carries a limit-price band
+(e.g. ±2% of last trade) rather than an unconstrained market order, so a
+liquidation firing during a flash-crash or a thin after-hours window can't
+execute at an arbitrarily bad price.
 
 Interface: `market_buy(symbol, notional)`, `liquidate(symbol)`
 
@@ -182,10 +237,20 @@ Interface: `market_buy(symbol, notional)`, `liquidate(symbol)`
 
 Three artifacts per run: `state.json` (the strike streaks — the only
 mutable state the system has), `screen_results.csv` (full screen output,
-timestamped copies kept), and an append-only trade journal (CSV or SQLite)
-recording every order with its reason string (e.g., `NEW_POSITION
-score=78.2` or `SELL strikes=2 reasons=roe_floor,fcf_floor`). Structured
-logging to file and stdout. The journal is what lets you later evaluate
+timestamped copies kept), and an append-only trade journal recording every
+order with its reason string (e.g., `NEW_POSITION score=78.2` or `SELL
+strikes=2 reasons=roe_floor,fcf_floor`). The journal is **SQLite**, not
+CSV — idempotency (§3.5) now depends on reading it reliably to determine
+what already happened today, and a CSV append torn by a crash mid-write
+(truncated last line) is exactly the kind of corruption that would make
+that check silently unreliable. Structured logging to file and stdout.
+
+Beyond passive logging, two things get an active alert rather than waiting
+to be discovered by reading the journal: any `SELL`/liquidation event (the
+system is designed to place near-zero sells, so one firing is the rarest
+and highest-signal thing it does — see §1), and a holdings-reconciliation
+mismatch (§3.4) between what the broker reports and what the previous
+run's journal expected. The journal is what lets you later evaluate
 whether the system is actually following its own rules — an audit of
 behavior, in the Graham spirit of the investor's chief problem being
 himself.
@@ -197,11 +262,18 @@ so fresh 10-Q data has propagated into the data provider. Monthly is the
 aggressive ceiling; anything faster contradicts the philosophy. Implement
 as a cron job or a scheduled GitHub Action that runs `python bot.py`. The
 run must be idempotent within a day (re-running after a crash must not
-double-buy — check open orders and today's journal entries before
-submitting).
+double-buy) — enforced primarily by the deterministic `client_order_id` on
+every order (§3.5), with a secondary pre-check against today's open orders,
+filled orders, and current positions; if that broker query itself fails,
+the run aborts rather than proceeding blind.
 
 Secrets (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`) come from environment
-variables, never from code or the repo.
+variables, never from code or the repo. At startup, assert that the
+account mode reported by the loaded API keys (paper vs. live) matches the
+configured `paper`/`live` flag, and abort if they disagree — a mismatch
+here (e.g. live keys present while config says paper, from a stale `.env`)
+is exactly the kind of silent misconfiguration that only matters once,
+catastrophically.
 
 ## 5. Risk Controls
 
@@ -213,6 +285,16 @@ more indicates a bug or a data-provider failure), and a sanity check that
 aborts the run if fewer than a configured fraction of the universe was
 successfully fetched (a half-empty screen would make every holding look
 delisted and trigger mass strikes).
+
+The order-count budget bounds the number of mistakes a single run can make,
+not their size — a bug in the target-weight or notional calculation (e.g.
+using gross buying power instead of net liquidation value) could still
+deploy a large fraction of the account in well under 20 orders. A second,
+independent cap limits **total notional deployed in a single run** (e.g.,
+no more than a configured percentage of equity moved per run), aborting if
+the generated plan would exceed it. Combined with the per-order limit-price
+band (§3.5), this bounds both how many things can go wrong and how badly
+any one of them can.
 
 ## 6. Testing and Validation Plan
 
@@ -235,8 +317,12 @@ would be misleading enough to be worse than none.
 ## 7. Technology Stack
 
 Python 3.11+, yfinance (data, v1), pandas (screening), alpaca-py
-(execution), pytest (tests). No database in v1 — JSON + CSV state is
-deliberately simple. Repo layout:
+(execution), pytest (tests). State is deliberately simple: `state.json` for
+the strike counters, SQLite (via the standard-library `sqlite3`, no extra
+dependency) for the trade journal — SQLite rather than CSV because
+idempotency (§3.5) depends on reading the journal reliably, and a torn CSV
+write is a real corruption risk once it's load-bearing rather than just an
+audit log. Repo layout:
 
 ```
 graham_munger_bot/
@@ -248,7 +334,8 @@ graham_munger_bot/
 ├── execution.py       # module 3.5
 ├── journal.py         # module 3.6
 ├── bot.py             # orchestration entry point
-├── state.json         # runtime (gitignored)
+├── state.json         # runtime (gitignored) — strike counters only
+├── journal.db         # runtime (gitignored) — SQLite trade journal
 ├── tests/
 └── requirements.txt
 ```
@@ -298,7 +385,10 @@ directory structure, and the basic ticker fetcher. Create a Python project
 structure as defined in the Technology Stack section. Implement `config.py`
 with placeholders for thresholds. Implement `universe.py` with a
 `get_universe()` function that returns a list of S&P 500 tickers (use a
-static file fallback approach for reliability).
+static file fallback approach for reliability). Validate the scraped
+result before accepting it — row count in a sane band and every entry
+matching a plausible ticker pattern — and fall back to the static file on
+either a scrape exception or a validation failure, not just the former.
 
 **Deliverable 1.2: Data Fetcher** — Build the `data.py` module to fetch
 metrics using yfinance. Create a `fetch_metrics(symbol)` function that
@@ -311,9 +401,12 @@ process does not abort.
 entering the logic. Add a `validate_metrics(data)` function to `data.py`.
 This function should perform sanity checks: ensure numerical values are
 within realistic ranges (e.g., P/E < 10,000, reasonable debt ratios). If
-metrics are physically impossible or outliers, it must return `False`.
+metrics are physically impossible or outliers, it must fail the ticker with
+a `data_invalid_outlier:<field>` reason — distinct from a
+`data_missing:<field>` reason for fields the provider returned nothing for.
 Update the main data fetcher to use this validator before returning the
-metrics object.
+metrics object, and add retry-with-backoff around the underlying yfinance
+calls for transient/rate-limit errors before giving up on a ticker.
 
 ### Epic 2: The Screener (Graham & Munger Logic)
 
@@ -338,10 +431,14 @@ Goal: Implement the "two-strike" rule and target weight logic.
 
 **Deliverable 3.1: Strike State Machine** — Keeping track of holdings over
 time. Implement `portfolio.py` and `journal.py`. Create the `StateTracker`
-class that reads and writes to `state.json`. Implement the "two-strike"
-logic: a method `process_sells(current_holdings, new_market_data)` that
-checks holdings against quality floors, increments strike counts for
-failures, and returns a list of tickers to liquidate if strikes reach 2.
+class that reads and writes **only the strike counters** to `state.json`
+(atomic writes: temp file + rename) — it is never the source of truth for
+current holdings. `process_sells(current_holdings, new_market_data)` takes
+`current_holdings` as fetched live from the broker at the start of the run
+(see §3.4), checks them against quality floors, increments strike counts
+for failures, and returns a list of tickers to liquidate if strikes reach
+2. If the live holdings diverge from what the previous run's journal
+expected, log a reconciliation warning.
 
 **Deliverable 3.2: Target Construction** — Buying and weighting logic.
 Update `portfolio.py`. Implement `generate_buy_queue(current_holdings,
@@ -357,17 +454,30 @@ Goal: Final integration and safety controls.
 **Deliverable 4.1: Execution Module (Idempotency)** — Safe, reliable
 orders. Implement `execution.py` using `alpaca-py`. Create a class
 `ExecutionModule` with `market_buy(symbol, amount)` and `liquidate(symbol)`.
-Crucially, add a `get_todays_open_orders()` method. Before any order is
-placed, `market_buy` must check this to ensure we don't "double-tap" or
-place redundant orders if the script is re-run.
+Every order is submitted with a deterministic `client_order_id` (hash of
+run-date + ticker + side) so Alpaca itself rejects a duplicate submission
+from a crashed-and-restarted run — this is the primary idempotency
+guarantee, not just a nice-to-have. Add a
+`get_todays_open_orders_and_positions()` method that also checks today's
+*filled* orders and current positions (not open orders alone, which misses
+an order that filled before a crash); `market_buy` and `liquidate` check
+this as a secondary guard before submitting. If this broker query itself
+fails, `ExecutionModule` must raise rather than let the caller proceed
+blind — `bot.py` treats that as an abort-the-run condition. Apply a
+limit-price band (e.g. ±2% of last trade) to every order, buys and
+liquidations alike, instead of an unconstrained market order.
 
 **Deliverable 4.2: Bot Orchestration (The Kill Switch)** — Putting it all
 together. Implement `bot.py`. It should import all modules and run the
-daily/quarterly cycle. Implement a global `KILL_SWITCH` flag from
-`config.py`: if `True`, the bot must only perform the screen and print the
-plan, never executing orders. Add a `GLOBAL_ORDER_BUDGET` check — if the
-`portfolio.py` generated plan exceeds X orders, abort the run and log a
-critical error.
+daily/quarterly cycle. At startup, assert the loaded API keys' account mode
+(paper/live) matches the configured flag and abort on mismatch. Implement a
+global `KILL_SWITCH` flag from `config.py`: if `True`, the bot must only
+perform the screen and print the plan, never executing orders. Add a
+`GLOBAL_ORDER_BUDGET` check (max order count) **and** a
+`GLOBAL_NOTIONAL_BUDGET` check (max total notional deployed as a percentage
+of equity) — either being exceeded aborts the run and logs a critical
+error; the order-count budget alone bounds how many things can go wrong,
+not how much any one of them can move.
 
 ### PM Recommendations for Success
 
@@ -402,3 +512,46 @@ critical error.
   Ensure your "kill switch" is easily accessible (e.g., a simple
   file-based flag on the filesystem) in case you need to intervene
   manually without access to the code.
+
+## Design Review — Round 2 (Independent Staff-Engineer Pass)
+
+A second, independent staff-engineer review (2026-07-21) went further than
+the round above on two of its points and surfaced several gaps it didn't
+cover. All of the following are now incorporated into the relevant sections
+above (§3.1–§3.6, §4, §5, and the Epic 3/4 deliverables):
+
+- **The Round 1 idempotency fix is necessary but insufficient.** Checking
+  only "today's open orders" misses an order that filled and then crashed
+  before the journal write — on restart it's no longer "open," so the
+  check sees nothing and double-buys. Fixed via a deterministic
+  `client_order_id` per order (§3.5), with the open-orders check widened
+  to also cover filled orders and current positions.
+- **The Round 1 state-management fix (atomic writes) doesn't address what
+  `state.json` should be authoritative for.** It's now explicit: strike
+  counters only. Current holdings are always fetched live from the broker,
+  never read from local state (§3.4).
+- **Universe scrape validation only covered outright failure, not silent
+  corruption** — a Wikipedia table restructure that shifts columns
+  produces a garbage-but-well-formed list. Fixed with a row-count/format
+  sanity check before accepting a scrape (§3.1).
+- **"No data" and "bad data" collapsed into one boolean.** Fixed with
+  distinct fail-reason codes (`data_missing:*` vs.
+  `data_invalid_outlier:*`) carried through to `screen_results.csv`
+  (§3.2/§3.3).
+- **The order-count budget bounded mistake count, not mistake size.**
+  Fixed with an independent notional-cap budget and a limit-price band on
+  every order (§3.5/§5).
+- **No alerting specifically on liquidations or on a state/broker
+  reconciliation mismatch**, despite these being the highest-signal events
+  the system produces. Fixed (§3.4/§3.6).
+- **No safeguard against a paper/live API key mismatch.** Fixed with a
+  startup assertion (§4).
+- **No retry/backoff strategy for yfinance rate-limiting**, and the
+  journal format was left undecided as "CSV or SQLite" despite becoming
+  load-bearing for idempotency. Resolved: retry-with-backoff in the data
+  layer (§3.2), and the journal is SQLite (§3.6/§7).
+
+Not changed: the review found nothing wrong with the observability and
+security recommendations from Round 1 as scoped, and confirmed the
+position-cap/cash-buffer/paper-first/two-strike structural controls
+already in place.
