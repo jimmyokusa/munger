@@ -6,6 +6,11 @@ screen_results*.csv
 # Manual intervention flag (see DESIGN.md section 5)
 KILL_SWITCH
 
+# Local-only review-gate bookkeeping: this marker is keyed to a commit SHA,
+# so committing it would always invalidate the value just written. See the
+# comment in .claude/hooks/check-code-push-review.sh.
+.claude/review-markers/code-push-staff-engineer.sha
+
 # Python
 __pycache__/
 *.pyc
