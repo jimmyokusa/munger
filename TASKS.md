@@ -61,9 +61,10 @@ Status values: `todo` / `in-progress` / `done` / `blocked`.
 |---|---|---|
 | `calculate_munger_score(metrics)` | todo | |
 | `run_screen(tickers) -> DataFrame` | todo | |
-| `screen_results.csv` output | todo | |
+| `screen_results.csv` output | todo | make it genuinely easy to scan (sorted by score, key columns first) — feeds both the human eyeball check and the reviewer agent below |
 | Unit tests for `calculate_munger_score` against hand-computed fixtures (DESIGN.md §6, layer 1) | todo | one fixture per weighted component, plus a combined score check |
-| Tune thresholds against live data (~20–50 buyable names) | todo | if the buyable count lands outside this band, treat it as a signal a threshold needs adjusting, not just noise — record the actual count and the resulting adjustment here |
+| `screen-sanity-reviewer` subagent — reads `screen_results.csv` and flags anything that looks like a data-error artifact rather than a real high-quality compounder | todo | scoped as a plausibility/sanity checker, not stock-picking advice — same lane as the deterministic gates, formalizes the "eyeball test" DESIGN.md §6 already calls for as a manual step |
+| Tune thresholds against live data (~20–50 buyable names) | todo | if the buyable count lands outside this band, treat it as a signal a threshold needs adjusting, not just noise — record the actual count and the resulting adjustment here; run the sanity-reviewer subagent against each tuning pass |
 
 ## M6 — Strike state machine
 
