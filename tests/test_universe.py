@@ -50,15 +50,11 @@ def test_normalize_ticker_leaves_plain_ticker_unchanged() -> None:
     assert universe.normalize_ticker("MSFT") == "MSFT"
 
 
-def test_canonicalize_sector_maps_known_alias() -> None:
-    assert universe._canonicalize_sector("Financial Services") == "Financials"
+def test_canonicalize_sector_trims_whitespace() -> None:
+    assert universe._canonicalize_sector("  Financials  ") == "Financials"
 
 
-def test_canonicalize_sector_is_case_insensitive() -> None:
-    assert universe._canonicalize_sector("financial services") == "Financials"
-
-
-def test_canonicalize_sector_passes_through_unknown_unchanged() -> None:
+def test_canonicalize_sector_passes_through_unchanged() -> None:
     assert universe._canonicalize_sector("Financials") == "Financials"
     assert universe._canonicalize_sector("Some New Sector") == "Some New Sector"
 
@@ -116,11 +112,10 @@ def test_apply_sector_exclusions_drops_matching_rows(monkeypatch: pytest.MonkeyP
 def test_apply_sector_exclusions_canonicalizes_before_comparing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A vendor (e.g. FMP) labeling the same sector "Financial Services"
-    # must still be caught by an "Financials" exclusion -- the bug this
-    # canonicalization step exists to prevent.
+    # A stray leading/trailing space in a sector cell must not let a
+    # ticker slip past an exclusion that should have caught it.
     monkeypatch.setattr(config, "EXCLUDED_SECTORS", ("Financials",))
-    table = pd.DataFrame({"symbol": ["JPM"], "sector": ["Financial Services"]})
+    table = pd.DataFrame({"symbol": ["JPM"], "sector": [" Financials "]})
     result = universe._apply_sector_exclusions(table)
     assert list(result["symbol"]) == []
 
@@ -156,54 +151,41 @@ _OFFSET_500, _OFFSET_400, _OFFSET_600 = 0, 10_000, 20_000
 
 
 def _wikipedia_fixture(
-    tickers_400: list[str], tickers_600: list[str]
+    tickers_500: list[str], tickers_400: list[str], tickers_600: list[str]
 ) -> Callable[[str], pd.DataFrame]:
-    return lambda index: _fake_table(tickers_400 if index == "400" else tickers_600)
+    by_index = {"500": tickers_500, "400": tickers_400, "600": tickers_600}
+    return lambda index: _fake_table(by_index[index])
 
 
 def test_get_universe_combines_all_three_sources_live_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        universe, "_fetch_fmp_sp500", lambda: _fake_table(_fake_tickers(500, _OFFSET_500))
-    )
-    monkeypatch.setattr(
         universe,
         "_fetch_wikipedia_index",
-        _wikipedia_fixture(_fake_tickers(400, _OFFSET_400), _fake_tickers(600, _OFFSET_600)),
+        _wikipedia_fixture(
+            _fake_tickers(500, _OFFSET_500),
+            _fake_tickers(400, _OFFSET_400),
+            _fake_tickers(600, _OFFSET_600),
+        ),
     )
     result = universe.get_universe()
     assert len(result) == 500 + 400 + 600
 
 
-def test_get_universe_falls_back_when_fmp_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _raise() -> pd.DataFrame:
-        raise ConnectionError("network down")
+def test_get_universe_falls_back_when_an_index_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    live_400 = _fake_tickers(400, _OFFSET_400)
+    live_600 = _fake_tickers(600, _OFFSET_600)
 
-    monkeypatch.setattr(universe, "_fetch_fmp_sp500", _raise)
-    monkeypatch.setattr(
-        universe,
-        "_fetch_wikipedia_index",
-        _wikipedia_fixture(_fake_tickers(400, _OFFSET_400), _fake_tickers(600, _OFFSET_600)),
-    )
+    def _fetch(index: str) -> pd.DataFrame:
+        if index == "500":
+            raise ConnectionError("network down")
+        return _fake_table(live_400 if index == "400" else live_600)
+
+    monkeypatch.setattr(universe, "_fetch_wikipedia_index", _fetch)
+
     result = universe.get_universe()
-    fallback_500 = universe._load_static_fallback("500")
-    assert len(result) == len(fallback_500) + 400 + 600
 
-
-def test_get_universe_falls_back_when_fmp_returns_error_body(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _raise_error_body() -> pd.DataFrame:
-        raise ValueError("FMP sp500_constituent returned an error body: {'Error Message': 'x'}")
-
-    monkeypatch.setattr(universe, "_fetch_fmp_sp500", _raise_error_body)
-    monkeypatch.setattr(
-        universe,
-        "_fetch_wikipedia_index",
-        _wikipedia_fixture(_fake_tickers(400, _OFFSET_400), _fake_tickers(600, _OFFSET_600)),
-    )
-    result = universe.get_universe()
     fallback_500 = universe._load_static_fallback("500")
     assert len(result) == len(fallback_500) + 400 + 600
 
@@ -212,13 +194,14 @@ def test_get_universe_falls_back_when_an_index_fails_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        universe, "_fetch_fmp_sp500", lambda: _fake_table(_fake_tickers(500, _OFFSET_500))
-    )
-    monkeypatch.setattr(
         universe,
         "_fetch_wikipedia_index",
         # Only 2 tickers for the 400 index -- well outside its band.
-        _wikipedia_fixture(_fake_tickers(2, _OFFSET_400), _fake_tickers(600, _OFFSET_600)),
+        _wikipedia_fixture(
+            _fake_tickers(500, _OFFSET_500),
+            _fake_tickers(2, _OFFSET_400),
+            _fake_tickers(600, _OFFSET_600),
+        ),
     )
     result = universe.get_universe()
     fallback_400 = universe._load_static_fallback("400")
@@ -228,20 +211,24 @@ def test_get_universe_falls_back_when_an_index_fails_validation(
 def test_get_universe_falls_back_on_missing_sector_column(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Regression test for a bug staff-engineer-reviewer found in the
-    # single-index version: a missing/renamed sector column must still
-    # result in a fallback, not an uncaught KeyError, once an exclusion is
+    # Regression test: a missing/renamed sector column must still result
+    # in a fallback, not an uncaught KeyError, once an exclusion is
     # configured (exclusions run inside the same try/except boundary as
     # the fetch itself).
     monkeypatch.setattr(config, "EXCLUDED_SECTORS", ("Financials",))
     broken_table = pd.DataFrame({"symbol": _fake_tickers(500, _OFFSET_500)})  # no "sector" column
-    monkeypatch.setattr(universe, "_fetch_fmp_sp500", lambda: broken_table)
-    monkeypatch.setattr(
-        universe,
-        "_fetch_wikipedia_index",
-        _wikipedia_fixture(_fake_tickers(400, _OFFSET_400), _fake_tickers(600, _OFFSET_600)),
-    )
+    live_400 = _fake_tickers(400, _OFFSET_400)
+    live_600 = _fake_tickers(600, _OFFSET_600)
+
+    def _fetch(index: str) -> pd.DataFrame:
+        if index == "500":
+            return broken_table
+        return _fake_table(live_400 if index == "400" else live_600)
+
+    monkeypatch.setattr(universe, "_fetch_wikipedia_index", _fetch)
+
     result = universe.get_universe()
+
     fallback_500 = universe._load_static_fallback("500")
     assert len(result) == len(fallback_500) + 400 + 600
 
@@ -252,9 +239,10 @@ def test_get_universe_deduplicates_cross_index_tickers(monkeypatch: pytest.Monke
     tickers_400 = [*_fake_tickers(399, _OFFSET_400), shared_ticker]
     tickers_600 = _fake_tickers(600, _OFFSET_600)
 
-    monkeypatch.setattr(universe, "_fetch_fmp_sp500", lambda: _fake_table(tickers_500))
     monkeypatch.setattr(
-        universe, "_fetch_wikipedia_index", _wikipedia_fixture(tickers_400, tickers_600)
+        universe,
+        "_fetch_wikipedia_index",
+        _wikipedia_fixture(tickers_500, tickers_400, tickers_600),
     )
     result = universe.get_universe()
     assert result.count(shared_ticker) == 1

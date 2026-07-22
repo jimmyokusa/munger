@@ -82,73 +82,47 @@ regardless of which index list they came from) and by all three sources
 being maintained, liquid, analyst-covered indices rather than an
 unfiltered exchange-wide scan.
 
-**Sourcing is hybrid, not uniform across the three indices** — a decision
-driven by the fact that the user acts on this system's output with real
-money, not simulated paper trades, which raises the bar on data-layer
-correctness well above what a pure paper-trading exercise would need.
-The S&P 500 — the largest, most heavily-weighted, most consequential
-slice of the universe — is fetched from **Financial Modeling Prep's
-`sp500_constituent` REST API** (a real, versioned, authenticated
-endpoint; no HTML parsing, no dependency on a page's DOM structure
-staying stable — a *lower-frequency* class of risk than scraping, not a
-*zero* one: a vendor can still deprecate or reshape an endpoint, or a
-plan/quota change can silently shrink what it returns, which is exactly
-why this source is held to the same validate-and-fallback contract below
-rather than treated as inherently trustworthy). The S&P MidCap 400 and
-SmallCap 600 remain on
-a **hardened Wikipedia scrape**, because neither FMP nor other API
-providers evaluated (Finnhub; ETF-issuer holdings files) offer a
-constituents endpoint for those indices at any price point checked —
-mid/small-cap index membership is niche enough that it isn't broadly
-resold as a clean API, free or paid, short of licensing data directly
-from S&P Dow Jones Indices, which is disproportionate for this project's
-scale. This is revisited if a suitable vendor is found later; until then,
-the 400/600 risk is bounded and made visible (see fallback/alerting
-below) rather than eliminated.
+**Sourcing is uniform: all three indices are scraped from Wikipedia.**
+Two API alternatives were evaluated and rejected for the S&P 500 leg
+specifically (the largest, most consequential slice, so it's the one
+worth the most scrutiny): **Financial Modeling Prep's `sp500_constituent`
+REST API** looked promising — a real, versioned, authenticated endpoint,
+no HTML parsing — but live testing found the endpoint gated behind a
+paid plan (`HTTP 402`) on both the legacy (`/api/v3/`, sunset 2025-08-31,
+`HTTP 403`) and current (`/stable/`) paths, not included in the free
+tier the project uses; **Finnhub** and **ETF-issuer holdings files**
+(e.g. State Street's SPY/MDY/SLY daily holdings) don't offer a
+constituents endpoint for the S&P 400/600 at any price point checked
+either, and the ETF files specifically had two more problems: not every
+fund publishes at a predictable URL (SLY's file could not be located),
+and the ones that did publish (SPY) left the `Sector` column blank for
+every row. Paying for FMP's Starter plan was considered and declined —
+not worth the ongoing cost for a personal project when the Wikipedia
+path, once hardened, is adequate. This is revisited if a suitable free
+or low-cost vendor is found later; until then, the risk on all three
+indices is bounded and made visible (see fallback/alerting below) rather
+than eliminated.
 
-**Why not an ETF holdings file:** ETF-issuer holdings files (e.g. State
-Street's SPY/MDY/SLY daily holdings) were evaluated as an alternative to
-both FMP and Wikipedia. Two problems ruled it out: not every fund
-publishes at a predictable URL (SLY's file could not be located), and the
-ones that did publish (SPY) left the `Sector` column blank for every row,
-which would have required a second data source for sector exclusions
-anyway.
+The module scrapes each of the three constituent lists from Wikipedia
+(same table structure and `GICS Sector` column across all three pages —
+`List of S&P 500 companies`, `List of S&P 400 companies`, `List of S&P
+600 companies` — confirmed live), normalizes ticker symbols to the
+broker's format (e.g., `BRK.B` → `BRK-B`), and applies an optional
+configured list of excluded sectors — Munger's circle-of-competence rule
+made concrete: if you don't understand banks, exclude Financials. The
+scrape requires a descriptive User-Agent header — the default
+`urllib`/`pandas.read_html` User-Agent gets an HTTP 403 from Wikipedia's
+bot policy; a request identifying the bot (not spoofing a browser) is
+both required to get past it and the compliant way to do so.
 
-Each source normalizes ticker symbols to the broker's format (e.g.,
-`BRK.B` → `BRK-B`) **and to a canonical GICS sector-name set** before
-exclusions are applied — FMP and Wikipedia are not guaranteed to spell
-the same sector identically (e.g. `"Financials"` vs. `"Financial
-Services"`), and applying `EXCLUDED_SECTORS` against unreconciled
-per-vendor strings would let a name evade a configured exclusion purely
-because of which source happened to cover it that quarter, silently
-undermining Munger's circle-of-competence rule made concrete: if you
-don't understand banks, exclude Financials, regardless of which vendor's
-data a given bank ticker traveled in on. The FMP API requires an
-`FMP_API_KEY` secret, handled exactly like the Alpaca keys (§4): env var
-only, never hard-coded, never logged. The Wikipedia scrape requires a
-descriptive User-Agent header — the default `urllib`/`pandas.read_html`
-User-Agent gets an HTTP 403 from Wikipedia's bot policy; a request
-identifying the bot (not spoofing a browser) is both required to get past
-it and the compliant way to do so.
-
-**Both source types share one validate-and-fallback contract**, so a
-switch in underlying technology for one index doesn't fragment the
-failure-handling story. Either can fail two different ways: the request
-can raise (network error, Wikipedia/FMP down), or it can *succeed with a
-corrupted result* — a Wikipedia page restructure that shifts which column
-holds the ticker symbol (or renames/drops the sector column), or an FMP
-response that's empty, truncated, or malformed. **An invalid or revoked
-FMP key does not reliably fall into the "raises" bucket** — a metered
-JSON API commonly returns HTTP 200 with an error body (e.g. `{"Error
-Message": "Invalid API KEY"}`) rather than a 401/403 that a naive client
-would raise on, so the fetch code must explicitly inspect the HTTP status
-(treating 401/403/429 as failures) rather than assume an exception alone
-carries this information — 429 (rate/quota exhausted) is itself a new
-failure class this source introduces, one Wikipedia's unmetered scrape
-has no equivalent of. Whichever way it's detected, only the exception
-case is caught by falling back on exception alone — the whole pipeline
-for each source (fetch, validate, apply exclusions, normalize) must share
-one failure boundary, not just the fetch call, or a sector-column failure
+The scrape can fail two different ways: it can raise (network error,
+Wikipedia down), or it can *succeed with a corrupted result* — a page
+restructure that shifts which column holds the ticker symbol (or
+renames/drops the sector column entirely) produces a result that parses
+cleanly but is garbage, or crashes sector-filtering downstream. Only the
+first case is caught by falling back on exception alone — the whole
+pipeline (fetch, validate, apply exclusions, normalize) must share one
+failure boundary, not just the fetch call, or a sector-column failure
 crashes the process instead of falling back. Validate the parsed result
 before accepting it — row count within a sane band per index (S&P 500:
 ~490–510; S&P 400: ~390–410; S&P 600: ~590–615) and every entry matching
@@ -162,15 +136,13 @@ exclusion look like a fetch failure and force a fallback every run.
 **Fallback is per-index, not all-or-nothing.** Each of the three indices
 is fetched and validated independently, and each falls back to *its own*
 slice of the static file independently — a validation failure on the
-SmallCap 600 page does not discard an otherwise-healthy live FMP fetch of
-the 500 or a healthy scrape of the 400. The single static fallback file
-therefore needs a
+SmallCap 600 page does not discard an otherwise-healthy scrape of the 500
+or the 400. The single static fallback file therefore needs a
 source-index column (not just symbol/sector) so a per-index fallback can
 select the right slice. The alternative — one combined static file used
 whenever any of the three fails — was considered and rejected: it turns a
-single-source hiccup (routine, given three independent scrapes instead of
-one) into full-composite staleness, the opposite of the point of adding
-two more sources.
+single-source hiccup (routine, given three independent scrapes) into
+full-composite staleness.
 
 Because a static fallback still returns a plausible-looking, correctly-
 sized list, a persistent fallback on just one of the three sources
@@ -178,23 +150,19 @@ wouldn't trip the aggregate empty-universe/`MIN_UNIVERSE_FETCH_FRACTION`
 check in §5 — the total count still looks healthy. Each per-index
 fallback event must therefore be logged and alerted on individually (§3.6/
 §5), not folded into the aggregate check alone, or an operator could run
-for months on a stale SmallCap 600 list without any signal. **Alert
-severity tracks consequence, not just occurrence:** a fallback on the
-FMP-sourced S&P 500 — the largest, most heavily-weighted slice — is a
-high-priority alert (investigate before the next run acts on it), while a
-fallback on the Wikipedia-sourced 400/600 is logged and alerted at normal
-priority, matching the bounded-and-accepted risk framing given to those
-two sources above. Treating every per-index fallback identically would
-undercut the entire rationale for moving the 500 off Wikipedia in the
-first place — a silently-stale S&P 500 list is the single worst-case
-outcome this section exists to prevent.
+for months on a stale list without any signal. **Alert severity tracks
+consequence, not just occurrence:** a fallback on the S&P 500 — the
+largest, most heavily-weighted slice — is a high-priority alert
+(investigate before the next run acts on it), while a fallback on the
+400/600 is logged and alerted at normal priority. This is independent of
+which vendor happens to source each index today — severity tracks
+portfolio-weight consequence, not sourcing technology.
 
 **Combining and de-duplicating.** S&P 500/400/600 are disjoint by S&P's
 own index methodology, but membership changes can lag between the three
-source lists during a reclassification (e.g., a name moving from
-SmallCap 600 to MidCap 400, or from MidCap 400 up into the FMP-sourced
-500), producing a brief window where a ticker appears in two lists at
-once. After validating and normalizing each
+Wikipedia pages during a reclassification (e.g., a name moving from
+SmallCap 600 to MidCap 400), producing a brief window where a ticker
+appears on two pages at once. After validating and normalizing each
 index's list independently, `get_universe()` de-duplicates the combined
 result by ticker, keeping the first occurrence in 500 → 400 → 600 order
 (so the large-cap page's data wins a conflict, including which sector it
@@ -385,29 +353,13 @@ every order (§3.5), with a secondary pre-check against today's open orders,
 filled orders, and current positions; if that broker query itself fails,
 the run aborts rather than proceeding blind.
 
-Secrets (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `FMP_API_KEY`) come from
-environment variables, never from code or the repo. At startup, assert that the
+Secrets (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`) come from environment
+variables, never from code or the repo. At startup, assert that the
 account mode reported by the loaded API keys (paper vs. live) matches the
 configured `paper`/`live` flag, and abort if they disagree — a mismatch
 here (e.g. live keys present while config says paper, from a stale `.env`)
 is exactly the kind of silent misconfiguration that only matters once,
 catastrophically.
-
-Startup also does a cheap `FMP_API_KEY` presence/validity check (e.g. a
-minimal request against the same endpoint `get_universe()` will use) and
-aborts the run if it's missing or rejected, rather than letting a known-bad
-key surface for the first time as a mid-run universe-module fallback
-(§3.1) on the largest slice of a real-money universe. This is deliberately
-asymmetric with the *mid-run* posture, which stays fail-open (fallback +
-high-priority alert, §3.1/§3.6) rather than abort — this makes a bad-key
-mid-run fallback *rare*, not impossible (the key could still be revoked
-between the startup check and the later fetch), and a routine transient
-failure mid-run (network blip, momentary rate limit) doesn't warrant
-discarding an otherwise-good run over one already-degraded-gracefully
-slice either way. But a key that's *known bad before the run starts*
-should never be allowed to run silently degraded every single quarter
-without the operator being told
-immediately, the same way a paper/live mismatch is.
 
 ## 5. Risk Controls
 
