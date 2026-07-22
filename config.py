@@ -15,12 +15,10 @@ BASE_DIR = Path(__file__).resolve().parent
 # is where a missing key should fail fast, not here.
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
-FMP_API_KEY = os.environ.get("FMP_API_KEY", "")
 
 # --- Universe module (DESIGN.md 3.1) ---
-# Hybrid sourcing: S&P 500 via the FMP API, S&P 400/600 via Wikipedia scrape
-# (no vendor offers a constituents API for the 400/600 at any price checked).
-# Each index is fetched, validated, and falls back to its own slice of
+# All three indices (S&P 500/400/600) are scraped from Wikipedia. Each is
+# fetched, validated, and falls back to its own slice of
 # STATIC_UNIVERSE_FALLBACK_PATH independently -- see DESIGN.md 3.1.
 EXCLUDED_SECTORS: tuple[str, ...] = ()
 UNIVERSE_TICKER_COUNT_BANDS: dict[str, tuple[int, int]] = {
