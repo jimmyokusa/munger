@@ -101,6 +101,8 @@ LIMIT_PRICE_BAND_PCT = 0.02  # +/-2% of last trade, applied to every order
 STATE_FILE_PATH: Path = BASE_DIR / "state.json"
 JOURNAL_DB_PATH: Path = BASE_DIR / "journal.db"
 SCREEN_RESULTS_CSV_PATH: Path = BASE_DIR / "screen_results.csv"
+SCREEN_RESULTS_ARCHIVE_DIR: Path = BASE_DIR / "screen_results_archive"
+LOG_FILE_PATH: Path = BASE_DIR / "munger.log"
 DATA_FRESHNESS_MAX_HOURS = 24
 
 # --- Risk controls (DESIGN.md 5) ---
