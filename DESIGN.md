@@ -67,24 +67,92 @@ be built and tested independently.
 
 ### 3.1 Universe Module
 
-Provides the list of candidate tickers. Default universe is the S&P 500,
-which conveniently enforces Graham's "large, prominent, conservatively
-financed" requirement and keeps the system loosely inside a circle of
-competence. The module scrapes the constituent list (Wikipedia table is
-acceptable for v1; a static fallback file should ship in the repo in case
-the scrape fails), normalizes ticker symbols to the broker's format (e.g.,
-`BRK.B` → `BRK-B`), and applies an optional configured list of excluded
-sectors — Munger's circle-of-competence rule made concrete: if you don't
-understand banks, exclude Financials.
+Provides the list of candidate tickers. **Default universe is the S&P
+Composite 1500** (S&P 500 + S&P MidCap 400 + S&P SmallCap 600) — broadened
+from a large-cap-only S&P 500 during M1 implementation, once it was clear
+that restricting to the 500 leaves real bargains on the table: S&P 500
+membership is an index-committee/market-cap-rank decision, not a cheapness
+signal, and the $2B–$18B range already inside this system's own
+`MIN_MARKET_CAP` gate (§3.3) is mostly *outside* the S&P 500 but squarely
+inside the MidCap 400's territory. Graham's "large, prominent,
+conservatively financed" requirement and Munger's circle-of-competence
+rule are both still enforced structurally — not by index membership, but
+by `MIN_MARKET_CAP` staying a hard gate (so true micro-caps are excluded
+regardless of which index list they came from) and by all three sources
+being maintained, liquid, analyst-covered indices rather than an
+unfiltered exchange-wide scan.
+
+The module scrapes each of the three constituent lists from Wikipedia
+(same table structure and `GICS Sector` column across all three pages —
+`List of S&P 500 companies`, `List of S&P 400 companies`, `List of S&P 600
+companies` — confirmed live during implementation), normalizes ticker
+symbols to the broker's format (e.g., `BRK.B` → `BRK-B`), and applies an
+optional configured list of excluded sectors — Munger's circle-of-competence
+rule made concrete: if you don't understand banks, exclude Financials.
+
+**Why Wikipedia, not an ETF holdings file or a paid API:** ETF-issuer
+holdings files (e.g. State Street's SPY/MDY/SLY daily holdings) were
+evaluated as an alternative during implementation. Two problems ruled it
+out: not every fund publishes at a predictable URL (SLY's file could not be
+located), and the ones that did publish (SPY) left the `Sector` column
+blank for every row, which would have required a second data source for
+sector exclusions anyway. A single, well-known, sector-labeled Wikipedia
+page per index — already needing the fallback/validation discipline below
+regardless of source — is simpler than juggling three undocumented
+per-provider file formats.
+
+**Wikipedia requires a descriptive User-Agent header.** The default
+`urllib`/`pandas.read_html` User-Agent gets an HTTP 403 from Wikipedia's
+bot policy; a request identifying the bot (not spoofing a browser) is both
+required to get past it and the compliant way to do so.
 
 The scrape can fail two different ways: it can raise (network error,
 Wikipedia down), or it can *succeed with a corrupted result* — a page
-restructure that shifts which column holds the ticker symbol produces a
-list that parses cleanly but is garbage. Only the first case is caught by
-falling back on exception. Validate the parsed result before accepting it —
-row count within a sane band (e.g. 490–510 tickers) and every entry
-matching a plausible ticker pattern — and fall back to the static file on
-either failure mode, not just an outright exception.
+restructure that shifts which column holds the ticker symbol (or renames/
+drops the sector column entirely) produces a result that parses cleanly
+but is garbage, or crashes sector-filtering downstream. Only the first
+case is caught by falling back on exception alone — the whole pipeline
+(fetch, validate, apply exclusions, normalize) must share one failure
+boundary, not just the fetch call, or a sector-column failure crashes the
+process instead of falling back. Validate the parsed result before
+accepting it — row count within a sane band per index (S&P 500: ~490–510;
+S&P 400: ~390–410; S&P 600: ~590–615) and every entry matching a plausible
+ticker pattern — and fall back to the static file on either failure mode,
+not just an outright exception. Validation runs against each index's *raw*
+scrape, before sector exclusions are applied: exclusions are a legitimate
+filter that can validly shrink a list below its sane band, so validating
+post-filter would make any configured exclusion look like a scrape failure
+and force a fallback every run.
+
+**Fallback is per-index, not all-or-nothing.** Each of the three indices
+is fetched and validated independently, and each falls back to *its own*
+slice of the static file independently — a validation failure on the
+SmallCap 600 page does not discard two otherwise-healthy live scrapes of
+the 500 and 400. The single static fallback file therefore needs a
+source-index column (not just symbol/sector) so a per-index fallback can
+select the right slice. The alternative — one combined static file used
+whenever any of the three fails — was considered and rejected: it turns a
+single-source hiccup (routine, given three independent scrapes instead of
+one) into full-composite staleness, the opposite of the point of adding
+two more sources.
+
+Because a static fallback still returns a plausible-looking, correctly-
+sized list, a persistent fallback on just one of the three sources
+wouldn't trip the aggregate empty-universe/`MIN_UNIVERSE_FETCH_FRACTION`
+check in §5 — the total count still looks healthy. Each per-index
+fallback event must therefore be logged and alerted on individually (§3.6/
+§5), not folded into the aggregate check alone, or an operator could run
+for months on a stale SmallCap 600 list without any signal.
+
+**Combining and de-duplicating.** S&P 500/400/600 are disjoint by S&P's
+own index methodology, but membership changes can lag between the three
+Wikipedia pages during a reclassification (e.g., a name moving from
+SmallCap 600 to MidCap 400), producing a brief window where a ticker
+appears on two pages at once. After validating and normalizing each
+index's list independently, `get_universe()` de-duplicates the combined
+result by ticker, keeping the first occurrence in 500 → 400 → 600 order
+(so the large-cap page's data wins a conflict, including which sector it
+reports) rather than fetching or scoring a ticker twice.
 
 Interface: `get_universe() -> list[str]`
 
@@ -245,12 +313,16 @@ what already happened today, and a CSV append torn by a crash mid-write
 (truncated last line) is exactly the kind of corruption that would make
 that check silently unreliable. Structured logging to file and stdout.
 
-Beyond passive logging, two things get an active alert rather than waiting
-to be discovered by reading the journal: any `SELL`/liquidation event (the
+Beyond passive logging, active alerts fire rather than waiting to be
+discovered by reading the journal: any `SELL`/liquidation event (the
 system is designed to place near-zero sells, so one firing is the rarest
-and highest-signal thing it does — see §1), and a holdings-reconciliation
+and highest-signal thing it does — see §1); a holdings-reconciliation
 mismatch (§3.4) between what the broker reports and what the previous
-run's journal expected. The journal is what lets you later evaluate
+run's journal expected; and, per-index, whenever the universe module
+(§3.1) falls back to its static file for the S&P 500, 400, or 600 slice —
+a per-index fallback keeps the aggregate ticker count looking healthy, so
+without its own distinct alert a stale slice could persist for months
+unnoticed. The journal is what lets you later evaluate
 whether the system is actually following its own rules — an audit of
 behavior, in the Graham spirit of the investor's chief problem being
 himself.

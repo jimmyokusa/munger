@@ -2,7 +2,8 @@
 
 An automated investing system that combines Benjamin Graham's
 margin-of-safety discipline (*The Intelligent Investor*) with Charlie
-Munger's quality-first philosophy. It screens the S&P 500 for stocks that
+Munger's quality-first philosophy. It screens the S&P Composite 1500
+(S&P 500 + S&P MidCap 400 + S&P SmallCap 600) for stocks that
 are both cheap (Graham) and high-quality (Munger), holds a concentrated
 ~15-position portfolio, and sells only on a deliberate two-strike
 deterioration in fundamentals — never on price movement alone. It runs
@@ -27,13 +28,14 @@ inspectable on its own before moving to the next.
       `state.json`, `journal.db`, `screen_results*.csv`, and the
       `KILL_SWITCH` flag file. (Alpaca account provisioning is tracked in
       `TASKS.md` but doesn't gate this milestone or M1+ — see there.)
-- [ ] **M1 — Universe module.** `get_universe()`: S&P 500 constituents via
-      Wikipedia scrape with a static fallback file shipped in-repo; ticker
+- [ ] **M1 — Universe module.** `get_universe()`: S&P Composite 1500
+      constituents (S&P 500 + S&P 400 + S&P 600) via three independent
+      Wikipedia scrapes with a static fallback file shipped in-repo; ticker
       normalization (`BRK.B` → `BRK-B`); optional sector exclusion list;
-      validate the scraped result (row-count/format sanity check) and fall
-      back to the static file on either a scrape exception or a validation
-      failure — a silently-corrupted-but-well-formed scrape is as
-      dangerous as an outright failure.
+      validate each index's scraped result independently against its own
+      row-count band and fall back to the static file on either a scrape
+      exception or a validation failure — a silently-corrupted-but-
+      well-formed scrape is as dangerous as an outright failure.
 - [ ] **M2 — Data fetcher.** `fetch_metrics(symbol)` via yfinance; thread
       pool (~10–15 workers) with retry-and-backoff on transient/rate-limit
       errors; per-ticker failures tolerated without aborting the run; raw

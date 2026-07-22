@@ -22,13 +22,35 @@ effort — needs the user, e.g. an external account signup).
 
 ## M1 — Universe module
 
+Broadened mid-milestone from S&P 500-only to the full S&P Composite 1500
+(S&P 500 + S&P 400 MidCap + S&P 600 SmallCap) per user decision 2026-07-21
+— see DESIGN.md §3.1. ETF-holdings-file sourcing was evaluated and
+rejected (SLY 404s, SPY's Sector column is blank); Wikipedia's three
+index pages share the same table structure and are used for all three.
+
+**Fallback is per-index, not all-or-nothing** (DESIGN.md §3.1, added after
+staff-engineer-reviewer + pm-reviewer both flagged this as unspecified):
+each of the three indices is fetched/validated/falls-back independently,
+so the static fallback file needs a source-index column to slice from,
+and each per-index fallback gets its own alert (DESIGN.md §3.6) rather
+than relying on the aggregate ticker count, which would still look
+healthy. Combined results are de-duplicated by ticker (500 → 400 → 600
+precedence on conflict) to handle the rare index-reclassification window
+where a ticker briefly appears on two pages at once.
+
 | Task | Status | Date / Notes |
 |---|---|---|
-| `get_universe()` — Wikipedia scrape | todo | |
-| Static fallback ticker file shipped in-repo | todo | |
-| Ticker normalization (`BRK.B` → `BRK-B`) | todo | |
-| Optional sector-exclusion list | todo | |
-| Scrape validation (row-count/format sanity check) + fallback on validation failure | todo | added in design review round 2 |
+| `get_universe()` — Wikipedia scrape, S&P 500 (single-index version) | done | 2026-07-21 — required a custom User-Agent header (default urllib UA gets HTTP 403 from Wikipedia's bot policy); found live, not theoretically. Superseded by the multi-index task below. |
+| Generalize `get_universe()` to fetch + validate + combine all three indices (S&P 500 + 400 + 600), each with independent per-index fallback | todo | each index validated against its own row-count band (500: ~490–510; 400: ~390–410; 600: ~590–615); combine step de-duplicates by ticker (500→400→600 precedence). Done means a live run returns ~1500 tickers, verified by count and by spot-checking a few known MidCap/SmallCap names — not unit tests alone. |
+| `config.py`: per-index validation bands + fallback file path/schema | todo | replace the single `UNIVERSE_MIN/MAX_TICKER_COUNT` pair with one pair per index (or a per-index dict); decide whether `STATIC_UNIVERSE_FALLBACK_PATH` is renamed or kept and just expanded — flagged by pm-reviewer as untracked |
+| Static fallback ticker file: expand to full composite with source-index column | in-progress | 2026-07-21 — `data/sp500_fallback.csv` (503 tickers + sector) covers S&P 500 only so far; needs a `source_index` column (500/400/600) so per-index fallback can slice it, and needs the 400/600 rows added. Generation process: one-time manual scrape-and-save from the same Wikipedia pages, dated in a comment/commit message; revisit if validation bands start failing in production. |
+| Ticker normalization (`BRK.B` → `BRK-B`) | done | 2026-07-21 |
+| Optional sector-exclusion list | done | 2026-07-21 — verified live (excluding Financials correctly drops JPM, keeps AAPL); re-verify after multi-index generalization |
+| Scrape validation (row-count/format sanity check) + fallback on validation failure | in-progress | 2026-07-21 — validates the *raw* scrape before sector exclusion, not after; validating post-exclusion was a real bug found live (any configured exclusion would make the count fall outside the band and force fallback every run). Downgraded from done to in-progress per pm-reviewer: per-index bands and per-index fallback slicing are not yet implemented, only the single-index version is. |
+| Widen exception handling to cover the whole pipeline (fetch → validate → exclude → normalize), not just the fetch call | done | 2026-07-21 — found by staff-engineer-reviewer: a missing/renamed GICS Sector column would raise uncaught inside `_apply_sector_exclusions`, crashing instead of falling back |
+| Unit tests: `_apply_sector_exclusions` (pure function) | todo | in-memory DataFrame fixture |
+| Unit tests: `get_universe()` branches via monkeypatching the fetch call | todo | cover: raises → fallback; fails validation → fallback; valid + exclusion applied; missing/renamed sector column → still falls back (regression test for the bug above); one index fails/falls back while the other two succeed live, combined result is correct (the new branch the multi-index generalization introduces) |
+| Unit tests: cross-index de-duplication | todo | a ticker appearing in two source lists collapses to one entry, with 500→400→600 precedence on conflicting sector data |
 
 ## M2 — Data fetcher
 
