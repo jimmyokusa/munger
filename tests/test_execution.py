@@ -12,7 +12,7 @@ import pytest
 from alpaca.common.exceptions import APIError
 from alpaca.data.models.trades import Trade
 from alpaca.trading.enums import OrderSide, OrderStatus, TimeInForce
-from alpaca.trading.models import Order, Position
+from alpaca.trading.models import Order, Position, TradeAccount
 
 import config
 import execution
@@ -72,6 +72,10 @@ class _Setup(NamedTuple):
 @pytest.fixture
 def setup(monkeypatch: pytest.MonkeyPatch) -> _Setup:
     trading_mock = MagicMock()
+    # Default: nothing has been submitted yet under any client_order_id,
+    # so market_buy/liquidate's has_already_submitted guard doesn't
+    # short-circuit tests that expect a fresh submission.
+    trading_mock.get_order_by_client_id.side_effect = _fake_api_error(404)
     data_mock = MagicMock()
     monkeypatch.setattr(execution, "TradingClient", lambda **kwargs: trading_mock)
     monkeypatch.setattr(execution, "StockHistoricalDataClient", lambda **kwargs: data_mock)
@@ -99,6 +103,7 @@ def test_limit_price_sell_is_below_last_trade(setup: _Setup) -> None:
 
 
 def test_has_already_submitted_true_when_order_found(setup: _Setup) -> None:
+    setup.trading.get_order_by_client_id.side_effect = None
     setup.trading.get_order_by_client_id.return_value = MagicMock(spec=Order)
     assert setup.module.has_already_submitted("2026-07-21-AAPL-buy") is True
 
@@ -122,6 +127,32 @@ def test_get_current_holdings_maps_symbol_to_market_value(setup: _Setup) -> None
         _fake_position("MSFT", 2000.0, 10),
     ]
     assert setup.module.get_current_holdings() == {"AAPL": 1000.0, "MSFT": 2000.0}
+
+
+def test_verify_account_access_calls_get_account(setup: _Setup) -> None:
+    setup.module.verify_account_access()
+    setup.trading.get_account.assert_called_once()
+
+
+def test_verify_account_access_reraises_on_auth_failure(setup: _Setup) -> None:
+    setup.trading.get_account.side_effect = _fake_api_error(403)
+    with pytest.raises(APIError):
+        setup.module.verify_account_access()
+
+
+def test_get_available_cash_returns_the_account_cash_balance(setup: _Setup) -> None:
+    account = MagicMock(spec=TradeAccount)
+    account.cash = "12345.67"
+    setup.trading.get_account.return_value = account
+    assert setup.module.get_available_cash() == pytest.approx(12345.67)
+
+
+def test_get_available_cash_raises_when_cash_is_none(setup: _Setup) -> None:
+    account = MagicMock(spec=TradeAccount)
+    account.cash = None
+    setup.trading.get_account.return_value = account
+    with pytest.raises(ValueError):
+        setup.module.get_available_cash()
 
 
 def test_market_buy_submits_a_limit_order_with_the_band_and_client_order_id(
@@ -188,6 +219,48 @@ def test_liquidate_returns_none_on_failure_without_raising(setup: _Setup) -> Non
     setup.trading.get_open_position.side_effect = Exception("position not found")
     result = setup.module.liquidate("AAPL")
     assert result is None
+
+
+def test_market_buy_recovers_existing_order_instead_of_resubmitting(setup: _Setup) -> None:
+    # Simulates a crash-and-restart same-day: a previous attempt already
+    # placed this exact client_order_id, so has_already_submitted must
+    # short-circuit before ever building a new request, and the existing
+    # order must be returned so the caller (bot.py) can still journal it.
+    setup.trading.get_order_by_client_id.side_effect = None
+    existing_order = _fake_accepted_order()
+    setup.trading.get_order_by_client_id.return_value = existing_order
+
+    result = setup.module.market_buy("AAPL", 500.0)
+
+    assert result is existing_order
+    setup.trading.submit_order.assert_not_called()
+
+
+def test_liquidate_recovers_existing_order_instead_of_resubmitting(setup: _Setup) -> None:
+    setup.trading.get_order_by_client_id.side_effect = None
+    existing_order = _fake_accepted_order()
+    setup.trading.get_order_by_client_id.return_value = existing_order
+
+    result = setup.module.liquidate("AAPL")
+
+    assert result is existing_order
+    setup.trading.get_open_position.assert_not_called()
+    setup.trading.submit_order.assert_not_called()
+
+
+def test_market_buy_propagates_when_idempotency_check_itself_fails(setup: _Setup) -> None:
+    # has_already_submitted must fail closed -- a broken pre-check query
+    # aborts the run, unlike a genuine order rejection, which market_buy
+    # catches and turns into a None return.
+    setup.trading.get_order_by_client_id.side_effect = _fake_api_error(500)
+    with pytest.raises(APIError):
+        setup.module.market_buy("AAPL", 500.0)
+
+
+def test_liquidate_propagates_when_idempotency_check_itself_fails(setup: _Setup) -> None:
+    setup.trading.get_order_by_client_id.side_effect = _fake_api_error(500)
+    with pytest.raises(APIError):
+        setup.module.liquidate("AAPL")
 
 
 def test_paper_trading_flag_passed_to_trading_client(monkeypatch: pytest.MonkeyPatch) -> None:
