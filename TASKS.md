@@ -195,10 +195,15 @@ proven until that happens.
 
 | Task | Status | Date / Notes |
 |---|---|---|
-| Append-only journal as **SQLite** (`journal.db`), not CSV | todo | changed in design review round 2 |
-| Reason string per order | todo | |
-| Timestamped `screen_results.csv` archive | todo | |
-| Structured logging to file and stdout | todo | |
+| Append-only journal as **SQLite** (`journal.db`), not CSV | done | 2026-07-22 — `journal.py`, `record_order()`; schema created on first connect (`CREATE TABLE IF NOT EXISTS`) |
+| Reason string per order | done | 2026-07-22 — free-text `reason` column; caller (bot.py, M10) constructs the exact DESIGN.md 3.6 format (e.g. `"NEW_POSITION score=78.2"`), journal.py doesn't know about score/strikes semantics |
+| Timestamped `screen_results.csv` archive | done | 2026-07-22 — `archive_screen_results(run_date)`, copies into `screen_results_archive/` (gitignored, like the other runtime artifacts) rather than littering timestamped files in the repo root |
+| Structured logging to file and stdout | done | 2026-07-22 — `configure_logging()`, idempotent (safe to call more than once without duplicating handlers) |
+| Reconciliation check against journal-expected holdings | done | 2026-07-22 — `get_expected_holdings()` (most recent action per symbol) + `check_reconciliation(actual_holdings)`, returning human-readable mismatch strings for the caller to log. Closes the gap M6 explicitly deferred ("needs the trade journal, which doesn't exist yet"). Not an abort condition — a signal, per DESIGN.md 3.4/3.6. |
+| `record_order`'s `side` validated against `{"buy", "sell"}` | done | 2026-07-22 — staff-engineer-reviewer finding: an unvalidated typo (`"Buy"`, `"buy "`) would be silently treated as a sell by `get_expected_holdings`, which only special-cases the exact string `"buy"`. Now raises `ValueError` instead. |
+| **Deferred to M10 (staff-engineer-reviewer):** no dedup guard on `record_order`/`client_order_id` | todo | `client_order_id` is captured as a label but nothing enforces uniqueness (no `UNIQUE` constraint, no check-before-insert) — a caller retrying after a crash between "order submitted" and "journal write" could double-append. The right fix depends on the write-then-order vs. order-then-write sequencing bot.py (M10) actually uses, which doesn't exist yet — tracking here so it isn't forgotten once it does. |
+| **Deferred (staff-engineer-reviewer):** no schema migration path | todo | `CREATE TABLE IF NOT EXISTS` means a column added to the schema later won't retroactively apply to an existing `journal.db` file. Not a problem until the schema actually needs to change; noting it now so a future change doesn't silently diverge across environments with different `journal.db` ages. |
+| Unit tests | done | 2026-07-22 — append-only behavior across multiple calls, reconciliation using the *most recent* action per symbol (not just "any buy ever"), both mismatch directions, archive copy, logging idempotency. Live-smoke-tested end to end (record → expected holdings → reconciliation → archive). |
 
 ## M10 — Bot orchestration & safety controls
 

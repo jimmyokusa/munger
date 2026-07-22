@@ -2,6 +2,8 @@
 state.json
 journal.db
 screen_results*.csv
+screen_results_archive/
+munger.log
 
 # Raw per-ticker provider response cache (see DESIGN.md section 3.2) --
 # a debugging aid overwritten each run, not a permanent artifact.
