@@ -103,7 +103,14 @@ JOURNAL_DB_PATH: Path = BASE_DIR / "journal.db"
 SCREEN_RESULTS_CSV_PATH: Path = BASE_DIR / "screen_results.csv"
 SCREEN_RESULTS_ARCHIVE_DIR: Path = BASE_DIR / "screen_results_archive"
 LOG_FILE_PATH: Path = BASE_DIR / "munger.log"
-DATA_FRESHNESS_MAX_HOURS = 24
+# DESIGN.md's PM-recommendations narrative illustrates this as "> 24
+# hours," written before the quarterly cadence was settled (M1) -- a
+# literal 24-hour threshold would fire on every single healthy quarterly
+# gap. Set instead as a dead-man's-switch tolerance around the actual
+# cadence: quarterly (~91 days) plus the "2-3 weeks after quarter-end"
+# scheduling offset (DESIGN.md 4), plus buffer, so it only fires if a
+# scheduled run was actually missed, not on ordinary cadence drift.
+DATA_FRESHNESS_MAX_HOURS = 130 * 24
 
 # --- Risk controls (DESIGN.md 5) ---
 KILL_SWITCH = False

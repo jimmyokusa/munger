@@ -14,12 +14,29 @@ import io
 import logging
 import re
 import urllib.request
+from dataclasses import dataclass, field
 
 import pandas as pd
 
 import config
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class UniverseResult:
+    """Combined ticker list plus which indices (if any) used their fallback.
+
+    Kept separate from the plain list[str] get_universe() returns, since
+    most callers (tests, one-off scripts) only want the tickers -- only
+    the orchestrator (bot.py, M11) needs per-index fallback visibility to
+    alert on it (DESIGN.md 3.1/3.6: a per-index fallback keeps the
+    aggregate ticker count looking healthy, so it needs its own signal).
+    """
+
+    tickers: list[str]
+    fallback_indices: list[str] = field(default_factory=list)
+
 
 _WIKIPEDIA_URLS = {
     "500": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
@@ -139,8 +156,8 @@ def _fetch_and_validate_index(index: str) -> list[str] | None:
         return None
 
 
-def _fetch_index(index: str) -> list[str]:
-    """Return one index's ticker list, live if possible, else its fallback slice.
+def _fetch_index(index: str) -> tuple[list[str], bool]:
+    """Return one index's ticker list plus whether it used its fallback.
 
     The fallback load deliberately sits outside the live fetch's exception
     boundary above: if the fallback file itself is broken (missing,
@@ -151,12 +168,21 @@ def _fetch_index(index: str) -> list[str]:
     """
     tickers = _fetch_and_validate_index(index)
     if tickers is None:
-        return _load_static_fallback(index)
-    return tickers
+        return _load_static_fallback(index), True
+    return tickers, False
 
 
 def get_universe() -> list[str]:
     """Return the combined S&P Composite 1500 candidate ticker list.
+
+    Thin wrapper over get_universe_with_diagnostics() for callers that
+    don't need per-index fallback visibility (most call sites, tests).
+    """
+    return get_universe_with_diagnostics().tickers
+
+
+def get_universe_with_diagnostics() -> UniverseResult:
+    """Return the combined universe plus which indices used their fallback.
 
     Each of the S&P 500, S&P 400, and S&P 600 is fetched and falls back
     independently -- a bad SmallCap 600 fetch doesn't discard two
@@ -168,9 +194,13 @@ def get_universe() -> list[str]:
     """
     seen: set[str] = set()
     combined: list[str] = []
+    fallback_indices: list[str] = []
     for index in ("500", "400", "600"):
-        for ticker in _fetch_index(index):
+        tickers, used_fallback = _fetch_index(index)
+        if used_fallback:
+            fallback_indices.append(index)
+        for ticker in tickers:
             if ticker not in seen:
                 seen.add(ticker)
                 combined.append(ticker)
-    return combined
+    return UniverseResult(tickers=combined, fallback_indices=fallback_indices)

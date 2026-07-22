@@ -108,7 +108,11 @@ def test_fetched_fraction_empty_results() -> None:
 
 def test_run_screen_only_when_kill_switch_active(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "KILL_SWITCH", True)
-    monkeypatch.setattr(universe, "get_universe", lambda: ["HIGH", "LOW"])
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
     construct_calls: list[str] = []
 
@@ -118,15 +122,20 @@ def test_run_screen_only_when_kill_switch_active(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(execution, "ExecutionModule", _fake_execution_module)
 
-    bot.run(run_date="2026-07-21")
+    exit_code = bot.run(run_date="2026-07-21")
 
     assert construct_calls == []  # never touches the broker at all
+    assert exit_code == 0  # kill switch is intentional, not itself alert-worthy
 
 
 def test_run_aborts_before_kill_switch_check_when_fetch_fraction_too_low(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(universe, "get_universe", lambda: ["HIGH", "LOW"])
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
     bad_results = _screen_results(
         [
             {
@@ -152,13 +161,18 @@ def test_run_aborts_before_kill_switch_check_when_fetch_fraction_too_low(
 
     monkeypatch.setattr(execution, "ExecutionModule", _fake_execution_module)
 
-    bot.run(run_date="2026-07-21")
+    exit_code = bot.run(run_date="2026-07-21")
 
     assert construct_calls == []
+    assert exit_code == 1  # an abort is alert-worthy
 
 
 def test_run_full_happy_path_places_liquidations_and_buys(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(universe, "get_universe", lambda: ["HIGH", "LOW"])
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
     monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
     monkeypatch.setattr(
@@ -191,7 +205,7 @@ def test_run_full_happy_path_places_liquidations_and_buys(monkeypatch: pytest.Mo
     monkeypatch.setattr(journal, "record_order", _fake_record_order)
     monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
 
-    bot.run(run_date="2026-07-21")
+    exit_code = bot.run(run_date="2026-07-21")
 
     fake_exec.verify_account_access.assert_called_once()
     fake_exec.liquidate.assert_called_once_with("LIQUIDATE_ME")
@@ -202,13 +216,18 @@ def test_run_full_happy_path_places_liquidations_and_buys(monkeypatch: pytest.Mo
     assert "KEEP" in captured_buy_queue_holdings
     assert ("LIQUIDATE_ME", "sell", "SELL strikes=2") in recorded_orders
     assert any(symbol == "HIGH" and side == "buy" for symbol, side, _ in recorded_orders)
+    assert exit_code == 1  # a liquidation occurred this run -- always alert-worthy
 
 
 def test_run_aborts_before_any_orders_when_order_budget_exceeded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(config, "GLOBAL_ORDER_BUDGET", 1)
-    monkeypatch.setattr(universe, "get_universe", lambda: ["HIGH", "LOW"])
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
     monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
     monkeypatch.setattr(
@@ -226,19 +245,24 @@ def test_run_aborts_before_any_orders_when_order_budget_exceeded(
     fake_exec.get_current_holdings = MagicMock(return_value={"A": 1000.0})
     monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
 
-    bot.run(run_date="2026-07-21")
+    exit_code = bot.run(run_date="2026-07-21")
 
     # 1 liquidation + 1 buy = 2 planned orders > budget of 1 -- neither
     # should actually be submitted.
     fake_exec.liquidate.assert_not_called()
     fake_exec.market_buy.assert_not_called()
+    assert exit_code == 1
 
 
 def test_run_aborts_before_any_orders_when_notional_budget_exceeded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(config, "GLOBAL_NOTIONAL_BUDGET_PCT", 0.01)
-    monkeypatch.setattr(universe, "get_universe", lambda: ["HIGH", "LOW"])
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
     monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
     monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols: {})
@@ -255,17 +279,22 @@ def test_run_aborts_before_any_orders_when_notional_budget_exceeded(
     fake_exec.get_available_cash = MagicMock(return_value=100_000.0)
     monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
 
-    bot.run(run_date="2026-07-21")
+    exit_code = bot.run(run_date="2026-07-21")
 
     # $50k planned buy notional vs. 1% of $100k equity ($1k budget).
     fake_exec.market_buy.assert_not_called()
+    assert exit_code == 1
 
 
 def test_run_does_not_journal_a_failed_order_and_continues(monkeypatch: pytest.MonkeyPatch) -> None:
     # The central fault-tolerance property this milestone guarantees:
     # execution.py returns None for a rejected/failed order, and bot.py
     # must not journal it (and must not crash processing the rest).
-    monkeypatch.setattr(universe, "get_universe", lambda: ["HIGH", "LOW"])
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
     monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
     monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols: {})
@@ -288,10 +317,14 @@ def test_run_does_not_journal_a_failed_order_and_continues(monkeypatch: pytest.M
         lambda symbol, side, reason, **kwargs: recorded_orders.append((symbol, side)),
     )
 
-    bot.run(run_date="2026-07-21")  # must not raise
+    exit_code = bot.run(run_date="2026-07-21")  # must not raise
 
     assert fake_exec.market_buy.call_count == 2
     assert recorded_orders == [("LOW", "buy")]  # HIGH's failed order never journaled
+    # A single rejected order is normal, tolerated operational noise, not
+    # itself one of DESIGN.md's alert categories -- no liquidations, no
+    # reconciliation mismatch, no fallback, so this run is clean.
+    assert exit_code == 0
 
 
 def test_run_propagates_uncaught_when_verify_account_access_fails(
@@ -302,7 +335,11 @@ def test_run_propagates_uncaught_when_verify_account_access_fails(
     # this pins that contract so a future "helpful" try/except would
     # break this test instead of silently masking a real key/mode
     # mismatch.
-    monkeypatch.setattr(universe, "get_universe", lambda: ["HIGH", "LOW"])
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
 
     fake_exec = _FakeExecutionModule("2026-07-21")
@@ -318,7 +355,11 @@ def test_run_propagates_uncaught_when_get_current_holdings_fails(
 ) -> None:
     # Same fail-closed contract as above: a broker outage fetching
     # holdings must abort the run, not be swallowed.
-    monkeypatch.setattr(universe, "get_universe", lambda: ["HIGH", "LOW"])
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
 
     fake_exec = _FakeExecutionModule("2026-07-21")
@@ -338,7 +379,11 @@ def test_run_skips_sell_evaluation_when_holdings_data_mostly_missing(
     # cooldown) must not silently strike real holdings toward
     # liquidation. process_sells should be skipped entirely, not fed
     # mostly-None data.
-    monkeypatch.setattr(universe, "get_universe", lambda: ["HIGH", "LOW"])
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
     monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
     # 1 of 3 holdings fetched cleanly (33%) -- well below MIN_UNIVERSE_FETCH_FRACTION.
@@ -361,16 +406,116 @@ def test_run_skips_sell_evaluation_when_holdings_data_mostly_missing(
     fake_exec.get_current_holdings = MagicMock(return_value={"A": 100.0, "B": 100.0, "C": 100.0})
     monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
 
-    bot.run(run_date="2026-07-21")
+    exit_code = bot.run(run_date="2026-07-21")
 
     assert process_sells_calls == []  # never called -- data too degraded to trust
     fake_exec.liquidate.assert_not_called()
+    # No liquidation actually happened (sells were skipped, not decided),
+    # no reconciliation mismatch, clean universe -- nothing to alert on.
+    assert exit_code == 0
+
+
+def test_check_data_freshness_none_when_no_archive_exists() -> None:
+    assert bot._check_data_freshness() is None
+
+
+def test_check_data_freshness_none_when_archive_is_recent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    (archive_dir / "screen_results_2026-07-20.csv").write_text("symbol\n")
+    monkeypatch.setattr(config, "SCREEN_RESULTS_ARCHIVE_DIR", archive_dir)
+    assert bot._check_data_freshness() is None
+
+
+def test_check_data_freshness_flags_a_stale_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Staff-engineer-reviewer finding: the age must come from the
+    # run_date embedded in the filename, not filesystem mtime -- git
+    # doesn't preserve mtimes across the checkout this project's GitHub
+    # Actions workflow uses to restore this directory, which would
+    # otherwise stamp every restored file with "now" and silently
+    # neutralize this check. No os.utime call here on purpose: an old
+    # filename alone must be enough to flag staleness.
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    (archive_dir / "screen_results_2026-01-01.csv").write_text("symbol\n")
+    monkeypatch.setattr(config, "SCREEN_RESULTS_ARCHIVE_DIR", archive_dir)
+
+    stale_hours = bot._check_data_freshness()
+
+    assert stale_hours is not None
+    assert stale_hours > config.DATA_FRESHNESS_MAX_HOURS
+
+
+def test_run_alerts_on_a_stale_last_run_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A missed scheduled run -- the dead-man's-switch this run's own
+    # archive check is meant to catch (staff-engineer-reviewer / M11).
+    monkeypatch.setattr(config, "KILL_SWITCH", True)  # keep this test broker-free
+    monkeypatch.setattr(bot, "_check_data_freshness", lambda: 4000)
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    assert exit_code == 1
+
+
+def test_run_alerts_on_a_universe_index_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "KILL_SWITCH", True)
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"], fallback_indices=["500"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    assert exit_code == 1
+
+
+def test_run_alerts_on_an_empty_universe_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "KILL_SWITCH", True)
+    monkeypatch.setattr(
+        universe, "get_universe_with_diagnostics", lambda: universe.UniverseResult(tickers=[])
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _screen_results([]))
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    assert exit_code == 1
+
+
+def test_run_clean_when_nothing_notable_happens(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The converse of every alert-producing test above: a fully healthy,
+    # boring run (screen-only via kill switch, fresh archive, no
+    # fallback, non-empty universe) must exit 0.
+    monkeypatch.setattr(config, "KILL_SWITCH", True)
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+
+    assert bot.run(run_date="2026-07-21") == 0
 
 
 def test_run_logs_reconciliation_warnings_without_aborting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(universe, "get_universe", lambda: ["HIGH", "LOW"])
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
     monkeypatch.setattr(
         journal, "check_reconciliation", lambda holdings: ["AAPL: unexpected mismatch"]
@@ -383,6 +528,7 @@ def test_run_logs_reconciliation_warnings_without_aborting(
     fake_exec = _FakeExecutionModule("2026-07-21")
     monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
 
-    bot.run(run_date="2026-07-21")  # must not raise despite the mismatch
+    exit_code = bot.run(run_date="2026-07-21")  # must not raise despite the mismatch
 
     fake_exec.verify_account_access.assert_called_once()
+    assert exit_code == 1  # logged, not aborted, but still alert-worthy (DESIGN.md 3.6)
