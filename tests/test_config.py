@@ -30,8 +30,10 @@ def test_position_sizing_is_internally_consistent() -> None:
     assert config.MAX_SINGLE_POSITION_WEIGHT >= 1.0 / config.TARGET_POSITION_COUNT
 
 
-def test_universe_ticker_count_band_is_sane() -> None:
-    assert config.UNIVERSE_MIN_TICKER_COUNT < config.UNIVERSE_MAX_TICKER_COUNT
+def test_universe_ticker_count_bands_are_sane() -> None:
+    assert set(config.UNIVERSE_TICKER_COUNT_BANDS) == {"500", "400", "600"}
+    for min_count, max_count in config.UNIVERSE_TICKER_COUNT_BANDS.values():
+        assert min_count < max_count
 
 
 def test_global_notional_budget_pct_is_valid_fraction() -> None:
