@@ -29,13 +29,15 @@ inspectable on its own before moving to the next.
       `KILL_SWITCH` flag file. (Alpaca account provisioning is tracked in
       `TASKS.md` but doesn't gate this milestone or M1+ — see there.)
 - [ ] **M1 — Universe module.** `get_universe()`: S&P Composite 1500
-      constituents (S&P 500 + S&P 400 + S&P 600) via three independent
-      Wikipedia scrapes with a static fallback file shipped in-repo; ticker
-      normalization (`BRK.B` → `BRK-B`); optional sector exclusion list;
-      validate each index's scraped result independently against its own
-      row-count band and fall back to the static file on either a scrape
+      constituents (S&P 500 + S&P 400 + S&P 600), sourced hybrid — S&P 500
+      via Financial Modeling Prep's REST API (no vendor offers a clean
+      constituents endpoint for the 400/600, so those stay on a hardened
+      Wikipedia scrape) — with a static fallback file shipped in-repo;
+      ticker normalization (`BRK.B` → `BRK-B`); optional sector exclusion
+      list; validate each index's result independently against its own
+      row-count band and fall back to the static file on either a fetch
       exception or a validation failure — a silently-corrupted-but-
-      well-formed scrape is as dangerous as an outright failure.
+      well-formed result is as dangerous as an outright failure.
 - [ ] **M2 — Data fetcher.** `fetch_metrics(symbol)` via yfinance; thread
       pool (~10–15 workers) with retry-and-backoff on transient/rate-limit
       errors; per-ticker failures tolerated without aborting the run; raw

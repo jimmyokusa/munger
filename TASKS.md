@@ -25,8 +25,18 @@ effort — needs the user, e.g. an external account signup).
 Broadened mid-milestone from S&P 500-only to the full S&P Composite 1500
 (S&P 500 + S&P 400 MidCap + S&P 600 SmallCap) per user decision 2026-07-21
 — see DESIGN.md §3.1. ETF-holdings-file sourcing was evaluated and
-rejected (SLY 404s, SPY's Sector column is blank); Wikipedia's three
-index pages share the same table structure and are used for all three.
+rejected (SLY 404s, SPY's Sector column is blank).
+
+**Sourcing is hybrid, revised again 2026-07-21:** the user clarified they
+act on this system's output with real money, not paper trades, which
+raises the bar on universe-module correctness. No API vendor (checked
+Finnhub, FMP) offers a constituents endpoint for the S&P 400/600 at any
+price point, so those two stay on the hardened Wikipedia scrape. The S&P
+500 — the largest, most consequential slice — moves to **Financial
+Modeling Prep's `sp500_constituent` REST API** instead, removing scraping
+risk from that slice entirely. Both source types share one
+validate-and-fallback contract (DESIGN.md §3.1) so the failure-handling
+story doesn't fork by source technology.
 
 **Fallback is per-index, not all-or-nothing** (DESIGN.md §3.1, added after
 staff-engineer-reviewer + pm-reviewer both flagged this as unspecified):
@@ -36,20 +46,25 @@ and each per-index fallback gets its own alert (DESIGN.md §3.6) rather
 than relying on the aggregate ticker count, which would still look
 healthy. Combined results are de-duplicated by ticker (500 → 400 → 600
 precedence on conflict) to handle the rare index-reclassification window
-where a ticker briefly appears on two pages at once.
+where a ticker briefly appears in two source lists at once.
 
 | Task | Status | Date / Notes |
 |---|---|---|
-| `get_universe()` — Wikipedia scrape, S&P 500 (single-index version) | done | 2026-07-21 — required a custom User-Agent header (default urllib UA gets HTTP 403 from Wikipedia's bot policy); found live, not theoretically. Superseded by the multi-index task below. |
-| Generalize `get_universe()` to fetch + validate + combine all three indices (S&P 500 + 400 + 600), each with independent per-index fallback | todo | each index validated against its own row-count band (500: ~490–510; 400: ~390–410; 600: ~590–615); combine step de-duplicates by ticker (500→400→600 precedence). Done means a live run returns ~1500 tickers, verified by count and by spot-checking a few known MidCap/SmallCap names — not unit tests alone. |
-| `config.py`: per-index validation bands + fallback file path/schema | todo | replace the single `UNIVERSE_MIN/MAX_TICKER_COUNT` pair with one pair per index (or a per-index dict); decide whether `STATIC_UNIVERSE_FALLBACK_PATH` is renamed or kept and just expanded — flagged by pm-reviewer as untracked |
-| Static fallback ticker file: expand to full composite with source-index column | in-progress | 2026-07-21 — `data/sp500_fallback.csv` (503 tickers + sector) covers S&P 500 only so far; needs a `source_index` column (500/400/600) so per-index fallback can slice it, and needs the 400/600 rows added. Generation process: one-time manual scrape-and-save from the same Wikipedia pages, dated in a comment/commit message; revisit if validation bands start failing in production. |
+| `get_universe()` — Wikipedia scrape, S&P 500 (single-index version) | done | 2026-07-21 — required a custom User-Agent header (default urllib UA gets HTTP 403 from Wikipedia's bot policy); found live, not theoretically. Superseded: S&P 500 moves to the FMP API task below, this code becomes the S&P 400/600 path instead. |
+| FMP account + `FMP_API_KEY` provisioning | blocked | needs the user to sign up — not something I can do. Definition of done (mirrors the M0 Alpaca task): account created; **confirm at signup that the chosen plan actually includes the `sp500_constituent` endpoint and note the current rate limit** — don't assume free-tier coverage, since the whole reason S&P 500 moved off Wikipedia was "no vendor offers 400/600 at any price," and 500 access itself needs the same confirmation, not an assumption; `FMP_API_KEY` set as an env var (same gitignored `.env` pattern as Alpaca). Does **not** gate the rest of M1 — the S&P 400/600 Wikipedia path, the combine/dedupe logic, and `_fetch_fmp_sp500()`'s code + fixture-based unit tests can all be built without a live key; only the live FMP integration/validation tasks below need it. |
+| `_fetch_fmp_sp500()` — S&P 500 via FMP `sp500_constituent` API | todo | same validate-before-accept discipline as the Wikipedia path (row count ~490–510, ticker pattern); auth via `FMP_API_KEY` env var, never hard-coded. Must explicitly inspect HTTP status (401/403/429 treated as failures) rather than assume a bad/expired key always raises — FMP can return HTTP 200 with a JSON error body, and 429 (quota exhausted) is a new failure class this metered source introduces that Wikipedia's unmetered scrape has no equivalent of (staff-engineer-reviewer finding). Buildable and unit-testable against mocked responses without a live key. |
+| Sector-name normalization to a canonical GICS set, applied before `EXCLUDED_SECTORS` | todo | staff-engineer-reviewer finding: FMP and Wikipedia aren't guaranteed to spell the same sector identically (e.g. "Financials" vs. "Financial Services"); applying exclusions against unreconciled per-vendor strings could let an excluded-sector name slip through purely because of which vendor covered it that quarter — a real-money correctness bug, not cosmetic. Confirm FMP's actual sector strings against Wikipedia's once a live key exists; add an explicit mapping if they diverge. |
+| Generalize `get_universe()`: build + fixture-based unit tests, combine/dedupe all three sources | todo | each index validated against its own row-count band (500: ~490–510; 400: ~390–410; 600: ~590–615); combine step de-duplicates by ticker (500→400→600 precedence). Unblocked — doesn't need a live FMP key, only mocked/fixture responses. |
+| Live full-composite validation run (all three sources, real network) | blocked | needs the FMP key above. Done means a live run returns ~1500 tickers total, verified by count **and** by spot-checking known names from *all three* indices (e.g. AAPL/MSFT present via FMP, count near 503; plus known MidCap/SmallCap names) — pm-reviewer finding: the original criterion only named MidCap/SmallCap names, leaving the newest, least-validated source (FMP) with a weaker bar than the already-hardened Wikipedia path. |
+| One-time cross-check: FMP's S&P 500 output vs. the existing Wikipedia S&P 500 scrape, same day | todo | pm-reviewer finding — cheap corroboration for a brand-new dependency feeding real-money decisions, and relevant to the 500→400→600 dedup precedence rule: FMP-sourced data wins ticker/sector conflicts on the assumption it's authoritative for the 500, but it's also the *least* field-validated of the three sources until this check is run at least once. |
+| `config.py`: `FMP_API_KEY`, per-index validation bands, fallback file path/schema | todo | add `FMP_API_KEY` alongside the Alpaca secrets; replace the single `UNIVERSE_MIN/MAX_TICKER_COUNT` pair with one pair per index (or a per-index dict); `STATIC_UNIVERSE_FALLBACK_PATH` renamed per the row below |
+| Static fallback ticker file: rename to `data/universe_fallback.csv`, expand to full composite with source-index column | in-progress | 2026-07-21 — resolved the naming question pm-reviewer flagged as left dangling: `sp500_fallback.csv` is misleading on two counts once this lands — it covers all three indices, not just the 500, and for the 500 specifically it's now the *fallback-only* path (FMP is primary), while for 400/600 it backs the *primary* live path. `universe_fallback.csv` describes its role regardless of which index/source. Needs a `source_index` column (500/400/600) so per-index fallback can slice it, and the 400/600 rows added. Generation process: one-time manual scrape-and-save from Wikipedia (all three indices, for consistency, even though 500 is now normally FMP-sourced), dated in a comment/commit message; revisit if validation bands start failing in production. Sequencing note (pm-reviewer): don't treat this file's 400/600 rows or `source_index` scheme as final until the per-index validation bands (`config.py` row above) and the FMP-vs-Wikipedia cross-check (row above) have both landed — either could motivate rework. |
 | Ticker normalization (`BRK.B` → `BRK-B`) | done | 2026-07-21 |
-| Optional sector-exclusion list | done | 2026-07-21 — verified live (excluding Financials correctly drops JPM, keeps AAPL); re-verify after multi-index generalization |
-| Scrape validation (row-count/format sanity check) + fallback on validation failure | in-progress | 2026-07-21 — validates the *raw* scrape before sector exclusion, not after; validating post-exclusion was a real bug found live (any configured exclusion would make the count fall outside the band and force fallback every run). Downgraded from done to in-progress per pm-reviewer: per-index bands and per-index fallback slicing are not yet implemented, only the single-index version is. |
-| Widen exception handling to cover the whole pipeline (fetch → validate → exclude → normalize), not just the fetch call | done | 2026-07-21 — found by staff-engineer-reviewer: a missing/renamed GICS Sector column would raise uncaught inside `_apply_sector_exclusions`, crashing instead of falling back |
+| Optional sector-exclusion list | done | 2026-07-21 — verified live (excluding Financials correctly drops JPM, keeps AAPL); re-verify after multi-index/multi-source generalization, and depends on the sector-name normalization task above landing first |
+| Scrape/fetch validation (row-count/format sanity check) + fallback on validation failure | in-progress | 2026-07-21 — validates the *raw* result before sector exclusion, not after; validating post-exclusion was a real bug found live (any configured exclusion would make the count fall outside the band and force fallback every run). Downgraded from done to in-progress per pm-reviewer: per-index bands and per-index fallback slicing are not yet implemented, only the single-index Wikipedia version is. |
+| Widen exception handling to cover the whole pipeline (fetch → validate → exclude → normalize), not just the fetch call | done | 2026-07-21 — found by staff-engineer-reviewer: a missing/renamed GICS Sector column would raise uncaught inside `_apply_sector_exclusions`, crashing instead of falling back. Apply the same pattern to the new FMP path. |
 | Unit tests: `_apply_sector_exclusions` (pure function) | todo | in-memory DataFrame fixture |
-| Unit tests: `get_universe()` branches via monkeypatching the fetch call | todo | cover: raises → fallback; fails validation → fallback; valid + exclusion applied; missing/renamed sector column → still falls back (regression test for the bug above); one index fails/falls back while the other two succeed live, combined result is correct (the new branch the multi-index generalization introduces) |
+| Unit tests: `get_universe()` branches via monkeypatching each fetch call | todo | cover per source: raises → fallback; fails validation → fallback; valid + exclusion applied; missing/renamed sector column (Wikipedia) or malformed/error-body/429 response (FMP) → still falls back (regression test for the bug above); one index fails/falls back while the other two succeed live, combined result is correct (the new branch the multi-index generalization introduces) |
 | Unit tests: cross-index de-duplication | todo | a ticker appearing in two source lists collapses to one entry, with 500→400→600 precedence on conflicting sector data |
 
 ## M2 — Data fetcher
@@ -138,6 +153,7 @@ where a ticker briefly appears on two pages at once.
 |---|---|---|
 | `bot.py` — ties all modules together | todo | |
 | Startup assertion: API key account mode matches configured paper/live flag | todo | added in design review round 2 |
+| Startup check: `FMP_API_KEY` present and valid (cheap smoke request), abort if not | todo | added 2026-07-21 alongside the S&P 1500 hybrid-sourcing decision — a known-bad FMP key should abort before the run starts, same posture as the Alpaca paper/live assertion above, rather than surface for the first time as a silent mid-run universe-module fallback (DESIGN.md §4) |
 | `KILL_SWITCH` (config flag + filesystem flag file) | todo | |
 | `GLOBAL_ORDER_BUDGET` abort (max order count) | todo | |
 | `GLOBAL_NOTIONAL_BUDGET` abort (max % equity moved per run) | todo | added in design review round 2 |
@@ -152,6 +168,7 @@ where a ticker briefly appears on two pages at once.
 | Same-day idempotency via `client_order_id` + today's orders/positions | todo | |
 | Alert on run failure | todo | verify by forcing a failure, not just code review |
 | Alert on empty universe fetch | todo | verify by forcing an empty fetch, not just code review |
+| Alert on per-index universe fallback (S&P 500/400/600), severity tiered by consequence | todo | added 2026-07-21 with the S&P 1500 hybrid-sourcing decision — a fallback on the FMP-sourced S&P 500 is high-priority (largest, most consequential slice); a fallback on the Wikipedia-sourced 400/600 is normal priority (DESIGN.md §3.1/§3.6); verify by forcing a fallback on each source and confirming the alert priority differs, not just code review |
 | Alert on any liquidation event | todo | added in design review round 2; verify by forcing a two-strike liquidation in paper, not just code review |
 | Alert on state/broker reconciliation mismatch | todo | added in design review round 2; verify by forcing a mismatch, not just code review |
 | Data-freshness check | todo | alert if data is >24 hours stale (threshold from DESIGN.md's round-1 staff-engineer review) |
