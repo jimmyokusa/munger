@@ -3,6 +3,10 @@ state.json
 journal.db
 screen_results*.csv
 
+# Raw per-ticker provider response cache (see DESIGN.md section 3.2) --
+# a debugging aid overwritten each run, not a permanent artifact.
+data_cache/
+
 # Manual intervention flag (see DESIGN.md section 5)
 KILL_SWITCH
 

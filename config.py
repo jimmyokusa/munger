@@ -33,9 +33,23 @@ STATIC_UNIVERSE_FALLBACK_PATH = "data/universe_fallback.csv"
 # --- Data module (DESIGN.md 3.2) ---
 DATA_FETCH_THREAD_POOL_WORKERS = 12
 DATA_FETCH_MAX_RETRIES = 3
+# Base delay for exponential backoff (delay = this * 2**attempt, plus
+# jitter) between retries on a single ticker, not a flat per-retry sleep.
 DATA_FETCH_RETRY_BACKOFF_SECONDS = 2.0
+# Upper bound on how long fetch_all_metrics waits for the whole batch --
+# see its docstring for why this can't fully protect against a hung
+# worker thread, only bound the caller's logical wait.
+DATA_FETCH_BATCH_TIMEOUT_SECONDS = 600.0
+# Raw per-ticker provider responses, overwritten each run -- a debugging
+# aid, not a permanent audit trail (that's journal.db, DESIGN.md 3.6).
+DATA_RAW_CACHE_DIR: Path = BASE_DIR / "data_cache"
 
-# Sanity bounds for validate_metrics (DESIGN.md 3.2, Deliverable 1.3)
+# Sanity bounds for validate_metrics (DESIGN.md 3.2, Deliverable 1.3).
+# Same ratio/decimal-fraction units as the corresponding Metrics field and
+# gate threshold (e.g. MAX_DEBT_TO_EQUITY above) -- data.py normalizes
+# yfinance's raw percentage-scaled fields (debtToEquity, dividendYield)
+# before they ever reach here, so these bounds are never raw-percentage
+# scale even though the provider's own field happens to be.
 MAX_PLAUSIBLE_PE = 10_000
 MAX_PLAUSIBLE_DEBT_TO_EQUITY = 100
 
