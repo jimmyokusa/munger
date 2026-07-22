@@ -142,23 +142,27 @@ single review round (see [[munger-mvp-pacing]]).
 
 ## M6 — Strike state machine
 
+Implemented in `portfolio.py` alongside M7, single review round (MVP pace).
+
 | Task | Status | Date / Notes |
 |---|---|---|
-| `StateTracker` — strike counters only, atomic writes to `state.json` | todo | never holds current holdings |
-| `process_sells(current_holdings, new_market_data)` | todo | `current_holdings` fetched live from broker, not from state |
-| Two-strike rule (missing-ticker-as-strike, reset-on-clean) | todo | |
-| Reconciliation warning on live-vs-expected holdings divergence | todo | added in design review round 2 |
-| Unit tests for the strike/reset state machine against hand-computed fixtures (DESIGN.md §6, layer 1) | todo | cover: one strike then clean (resets), two consecutive strikes (liquidates), missing ticker (counts as strike) |
+| `StateTracker` — strike counters only, atomic writes to `state.json` | done | 2026-07-21 — never holds current holdings; corrupt/unreadable file falls back to empty state (fail-safe, not fail-dangerous: worst case is a missed liquidation, not a wrongful one) |
+| `process_sells(current_holdings, new_market_data, state)` | done | 2026-07-21 — `current_holdings: dict[str, float]` (ticker -> market value), fetched live from broker by the caller, not read from state; `new_market_data: dict[str, Metrics \| None]` |
+| Two-strike rule (missing-ticker-as-strike, reset-on-clean) | done | 2026-07-21 |
+| **Real bug found (staff-engineer-reviewer):** strike counters never cleared on liquidation | done | 2026-07-21 — a ticker's strike count survived leaving `current_holdings`; if ever re-bought, it would inherit the stale count and could liquidate after just one bad check instead of two. Fixed: `process_sells` now resets strikes to zero at the moment it adds a ticker to `to_liquidate`, so a future re-buy starts a fresh streak. Regression test added. |
+| Reconciliation warning on live-vs-expected holdings divergence | todo | needs the trade journal (M9) to know what a prior run "expected" — not implemented yet, tracked here explicitly rather than silently skipped |
+| Unit tests for the strike/reset state machine against hand-computed fixtures (DESIGN.md §6, layer 1) | done | 2026-07-21 — covers: one strike then clean (resets), two consecutive strikes (liquidates), missing ticker (counts as strike), `None` metrics (counts as strike), corrupt state file, save/reload roundtrip |
 
 ## M7 — Buy queue / target construction
 
 | Task | Status | Date / Notes |
 |---|---|---|
-| `generate_buy_queue(current_holdings, screen_results, available_cash)` | todo | |
-| ~1/15 target weights, 12% single-name cap, 2% cash buffer | todo | |
-| Top up existing positions before opening new ones | todo | |
-| $50 dust filter | todo | |
-| Never sell-to-buy (no churn) | todo | |
+| `generate_buy_queue(current_holdings, screen_results, available_cash)` | done | 2026-07-21 |
+| ~1/15 target weights, 12% single-name cap, 2% cash buffer | done | 2026-07-21 — per-position cap is `min(portfolio_value/TARGET_POSITION_COUNT, portfolio_value*MAX_SINGLE_POSITION_WEIGHT)`; under default config the 1/15 target (~6.7%) never actually hits the 12% cap, so a dedicated test forces a small `TARGET_POSITION_COUNT` to exercise the cap explicitly |
+| Top up existing positions before opening new ones | done | 2026-07-21 |
+| $50 dust filter | done | 2026-07-21 — applied to both top-up and new-position orders |
+| Never sell-to-buy (no churn) | done | 2026-07-21 — trivially true by construction: this function has no sell code path at all, sells are entirely `process_sells`'s responsibility with no shared state between the two beyond `StateTracker` |
+| **Live-verified** against the real M5 screen output | done | 2026-07-21 — starting from an empty portfolio with $100k cash and the real 7-buyable screen result, correctly generated 7 orders at ~$6,667 each (1/15 of equity), no cap/dust issues at this scale |
 
 ## M8 — Execution module
 
@@ -187,6 +191,7 @@ single review round (see [[munger-mvp-pacing]]).
 | Task | Status | Date / Notes |
 |---|---|---|
 | `bot.py` — ties all modules together | todo | |
+| Exclude `process_sells`'s `to_liquidate` tickers from `generate_buy_queue`'s `current_holdings` input | todo | added 2026-07-21 (staff-engineer-reviewer, M6/M7 review) — `generate_buy_queue` has no visibility into what `process_sells` decided to liquidate this run; without this, a position slated for sale could get topped up in the same run it's about to be closed. Documented as a caller contract in both functions' docstrings; this is where it actually needs enforcing. |
 | Startup assertion: API key account mode matches configured paper/live flag | todo | added in design review round 2 |
 | `KILL_SWITCH` (config flag + filesystem flag file) | todo | |
 | `GLOBAL_ORDER_BUDGET` abort (max order count) | todo | |
