@@ -1,0 +1,125 @@
+name: Quarterly screen and trade run
+
+# DESIGN.md section 4: quarterly cadence, ~2-3 weeks after quarter-end so
+# fresh 10-Q data has propagated into the data provider. 13:00 UTC on the
+# 15th of Jan/Apr/Jul/Oct.
+on:
+  schedule:
+    - cron: "0 13 15 1,4,7,10 *"
+  workflow_dispatch:
+    inputs:
+      screen_only:
+        description: "Force KILL_SWITCH (screen-only, no broker calls) for this manual run"
+        type: boolean
+        default: true
+
+# Staff-engineer-reviewer finding (M10 review): nothing prevented two
+# overlapping bot.py invocations (an overrun run plus its next scheduled
+# trigger, or a manual re-run) from racing on state.json/journal.db. A
+# workflow-level concurrency group is the natural place for this -- it's
+# a scheduling-layer concern, not something bot.py itself should own.
+# `cancel-in-progress: false` queues a second trigger rather than killing
+# an in-flight run partway through order submission.
+concurrency:
+  group: quarterly-run
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # Outer process-level timeout (staff-engineer-reviewer, M2/M11):
+    # fetch_all_metrics() bounds its own logical wait but can't force-kill
+    # an already-hung worker thread; this is the outer safety net. If it
+    # fires mid-run, order idempotency is unaffected (broker-anchored via
+    # client_order_id, not this workflow), but the "Persist bot state"
+    # step could be cut off, regressing state.json/journal.db to the
+    # prior snapshot -- a bounded, known risk (spurious reconciliation
+    # warnings next run, not corruption), not solved further here.
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # GitHub Actions runners are ephemeral -- nothing written during a
+      # run survives to the next scheduled invocation unless persisted
+      # somewhere durable. state.json (strike counters) and journal.db
+      # (the append-only trade journal reconciliation depends on) are
+      # both load-bearing for correctness, not just logs -- losing them
+      # every run would silently reset the two-strike sell discipline and
+      # make every real holding look like an unexpected reconciliation
+      # mismatch. Persisted here via a dedicated `bot-state` branch (git
+      # itself as the durable store) rather than actions/cache, which
+      # evicts after 7 days of inactivity -- shorter than one quarter.
+      - name: Prepare persisted bot-state branch
+        run: |
+          set -e
+          if git ls-remote --exit-code --heads origin bot-state >/dev/null 2>&1; then
+            git fetch origin bot-state
+            git worktree add ../bot-state-wt -b bot-state origin/bot-state
+          else
+            echo "No bot-state branch yet -- first run, starting fresh."
+            git worktree add --detach ../bot-state-wt
+            git -C ../bot-state-wt checkout --orphan bot-state
+            git -C ../bot-state-wt rm -rf . >/dev/null 2>&1 || true
+          fi
+          for f in state.json journal.db munger.log; do
+            if [ -f "../bot-state-wt/$f" ]; then
+              cp "../bot-state-wt/$f" .
+              echo "Restored $f from bot-state branch."
+            fi
+          done
+          if [ -d ../bot-state-wt/screen_results_archive ]; then
+            mkdir -p screen_results_archive
+            cp -a ../bot-state-wt/screen_results_archive/. screen_results_archive/
+            echo "Restored screen_results_archive/ from bot-state branch."
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Force screen-only mode for this manual run
+        if: github.event_name == 'workflow_dispatch' && inputs.screen_only
+        run: touch KILL_SWITCH
+
+      - name: Run bot
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python bot.py
+
+      - name: Persist bot state
+        if: always()
+        run: |
+          set -e
+          git config user.name "munger-bot"
+          git config user.email "munger-bot@users.noreply.github.com"
+          for f in state.json journal.db munger.log; do
+            [ -f "$f" ] && cp "$f" ../bot-state-wt/
+          done
+          if [ -d screen_results_archive ]; then
+            mkdir -p ../bot-state-wt/screen_results_archive
+            cp -a screen_results_archive/. ../bot-state-wt/screen_results_archive/
+          fi
+          cd ../bot-state-wt
+          git add -A
+          git commit -q -m "State snapshot from run ${{ github.run_id }}" --allow-empty
+          git push origin HEAD:bot-state
+
+      - name: Upload run artifacts for manual inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-artifacts-${{ github.run_id }}
+          path: |
+            munger.log
+            journal.db
+            state.json
+            screen_results.csv
+          if-no-files-found: ignore
+          retention-days: 400

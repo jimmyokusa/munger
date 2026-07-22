@@ -1,0 +1,84 @@
+name: Scheduler heartbeat
+
+# Two independent purposes, both surfaced by review (staff-engineer-
+# reviewer/pm-reviewer, M11):
+#
+# 1. GitHub auto-disables a scheduled workflow after 60 days with no
+#    repository activity. This project's quarterly-run cadence is ~91
+#    days -- longer than that window -- so without something else
+#    touching the repo periodically, quarterly-run.yml's schedule could
+#    silently deactivate between cycles. GitHub's own docs only state
+#    the 60-day threshold and don't specify what counts as "activity"
+#    (a scheduled workflow merely executing, vs. an actual push) --
+#    confirmed ambiguous/unspecified via GitHub's docs and community
+#    discussions, the same kind of "sources don't agree" situation as
+#    M8's notional-on-limit-order question. Rather than gamble on an
+#    unverified reading, the "Keep repo active" step below pushes an
+#    actual commit every month -- unambiguously "activity" under any
+#    reading of the policy.
+# 2. A true dead-man's-switch: bot.py's own _check_data_freshness() can
+#    only notice a missed run once bot.py actually runs again -- if the
+#    scheduler stops firing entirely (disabled, GitHub outage, quota
+#    exhaustion), nothing inside bot.py can ever observe that. This
+#    workflow checks quarterly-run.yml's own run history independently
+#    via the GitHub API, so a total scheduling failure gets its own
+#    alert (a failed run here, same GH-failure-email channel as
+#    everywhere else) instead of silence.
+on:
+  schedule:
+    - cron: "0 12 1 * *"
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Keep repo active (unambiguous, regardless of GitHub's undocumented activity definition)
+        # Pushes to a dedicated `heartbeat` branch, not `main` -- a real
+        # git push counts as activity under any reading of GitHub's
+        # policy, without mixing automated noise into main's history or
+        # risking a branch-protection rule that (unlike an unprotected
+        # side branch) is more likely to be applied to main specifically.
+        run: |
+          set -e
+          git config user.name "munger-bot"
+          git config user.email "munger-bot@users.noreply.github.com"
+          mkdir -p /tmp/heartbeat-wt-parent
+          git worktree add --detach /tmp/heartbeat-wt-parent/heartbeat-wt
+          git -C /tmp/heartbeat-wt-parent/heartbeat-wt checkout --orphan heartbeat
+          git -C /tmp/heartbeat-wt-parent/heartbeat-wt rm -rf . >/dev/null 2>&1 || true
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > /tmp/heartbeat-wt-parent/heartbeat-wt/last-run
+          git -C /tmp/heartbeat-wt-parent/heartbeat-wt add -A
+          git -C /tmp/heartbeat-wt-parent/heartbeat-wt commit -q -m "Heartbeat: keep repo active for scheduled-workflow retention"
+          git -C /tmp/heartbeat-wt-parent/heartbeat-wt push --force origin HEAD:heartbeat
+
+      - name: Check quarterly-run's last execution age
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          last_run_json=$(gh run list --repo "${{ github.repository }}" \
+            --workflow=quarterly-run.yml --limit 1 --json createdAt,conclusion,status)
+          echo "$last_run_json"
+          count=$(echo "$last_run_json" | python3 -c "import json, sys; print(len(json.load(sys.stdin)))")
+          if [ "$count" -eq 0 ]; then
+            echo "quarterly-run.yml has never executed yet -- nothing to check (expected before its first scheduled fire)."
+            exit 0
+          fi
+          created_at=$(echo "$last_run_json" | python3 -c "import json, sys; print(json.load(sys.stdin)[0]['createdAt'])")
+          age_days=$(python3 -c "
+          import datetime
+          created = datetime.datetime.fromisoformat('$created_at'.replace('Z', '+00:00'))
+          now = datetime.datetime.now(datetime.timezone.utc)
+          print((now - created).days)
+          ")
+          echo "Last quarterly-run execution was $age_days days ago."
+          if [ "$age_days" -gt 130 ]; then
+            echo "::error::quarterly-run.yml has not executed in $age_days days (expected ~91-day cadence + buffer) -- the schedule may be disabled, failing to trigger, or the repo may have hit GitHub's 60-day scheduled-workflow auto-disable."
+            exit 1
+          fi

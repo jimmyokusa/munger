@@ -162,6 +162,18 @@ def run_screen(tickers: list[str]) -> pd.DataFrame:
     runs. Key columns (symbol, buyable, score, fail_reasons) come first so
     the file is easy to scan sorted by score.
     """
+    if not tickers:
+        # pd.DataFrame([]) has zero columns, not just zero rows -- the
+        # same empty-DataFrame quirk fixed in M6/M7's test_portfolio.py --
+        # so sort_values("score", ...) below would raise KeyError on an
+        # empty universe fetch (found live while testing M11's new
+        # empty-universe alert path, which calls run_screen([]) exactly
+        # this way).
+        results = pd.DataFrame(columns=_KEY_COLUMNS)
+        results.to_csv(config.SCREEN_RESULTS_CSV_PATH, index=False)
+        logger.info("Screen complete: 0 tickers, 0 buyable.")
+        return results
+
     fetched = data.fetch_all_metrics(tickers)
     rows: list[dict[str, object]] = []
 

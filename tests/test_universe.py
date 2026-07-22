@@ -190,6 +190,42 @@ def test_get_universe_falls_back_when_an_index_raises(monkeypatch: pytest.Monkey
     assert len(result) == len(fallback_500) + 400 + 600
 
 
+def test_get_universe_with_diagnostics_reports_fallback_indices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live_400 = _fake_tickers(400, _OFFSET_400)
+    live_600 = _fake_tickers(600, _OFFSET_600)
+
+    def _fetch(index: str) -> pd.DataFrame:
+        if index == "500":
+            raise ConnectionError("network down")
+        return _fake_table(live_400 if index == "400" else live_600)
+
+    monkeypatch.setattr(universe, "_fetch_wikipedia_index", _fetch)
+
+    result = universe.get_universe_with_diagnostics()
+
+    assert result.fallback_indices == ["500"]
+    fallback_500 = universe._load_static_fallback("500")
+    assert len(result.tickers) == len(fallback_500) + 400 + 600
+
+
+def test_get_universe_with_diagnostics_reports_no_fallback_on_clean_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        universe,
+        "_fetch_wikipedia_index",
+        _wikipedia_fixture(
+            _fake_tickers(500, _OFFSET_500),
+            _fake_tickers(400, _OFFSET_400),
+            _fake_tickers(600, _OFFSET_600),
+        ),
+    )
+    result = universe.get_universe_with_diagnostics()
+    assert result.fallback_indices == []
+
+
 def test_get_universe_falls_back_when_an_index_fails_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -327,6 +327,23 @@ def test_run_screen_writes_csv_and_sorts_by_score(
     assert list(results.columns[:4]) == ["symbol", "buyable", "score", "fail_reasons"]
 
 
+def test_run_screen_handles_an_empty_ticker_list(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # pd.DataFrame([]) has zero columns, not just zero rows -- found live
+    # while testing M11's empty-universe alert path, which calls
+    # run_screen([]) exactly this way; sort_values("score", ...) would
+    # otherwise raise KeyError on a genuinely empty universe fetch.
+    csv_path = tmp_path / "screen_results.csv"
+    monkeypatch.setattr(config, "SCREEN_RESULTS_CSV_PATH", csv_path)
+
+    results = screener.run_screen([])
+
+    assert csv_path.exists()
+    assert len(results) == 0
+    assert list(results.columns) == ["symbol", "buyable", "score", "fail_reasons"]
+
+
 def test_run_screen_handles_total_fetch_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
