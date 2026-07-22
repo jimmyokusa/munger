@@ -30,7 +30,7 @@ from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestTradeRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, OrderStatus, TimeInForce
-from alpaca.trading.models import Order, Position
+from alpaca.trading.models import Order, Position, TradeAccount
 from alpaca.trading.requests import LimitOrderRequest
 
 import config
@@ -99,6 +99,32 @@ class ExecutionModule:
         if side == "buy":
             return last_price * (1 + config.LIMIT_PRICE_BAND_PCT)
         return last_price * (1 - config.LIMIT_PRICE_BAND_PCT)
+
+    def verify_account_access(self) -> None:
+        """Abort-worthy startup check: keys must match the configured mode.
+
+        Alpaca segregates paper and live keys by endpoint, so a
+        successful get_account() call under this client's configured
+        `paper` flag inherently proves the keys match that mode -- a
+        mismatch (e.g. live keys present while config says paper, from a
+        stale .env) raises instead of silently proceeding. Deliberately
+        has no try/except: the caller (bot.py) must let this abort the
+        run, the same fail-closed posture as the other broker pre-checks.
+        """
+        self._trading.get_account()
+
+    def get_available_cash(self) -> float:
+        """Current account cash balance, for generate_buy_queue's input.
+
+        Fails closed like get_current_holdings -- no try/except; a
+        broker outage here (including a None `cash` field, which the
+        SDK types as optional) must abort the run, not silently proceed
+        with a wrong figure (DESIGN.md 3.4).
+        """
+        account = self._trading.get_account()
+        if not isinstance(account, TradeAccount) or account.cash is None:
+            raise ValueError(f"unexpected get_account() response: {account!r}")
+        return float(account.cash)
 
     def has_already_submitted(self, client_order_id: str) -> bool:
         """Secondary idempotency guard, checked before market_buy/liquidate.
@@ -178,8 +204,22 @@ class ExecutionModule:
 
         Returns the submitted Order, or None if the attempt failed --
         every order attempt is wrapped in error handling so one rejected
-        order never aborts the run (DESIGN.md 3.5).
+        order never aborts the run (DESIGN.md 3.5). The idempotency guard
+        (has_already_submitted) is checked outside that error handling,
+        not inside it -- it must fail closed and abort the run if the
+        check itself is broken, same as get_current_holdings, rather
+        than being silently swallowed as "this one order failed" like a
+        genuine rejection would be.
         """
+        client_order_id = self._client_order_id(symbol, "buy")
+        if self.has_already_submitted(client_order_id):
+            logger.warning(
+                "%s: buy already submitted for this run-date -- recovering the existing "
+                "order instead of resubmitting (likely a crash-and-restart)",
+                symbol,
+            )
+            existing = self._trading.get_order_by_client_id(client_order_id)
+            return existing if isinstance(existing, Order) else None
         try:
             limit_price = self._limit_price(symbol, "buy")
             request = LimitOrderRequest(
@@ -188,7 +228,7 @@ class ExecutionModule:
                 side=OrderSide.BUY,
                 time_in_force=TimeInForce.DAY,
                 limit_price=round(limit_price, 2),
-                client_order_id=self._client_order_id(symbol, "buy"),
+                client_order_id=client_order_id,
             )
             return _submit_and_check(self._trading, request, symbol)
         except Exception:
@@ -199,8 +239,18 @@ class ExecutionModule:
         """Close the full position in `symbol` with a limit-price band.
 
         Returns the submitted Order, or None if the attempt failed (same
-        per-order fault tolerance as market_buy).
+        per-order fault tolerance and idempotency-guard placement as
+        market_buy).
         """
+        client_order_id = self._client_order_id(symbol, "sell")
+        if self.has_already_submitted(client_order_id):
+            logger.warning(
+                "%s: liquidation already submitted for this run-date -- recovering the "
+                "existing order instead of resubmitting (likely a crash-and-restart)",
+                symbol,
+            )
+            existing = self._trading.get_order_by_client_id(client_order_id)
+            return existing if isinstance(existing, Order) else None
         try:
             position = self._trading.get_open_position(symbol)
             if not isinstance(position, Position):
@@ -212,7 +262,7 @@ class ExecutionModule:
                 side=OrderSide.SELL,
                 time_in_force=TimeInForce.DAY,
                 limit_price=round(limit_price, 2),
-                client_order_id=self._client_order_id(symbol, "sell"),
+                client_order_id=client_order_id,
             )
             return _submit_and_check(self._trading, request, symbol)
         except Exception:
