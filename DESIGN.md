@@ -451,7 +451,10 @@ excluded in v1) could broaden the universe intelligently. Finally, a
 "wonderful at fair price" valuation model (e.g., a simple owner-earnings
 DCF with a required margin of safety) could eventually replace the blunt
 P/E×P/B gate — that's the fullest expression of the Munger evolution beyond
-Graham.
+Graham. A CFP-certified financial-planner Managed Agent (Anthropic API) is
+also worth exploring as a v2 input to stock analysis or as a sanity check
+alongside `screen-sanity-reviewer` (M5) — noted here as a future direction,
+not scoped or built in v1.
 
 This system automates a philosophy, not a prediction. Nothing in this
 document is financial advice; the strategy can underperform for long
