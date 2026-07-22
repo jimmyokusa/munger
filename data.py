@@ -13,15 +13,45 @@ import dataclasses
 import json
 import logging
 import random
+import threading
 import time
 from typing import Any
 
 import pandas as pd
 import yfinance as yf
+import yfinance.exceptions
 
 import config
 
 logger = logging.getLogger(__name__)
+
+# yfinance's rate limit (confirmed live: fetching the full ~1500-ticker
+# universe at 12 concurrent workers hit YFRateLimitError on 991/1505
+# tickers) is session/IP-wide, not per-ticker -- each worker backing off
+# independently doesn't help when all of them are hitting the same
+# blocked state. This shared cooldown makes every worker pause together
+# once any one of them sees a rate-limit response, instead of each
+# burning its own retries hammering an already-limited session.
+_rate_limit_lock = threading.Lock()
+_rate_limited_until = 0.0
+
+
+def _wait_out_shared_rate_limit() -> None:
+    with _rate_limit_lock:
+        until = _rate_limited_until
+    remaining = until - time.time()
+    if remaining > 0:
+        logger.info("Waiting %.1fs for a shared yfinance rate limit to clear.", remaining)
+        time.sleep(remaining)
+
+
+def _register_rate_limit() -> None:
+    global _rate_limited_until
+    with _rate_limit_lock:
+        _rate_limited_until = max(
+            _rate_limited_until, time.time() + config.DATA_RATE_LIMIT_COOLDOWN_SECONDS
+        )
+
 
 # yfinance's raw Ticker.info mixes units inconsistently: returnOnEquity,
 # grossMargins, and operatingMargins are already decimal fractions (0.15 =
@@ -127,24 +157,35 @@ def _consecutive_positive_years(net_income: pd.Series | None) -> int | None:
     return count
 
 
-def _normalize_percent_field(info: dict[str, Any], key: str) -> float | None:
-    """Convert one of _PERCENT_SCALED_FIELDS from a raw percentage to a decimal fraction.
+def _coerce_float(info: dict[str, Any], key: str) -> float | None:
+    """Safely read a numeric field from yfinance's raw info dict.
 
-    Treats a non-numeric value as missing (logs and returns None) rather
-    than raising: this runs inside fetch_metrics' retry loop, and a single
-    malformed field must not be indistinguishable from a network error --
-    that would burn all retries and discard every other successfully-
-    fetched field on this ticker over one bad value, exactly the "missing
-    field vs. failed fetch" conflation this module is designed to avoid.
+    Treats a missing OR non-numeric value as None rather than raising --
+    confirmed live at full-universe scale: yfinance occasionally returns
+    a non-numeric value (e.g. a string) for a field that's normally a
+    float, which crashed the entire screen with an uncaught TypeError the
+    first time this ran at scale (only the two _PERCENT_SCALED_FIELDS had
+    this guard before; every other field was trusted raw). Every numeric
+    Metrics field goes through this now, not just those two -- a
+    malformed value degrading to "missing" is the same "no data, no buy"
+    conservatism DESIGN.md 3.2 already calls for, applied consistently.
     """
     value: Any = info.get(key)
     if value is None:
         return None
     try:
-        return float(value) / 100.0
+        return float(value)
     except (TypeError, ValueError):
         logger.warning("%s: non-numeric value %r, treating as missing", key, value)
         return None
+
+
+def _normalize_percent_field(info: dict[str, Any], key: str) -> float | None:
+    """Convert one of _PERCENT_SCALED_FIELDS from a raw percentage to a decimal fraction."""
+    value = _coerce_float(info, key)
+    if value is None:
+        return None
+    return value / 100.0
 
 
 def fetch_metrics(symbol: str) -> Metrics | None:
@@ -159,23 +200,29 @@ def fetch_metrics(symbol: str) -> Metrics | None:
     """
     last_error: Exception | None = None
     for attempt in range(config.DATA_FETCH_MAX_RETRIES):
+        _wait_out_shared_rate_limit()
         try:
             info, net_income = _fetch_raw(symbol)
             _cache_raw_response(symbol, info, net_income)
             return Metrics(
                 symbol=symbol,
-                market_cap=info.get("marketCap"),
-                trailing_pe=info.get("trailingPE"),
-                price_to_book=info.get("priceToBook"),
-                current_ratio=info.get("currentRatio"),
+                market_cap=_coerce_float(info, "marketCap"),
+                trailing_pe=_coerce_float(info, "trailingPE"),
+                price_to_book=_coerce_float(info, "priceToBook"),
+                current_ratio=_coerce_float(info, "currentRatio"),
                 debt_to_equity=_normalize_percent_field(info, "debtToEquity"),
-                return_on_equity=info.get("returnOnEquity"),
-                gross_margin=info.get("grossMargins"),
-                operating_margin=info.get("operatingMargins"),
-                free_cash_flow=info.get("freeCashflow"),
+                return_on_equity=_coerce_float(info, "returnOnEquity"),
+                gross_margin=_coerce_float(info, "grossMargins"),
+                operating_margin=_coerce_float(info, "operatingMargins"),
+                free_cash_flow=_coerce_float(info, "freeCashflow"),
                 dividend_yield=_normalize_percent_field(info, "dividendYield"),
                 consecutive_positive_earnings_years=_consecutive_positive_years(net_income),
             )
+        except yfinance.exceptions.YFRateLimitError as e:
+            last_error = e
+            _register_rate_limit()
+            if attempt < config.DATA_FETCH_MAX_RETRIES - 1:
+                _wait_out_shared_rate_limit()
         except Exception as e:
             last_error = e
             if attempt < config.DATA_FETCH_MAX_RETRIES - 1:
@@ -241,3 +288,35 @@ def fetch_all_metrics(symbols: list[str]) -> dict[str, Metrics | None]:
             results[symbol] = None
     executor.shutdown(wait=False, cancel_futures=True)
     return results
+
+
+# Every Metrics field except symbol is required for the screener (DESIGN.md
+# 3.2/3.3) -- a missing one is a failed check, not silently skipped.
+_REQUIRED_METRICS_FIELDS = tuple(f.name for f in dataclasses.fields(Metrics) if f.name != "symbol")
+
+
+def validate_metrics(metrics: Metrics) -> list[str]:
+    """Sanity-check a fetched Metrics record, returning fail-reason codes.
+
+    An empty list means the record is clean. "No data" and "bad data" are
+    distinct failure classes (DESIGN.md 3.2) and must stay distinguishable
+    downstream, not collapse into one boolean: a missing field is tagged
+    ``data_missing:<field>``, an implausible value is tagged
+    ``data_invalid_outlier:<field>`` -- both carried through to
+    screen_results.csv (§3.3) so an operator can tell a transient fetch
+    gap from a possible data-corruption signal.
+    """
+    fail_reasons: list[str] = []
+    for field_name in _REQUIRED_METRICS_FIELDS:
+        if getattr(metrics, field_name) is None:
+            fail_reasons.append(f"data_missing:{field_name}")
+
+    if metrics.trailing_pe is not None and abs(metrics.trailing_pe) > config.MAX_PLAUSIBLE_PE:
+        fail_reasons.append("data_invalid_outlier:trailing_pe")
+    if (
+        metrics.debt_to_equity is not None
+        and abs(metrics.debt_to_equity) > config.MAX_PLAUSIBLE_DEBT_TO_EQUITY
+    ):
+        fail_reasons.append("data_invalid_outlier:debt_to_equity")
+
+    return fail_reasons

@@ -38,6 +38,12 @@ DATA_FETCH_RETRY_BACKOFF_SECONDS = 2.0
 # see its docstring for why this can't fully protect against a hung
 # worker thread, only bound the caller's logical wait.
 DATA_FETCH_BATCH_TIMEOUT_SECONDS = 600.0
+# yfinance's rate limit is session/IP-wide, not per-ticker (confirmed
+# live: a full ~1500-ticker universe fetch at 12 workers hit
+# YFRateLimitError on 991/1505 tickers) -- when hit, every worker pauses
+# for this long before its next attempt, rather than each burning its
+# own retries hammering an already-limited session independently.
+DATA_RATE_LIMIT_COOLDOWN_SECONDS = 20.0
 # Raw per-ticker provider responses, overwritten each run -- a debugging
 # aid, not a permanent audit trail (that's journal.db, DESIGN.md 3.6).
 DATA_RAW_CACHE_DIR: Path = BASE_DIR / "data_cache"

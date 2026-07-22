@@ -6,15 +6,27 @@ from __future__ import annotations
 import itertools
 import json
 import time
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import pytest
 import yfinance as yf
+import yfinance.exceptions
 
 import config
 import data
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_rate_limit_state() -> Generator[None, None, None]:
+    # _rate_limited_until is module-level shared state (deliberately, so
+    # every worker thread sees the same cooldown) -- reset it around each
+    # test so tests can't leak a cooldown into each other.
+    data._rate_limited_until = 0.0
+    yield
+    data._rate_limited_until = 0.0
 
 
 class _FakeTicker:
@@ -41,6 +53,30 @@ class _FakeTicker:
         if self._raise_on_income_stmt:
             raise RuntimeError("no financials available")
         return self._income_stmt
+
+
+def test_coerce_float_returns_numeric_value() -> None:
+    assert data._coerce_float({"trailingPE": 15.5}, "trailingPE") == 15.5
+
+
+def test_coerce_float_handles_missing_key() -> None:
+    assert data._coerce_float({}, "trailingPE") is None
+
+
+def test_coerce_float_handles_non_numeric_value_without_raising() -> None:
+    # Regression test for a real bug: a full-universe live run crashed
+    # entirely (not just one ticker) on an uncaught TypeError when
+    # yfinance returned a non-numeric value for trailingPE -- only the
+    # two percent-scaled fields had this guard before, every other
+    # numeric field was trusted raw. Every Metrics field goes through
+    # this now.
+    assert data._coerce_float({"trailingPE": "not a number"}, "trailingPE") is None
+
+
+def test_coerce_float_accepts_numeric_string() -> None:
+    # yfinance sometimes returns numeric values as strings -- these are
+    # legitimately convertible, not malformed.
+    assert data._coerce_float({"trailingPE": "15.5"}, "trailingPE") == 15.5
 
 
 def test_normalize_percent_field_converts_to_decimal_fraction() -> None:
@@ -175,6 +211,25 @@ def test_fetch_metrics_missing_field_is_none_not_a_failure(
     assert result.consecutive_positive_earnings_years is None
 
 
+def test_fetch_metrics_malformed_field_is_none_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Regression test for the real full-universe crash: a non-numeric
+    # value in a field that isn't one of the two percent-scaled fields
+    # (trailingPE here) must not propagate an exception out of
+    # fetch_metrics -- it should degrade to a missing field like any
+    # other unusable value.
+    monkeypatch.setattr(config, "DATA_RAW_CACHE_DIR", tmp_path)
+    info = {"symbol": "WEIRD", "trailingPE": "N/A", "marketCap": 1_000_000_000.0}
+    monkeypatch.setattr(data, "_fetch_raw", lambda symbol: (info, None))
+
+    result = data.fetch_metrics("WEIRD")
+
+    assert result is not None
+    assert result.trailing_pe is None
+    assert result.market_cap == 1_000_000_000.0
+
+
 def test_fetch_metrics_retries_then_succeeds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -231,6 +286,58 @@ def test_fetch_metrics_backoff_grows_between_attempts(monkeypatch: pytest.Monkey
 
     assert len(delays) == config.DATA_FETCH_MAX_RETRIES - 1
     assert all(earlier < later for earlier, later in itertools.pairwise(delays))
+
+
+def test_register_rate_limit_sets_a_future_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DATA_RATE_LIMIT_COOLDOWN_SECONDS", 10.0)
+    before = time.time()
+    data._register_rate_limit()
+    assert data._rate_limited_until >= before + 10.0
+
+
+def test_wait_out_shared_rate_limit_sleeps_for_remaining_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data._rate_limited_until = time.time() + 5.0
+    delays: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: delays.append(seconds))
+
+    data._wait_out_shared_rate_limit()
+
+    assert len(delays) == 1
+    assert 0 < delays[0] <= 5.0
+
+
+def test_wait_out_shared_rate_limit_noop_when_no_cooldown_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delays: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: delays.append(seconds))
+
+    data._wait_out_shared_rate_limit()
+
+    assert delays == []
+
+
+def test_fetch_metrics_registers_shared_cooldown_on_rate_limit_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    attempts = {"count": 0}
+
+    def _rate_limited_then_succeeds(symbol: str) -> tuple[dict[str, object], None]:
+        attempts["count"] += 1
+        if attempts["count"] < 2:
+            raise yfinance.exceptions.YFRateLimitError()
+        return {"symbol": symbol}, None
+
+    monkeypatch.setattr(data, "_fetch_raw", _rate_limited_then_succeeds)
+
+    result = data.fetch_metrics("AAPL")
+
+    assert result is not None
+    assert attempts["count"] == 2
+    assert data._rate_limited_until > 0
 
 
 def test_fetch_all_metrics_maps_each_symbol_independently(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -328,3 +435,71 @@ def test_cache_raw_response_writes_json(monkeypatch: pytest.MonkeyPatch, tmp_pat
     payload = json.loads(cache_file.read_text())
     assert payload["info"]["symbol"] == "AAPL"
     assert payload["net_income"]["2025"] == 100.0
+
+
+def _clean_metrics(**overrides: Any) -> data.Metrics:
+    """A fully-populated, plausible Metrics record; override individual
+    fields per test to exercise a specific missing/outlier case."""
+    defaults: dict[str, Any] = {
+        "symbol": "AAPL",
+        "market_cap": 4_800_000_000_000.0,
+        "trailing_pe": 39.7,
+        "price_to_book": 45.1,
+        "current_ratio": 1.07,
+        "debt_to_equity": 0.795,
+        "return_on_equity": 1.41,
+        "gross_margin": 0.478,
+        "operating_margin": 0.322,
+        "free_cash_flow": 101_000_000_000.0,
+        "dividend_yield": 0.0033,
+        "consecutive_positive_earnings_years": 4,
+    }
+    defaults.update(overrides)
+    return data.Metrics(**defaults)
+
+
+def test_validate_metrics_clean_record_has_no_fail_reasons() -> None:
+    assert data.validate_metrics(_clean_metrics()) == []
+
+
+def test_validate_metrics_flags_each_missing_field_distinctly() -> None:
+    metrics = _clean_metrics(market_cap=None, dividend_yield=None)
+    reasons = data.validate_metrics(metrics)
+    assert "data_missing:market_cap" in reasons
+    assert "data_missing:dividend_yield" in reasons
+    assert len(reasons) == 2
+
+
+def test_validate_metrics_never_flags_symbol_as_missing() -> None:
+    # symbol is always present (it's the fetch key, not fetched data) --
+    # regression guard against _REQUIRED_METRICS_FIELDS accidentally
+    # including it.
+    assert "data_missing:symbol" not in data.validate_metrics(_clean_metrics())
+
+
+def test_validate_metrics_flags_implausible_pe_as_outlier_not_missing() -> None:
+    metrics = _clean_metrics(trailing_pe=50_000.0)
+    assert data.validate_metrics(metrics) == ["data_invalid_outlier:trailing_pe"]
+
+
+def test_validate_metrics_flags_implausible_negative_pe() -> None:
+    # A negative P/E is a legitimate, common signal (a loss-making year) --
+    # only an extreme magnitude should read as corrupted data, not the sign.
+    metrics = _clean_metrics(trailing_pe=-50_000.0)
+    assert data.validate_metrics(metrics) == ["data_invalid_outlier:trailing_pe"]
+
+
+def test_validate_metrics_accepts_legitimate_negative_pe() -> None:
+    metrics = _clean_metrics(trailing_pe=-12.5)
+    assert data.validate_metrics(metrics) == []
+
+
+def test_validate_metrics_flags_implausible_debt_to_equity() -> None:
+    metrics = _clean_metrics(debt_to_equity=500.0)
+    assert data.validate_metrics(metrics) == ["data_invalid_outlier:debt_to_equity"]
+
+
+def test_validate_metrics_combines_missing_and_outlier_reasons() -> None:
+    metrics = _clean_metrics(market_cap=None, trailing_pe=50_000.0)
+    reasons = data.validate_metrics(metrics)
+    assert set(reasons) == {"data_missing:market_cap", "data_invalid_outlier:trailing_pe"}
