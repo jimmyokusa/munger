@@ -1,5 +1,6 @@
 yfinance~=1.5.1
 pandas~=2.3.3
+numpy~=2.4.6
 lxml~=6.1.1
 alpaca-py~=0.43.5
 pytest~=8.4.2

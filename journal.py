@@ -26,7 +26,14 @@ _VALID_SIDES = ("buy", "sell")
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(config.JOURNAL_DB_PATH)
+    # timeout=5.0: report.py (M13) can run standalone at any time, so a
+    # read here may genuinely race a concurrent bot.py write -- the
+    # default 5s SQLite busy-timeout is 0 (fail immediately with
+    # "database is locked"); waiting a few seconds lets the other
+    # transaction finish instead of crashing (staff-engineer-reviewer
+    # finding). record_order's transactions are short (a single INSERT),
+    # so this should almost never actually wait the full timeout.
+    conn = sqlite3.connect(config.JOURNAL_DB_PATH, timeout=5.0)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS journal (
@@ -93,6 +100,24 @@ def get_expected_holdings() -> set[str]:
             "(SELECT MAX(id) FROM journal GROUP BY symbol)"
         ).fetchall()
     return {symbol for symbol, side in rows if side == "buy"}
+
+
+def get_holdings_detail() -> list[dict[str, object]]:
+    """Most recent buy record for every symbol currently expected held.
+
+    Same "most recent action per symbol" logic as get_expected_holdings,
+    but returns the full row (reason, notional, timestamp) rather than
+    just the symbol set -- for display purposes (report.py), which needs
+    to show *why* each current pick was bought, not just that it was.
+    """
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT symbol, reason, notional, timestamp FROM journal "
+            "WHERE id IN (SELECT MAX(id) FROM journal GROUP BY symbol) "
+            "AND side = 'buy' ORDER BY symbol"
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def check_reconciliation(actual_holdings: set[str]) -> list[str]:

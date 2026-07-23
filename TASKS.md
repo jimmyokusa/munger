@@ -302,10 +302,56 @@ a code gate for a cron that only fires 4x/year.
 
 ## M12 — Paper trading validation
 
+**First live invocation of `bot.py`'s full `run()`, 2026-07-23** (not yet
+a quarter cycle, but the first real one): the user gave explicit
+authorization ("Yes, run it fully autonomous," via `AskUserQuestion`, one
+step after an initial bare "go" was correctly judged insufficient
+authorization for this specific action and the run was stopped/redone
+with unambiguous confirmation). Result: `bot.run()` fetched the live S&P
+1500 universe, screened it, and **aborted safely at the fetch-fraction
+check** (only 80.5% of tickers fetched cleanly against yfinance's rate
+limiting today — below `MIN_UNIVERSE_FETCH_FRACTION`'s 0.90 — 6 buyable
+tickers out of 1504 screened) — before the kill-switch check, before
+`ExecutionModule` was even constructed, before any broker call. No
+orders placed, `journal.db` untouched by this run (it was separately
+created empty by an unrelated `report.py` invocation the same day — the
+two are independent, confirmed by inspecting `journal.db`'s row count
+directly: 0). This is exactly the safety behavior DESIGN.md 5 calls for
+under degraded data conditions, working correctly on a real run against
+the live paper account for the first time — a genuinely useful, if
+inconclusive, data point: the abort path is proven live; the
+buy/sell/journal path through `bot.run()` (as opposed to `execution.py`
+called directly, see M8/M10) still isn't, since this run never reached
+it. A lingering OS process from unkillable rate-limited worker threads
+(the known `ThreadPoolExecutor` limitation from M2/M11) outlived the
+logical run by a few minutes; harmless, self-resolved.
+
 | Task | Status | Date / Notes |
 |---|---|---|
-| Run at least one full quarter cycle on Alpaca paper | todo | |
+| Run at least one full quarter cycle on Alpaca paper | todo | 2026-07-23 — the first live attempt (above) aborted at the fetch-fraction check before reaching any trading decision; doesn't count toward the quarter-cycle requirement, but is the first real exercise of `bot.py`'s abort path against the live account. **pm-reviewer noted (2026-07-23): no stated mitigation if this recurs.** yfinance rate limiting is an already-known-flaky external dependency (M2/M11); if the next attempt also lands under 90% fetched, M12 stalls indefinitely with nothing tracking that risk. No fix applied yet — options if it recurs: retry later the same day (rate limits appear to reset within hours per the M2/M10 precedents), try a different time of day, or reconsider whether 90% is calibrated correctly for this data source's real-world reliability. Revisit if/when it actually happens again, rather than pre-building an untested mitigation. |
 | Audit journal: near-zero sells | todo | pass criterion: 0–1 sell orders in the quarter; any more requires a documented two-strike justification per ticker in the journal. Record actual count + pass/fail here. |
 | Audit journal: buys concentrated at top of score ranking | todo | pass criterion: new-position buys are drawn from the top half of that run's buyable score ranking, with any exception explained. Record actual result + pass/fail here. |
 | Audit journal: weights landing near target | todo | pass criterion: each position's weight within ±2% of its 1/15 target after the run's buys settle. Record actual result + pass/fail here. |
 | **Go/no-go: enable live trading** | todo | per DESIGN.md's PM Recommendations — at least two weeks reviewing `journal.db` output before flipping `paper`→`live`. Record the decision, date, and reasoning here; if any M12 audit above failed, this defaults to no-go until re-run for another quarter. |
+
+## M13 — HTML report (added 2026-07-23, user request)
+
+Not part of the original M0–M12 build order — the user asked mid-session
+for a simple web front end showing which stocks were picked and the
+reasoning, so the pattern established elsewhere (DESIGN.md documents the
+rationale before/alongside the code, TASKS.md tracks the work log) is
+applied here too. See DESIGN.md §3.7.
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| `report.py` — static HTML generator, no server | done | 2026-07-23 — reads `screen_results.csv` + `journal.db`, writes `index.html`/`tickers.html` to `config.REPORT_DIR` (gitignored, regenerated on demand via `python report.py`; not wired into `bot.py`'s own run, since generating a report is a display concern, not a trading decision). |
+| `index.html` — current picks with an expandable reason/metrics panel per ticker | done | 2026-07-23 — uses native HTML `<details>`/`<summary>` for the expand/collapse (the user's "dropdowns" ask), no JS needed for that part. Shows the journal's reason string, notional, timestamp, and the full metrics row (market cap, P/E, ROE, etc.) that produced that ticker's score. |
+| `tickers.html` — every other screened ticker, sortable/filterable | done | 2026-07-23 — vanilla JS (no framework/build step): click a column header to sort, type in the filter box to narrow by symbol. Held tickers (already on `index.html`) are excluded here so the two pages don't duplicate the same ticker. |
+| `journal.get_holdings_detail()` — new function | done | 2026-07-23 — same "most recent action per symbol" logic as the existing `get_expected_holdings()`, but returns the full row (reason, notional, timestamp) instead of just the symbol set, since the report needs to display *why*, not just *that*. |
+| **Real bug found and fixed via this module's own tests**: numpy `int64` silently treated as non-numeric | done | 2026-07-23 — `_format_metric`'s first draft checked `isinstance(value, (int, float))`, which is `True` for numpy's `float64` (it subclasses Python's `float`) but `False` for numpy's `int64` (it does not, on the numpy version installed here) — so any whole-number CSV column (e.g. `market_cap`, which pandas infers as an integer dtype when every value in a test fixture happens to be a whole number) silently rendered as "—" instead of its real value. Caught by `test_generate_report_shows_a_pick_with_its_reason_and_metrics` failing, not by inspection. Fixed with a shared `_is_numeric()` helper (a proper `typing.TypeGuard`, so mypy narrows the type afterward instead of needing a `# type: ignore`) checking `(int, float, np.integer, np.floating)` and rejecting `NaN`. |
+| Unit tests (`tests/test_report.py`) | done | 2026-07-23 — 7 tests: empty-state rendering (no picks yet), a pick with its full reason/metrics/notional shown, held tickers excluded from `tickers.html`, HTML-escaping of reason strings (a `<script>` tag in a `reason` string must not render unescaped — reason strings are internally generated today, but this is cheap defense in depth), and `_format_metric`'s missing/NaN/dollar/percent formatting, including the numpy-int64 regression above. `numpy` added to `requirements.txt` as a direct, pinned dependency (previously only a transitive one via `pandas`) since it's now imported directly. |
+| `report/` added to `.gitignore` | done | 2026-07-23 — generated output, same treatment as `screen_results_archive/`/`munger.log`; regenerated from committed source data (`screen_results.csv`, `journal.db`), not itself a permanent artifact. |
+| **User has opened the actual rendered report and confirmed it satisfies the request** | todo | pm-reviewer noted (2026-07-23): every row above is verified by unit tests, which is a different bar from "the user finds this usable" for a display feature built to a specific ask. The report is now running locally (see the Docker row below) and the user has been given the URL, but hasn't yet explicitly confirmed it satisfies the request — not marking this done on the assistant's own say-so. |
+| **Exposure/access-control note for once live trading begins** | todo | pm-reviewer noted (2026-07-23): the report currently shows paper-account picks/notionals only; DESIGN.md §3.7 scopes it as local/static/no-server, which is fine today. Revisit before M12's paper→live go/no-go flips — the same report would then display real position sizes, and nothing currently states it must stay local-only (e.g., never published to a public GitHub Pages site without deliberately deciding that's acceptable). |
+| **Second review round (staff-engineer-reviewer) — 5 more real issues found and fixed** | done | 2026-07-23 — (1) `bool(row["buyable"])` mistreated malformed data: a CSV column with any missing cell can't stay bool dtype in pandas, so clean cells fall back to literal strings, and `bool("False")` is `True` — a row whose own displayed text says "False" would have rendered un-dimmed as if buyable. Fixed with a proper `_is_buyable()` string/bool-aware parser (conservative default: anything not unambiguously `True` counts as not-buyable). (2) `tickers.html`'s column-sort silently sorted dollar-formatted columns (Market Cap, Free Cash Flow) as *text*, since JS's `parseFloat("$2.50B")` is `NaN` — fixed with a `data-sort` attribute on numeric cells carrying the raw value, which the sort comparator now prefers over parsing displayed text. (3) `index.html`/`tickers.html` were written with a plain `Path.write_text()`, not the temp-file+rename pattern this codebase uses elsewhere (`StateTracker.save()`) — a crash mid-write could leave a truncated page on disk indefinitely; fixed with a new `_write_text_atomically()` helper. (4) The same non-atomic-write risk existed in `screener.py`'s own `run_screen()` (`results.to_csv(...)` directly to the final path) — since `report.py` can run standalone at any time, including mid-write by a scheduled `bot.py`, a concurrent read could see a torn CSV; fixed with a matching `_write_csv_atomically()` helper in `screener.py`, used at both of its two write sites (the normal path and the empty-tickers guard clause from M5/M11). (5) `journal.py`'s `_connect()` had no busy-timeout, so a `report.py` read racing a `record_order()` write would immediately raise `sqlite3.OperationalError: database is locked` instead of waiting briefly — fixed with `timeout=5.0` on the connection. `generate_report()` also now calls `journal.configure_logging()` and logs any unhandled exception via `logger.exception()` before re-raising (mirroring `bot.py`'s `__main__` pattern), so a crash here leaves a trace in `munger.log` instead of a bare traceback. Two new regression tests added (`test_is_buyable_handles_real_bools_and_pandas_object_dtype_strings`, `test_tickers_page_marks_a_string_valued_false_row_as_not_buyable`, `test_tickers_page_carries_raw_numeric_value_for_js_sorting`) — 181 tests passing total. |
+| Deployed locally in Docker for the user to view | done | 2026-07-23 — `report.Dockerfile` (nginx:alpine serving `report/` as static files) + a new `.dockerignore` (the naive first build sent the *entire* repo, 388MB including the local `.env` with live Alpaca keys, as build context with no `.dockerignore` in place — fixed before running anything, context dropped to ~730KB). Hit an unrelated environment quirk while verifying: port 8080 had stale port-forwarding state from earlier, unrelated Docker/colima work in this workspace (`gvproxy` was answering some paths itself rather than routing to the container — confirmed via nginx's own access log showing zero of the failing requests) — resolved by using a fresh port (18080) rather than debugging `gvproxy` internals, out of scope for this feature. Verified both `index.html` and `tickers.html` serve correctly over the container. |

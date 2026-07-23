@@ -341,6 +341,24 @@ whether the system is actually following its own rules — an audit of
 behavior, in the Graham spirit of the investor's chief problem being
 himself.
 
+### 3.7 HTML Report
+
+A small, static reporting layer (`report.py`) on top of §3.6's own
+artifacts — reads `screen_results.csv` and the journal, writes plain
+HTML files (`index.html`, `tickers.html`) to a `report/` directory; no
+server, no build step, no new dependency to run or maintain, matching
+this project's low-operational-overhead philosophy for something that's
+only regenerated a handful of times a year. `index.html` shows the
+current picks (the journal's most-recent-buy-per-symbol), each with an
+expandable panel (native HTML `<details>`, no JS needed for that part)
+showing the recorded reason and the metrics that drove its score.
+`tickers.html` shows every other screened ticker in a sortable,
+filterable table (vanilla JS, no framework), so "why wasn't X picked" is
+answerable directly from the same run's data. Not wired into `bot.py`'s
+own run — generating a report is a display concern, not a trading
+decision, and re-running it costs nothing if the underlying CSV/journal
+haven't changed.
+
 ## 4. Scheduling and Operations
 
 Default cadence is quarterly, aligned to run ~2–3 weeks after quarter-end

@@ -103,6 +103,7 @@ JOURNAL_DB_PATH: Path = BASE_DIR / "journal.db"
 SCREEN_RESULTS_CSV_PATH: Path = BASE_DIR / "screen_results.csv"
 SCREEN_RESULTS_ARCHIVE_DIR: Path = BASE_DIR / "screen_results_archive"
 LOG_FILE_PATH: Path = BASE_DIR / "munger.log"
+REPORT_DIR: Path = BASE_DIR / "report"
 # DESIGN.md's PM-recommendations narrative illustrates this as "> 24
 # hours," written before the quarterly cadence was settled (M1) -- a
 # literal 24-hour threshold would fire on every single healthy quarterly

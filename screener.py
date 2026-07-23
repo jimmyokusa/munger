@@ -12,6 +12,7 @@ holdings against the Munger quality floors only, never the Graham gates.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pandas as pd
 
@@ -19,6 +20,20 @@ import config
 import data
 
 logger = logging.getLogger(__name__)
+
+
+def _write_csv_atomically(results: pd.DataFrame, path: Path) -> None:
+    """Write the results CSV via temp-file + rename, not a direct write.
+
+    A direct write leaves a window where a concurrent reader (report.py,
+    run standalone and not synchronized with bot.py's own schedule) can
+    see a torn/partial file mid-write and crash on `pd.read_csv` or worse,
+    silently parse a malformed row -- staff-engineer-reviewer finding.
+    Same atomicity pattern StateTracker already uses for state.json.
+    """
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    results.to_csv(tmp_path, index=False)
+    tmp_path.replace(path)
 
 
 def pass_graham_gates(metrics: data.Metrics) -> tuple[bool, list[str]]:
@@ -170,7 +185,7 @@ def run_screen(tickers: list[str]) -> pd.DataFrame:
         # empty-universe alert path, which calls run_screen([]) exactly
         # this way).
         results = pd.DataFrame(columns=_KEY_COLUMNS)
-        results.to_csv(config.SCREEN_RESULTS_CSV_PATH, index=False)
+        _write_csv_atomically(results, config.SCREEN_RESULTS_CSV_PATH)
         logger.info("Screen complete: 0 tickers, 0 buyable.")
         return results
 
@@ -241,7 +256,7 @@ def run_screen(tickers: list[str]) -> pd.DataFrame:
     results = results.sort_values("score", ascending=False).reset_index(drop=True)
     other_columns = [c for c in results.columns if c not in _KEY_COLUMNS]
     results = results[_KEY_COLUMNS + other_columns]
-    results.to_csv(config.SCREEN_RESULTS_CSV_PATH, index=False)
+    _write_csv_atomically(results, config.SCREEN_RESULTS_CSV_PATH)
     logger.info(
         "Screen complete: %d tickers, %d buyable.", len(results), int(results["buyable"].sum())
     )
