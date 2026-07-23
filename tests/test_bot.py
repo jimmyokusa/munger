@@ -176,7 +176,7 @@ def test_run_full_happy_path_places_liquidations_and_buys(monkeypatch: pytest.Mo
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
     monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
     monkeypatch.setattr(
-        data, "fetch_all_metrics", lambda symbols: {s: MagicMock() for s in symbols}
+        data, "fetch_all_metrics", lambda symbols, **_kwargs: {s: MagicMock() for s in symbols}
     )
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
     monkeypatch.setattr(
@@ -231,7 +231,7 @@ def test_run_aborts_before_any_orders_when_order_budget_exceeded(
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
     monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
     monkeypatch.setattr(
-        data, "fetch_all_metrics", lambda symbols: {s: MagicMock() for s in symbols}
+        data, "fetch_all_metrics", lambda symbols, **_kwargs: {s: MagicMock() for s in symbols}
     )
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
     monkeypatch.setattr(portfolio, "process_sells", lambda holdings, metrics, state: ["A"])
@@ -265,7 +265,7 @@ def test_run_aborts_before_any_orders_when_notional_budget_exceeded(
     )
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
     monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
-    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols: {})
+    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {})
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
     monkeypatch.setattr(portfolio, "process_sells", lambda holdings, metrics, state: [])
     monkeypatch.setattr(
@@ -297,7 +297,7 @@ def test_run_does_not_journal_a_failed_order_and_continues(monkeypatch: pytest.M
     )
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
     monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
-    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols: {})
+    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {})
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
     monkeypatch.setattr(portfolio, "process_sells", lambda holdings, metrics, state: [])
     monkeypatch.setattr(
@@ -388,7 +388,9 @@ def test_run_skips_sell_evaluation_when_holdings_data_mostly_missing(
     monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
     # 1 of 3 holdings fetched cleanly (33%) -- well below MIN_UNIVERSE_FETCH_FRACTION.
     monkeypatch.setattr(
-        data, "fetch_all_metrics", lambda symbols: {"A": MagicMock(), "B": None, "C": None}
+        data,
+        "fetch_all_metrics",
+        lambda symbols, **_kwargs: {"A": MagicMock(), "B": None, "C": None},
     )
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
     process_sells_calls: list[dict[str, float]] = []
@@ -520,7 +522,7 @@ def test_run_logs_reconciliation_warnings_without_aborting(
     monkeypatch.setattr(
         journal, "check_reconciliation", lambda holdings: ["AAPL: unexpected mismatch"]
     )
-    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols: {})
+    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {})
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
     monkeypatch.setattr(portfolio, "process_sells", lambda holdings, metrics, state: [])
     monkeypatch.setattr(portfolio, "generate_buy_queue", lambda holdings, results, cash: [])

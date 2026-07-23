@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import dataclasses
+import datetime
 import json
 import logging
 import random
@@ -24,6 +25,104 @@ import yfinance.exceptions
 import config
 
 logger = logging.getLogger(__name__)
+
+# Live progress for the HTML report's progress bar (M13/report.py) --
+# guarded by the same kind of lock as the rate-limit state above, since
+# many worker threads update this concurrently. Written to a file inside
+# config.REPORT_DIR (not just kept in memory) so a page served by nginx
+# from a different process can poll it.
+_progress_lock = threading.Lock()
+_progress_total = 0
+_progress_completed = 0
+_progress_in_flight: set[str] = set()
+_progress_phase = ""
+
+
+def _write_progress_file() -> None:
+    # The write+rename must happen INSIDE the lock, not just the payload
+    # construction -- every worker thread shares the same tmp_path, so
+    # two threads racing past an unlocked write/rename could have one
+    # overwrite the other's temp file before it renames, and the loser's
+    # .replace() then raises FileNotFoundError (caught live by this
+    # module's own test suite, not by inspection).
+    #
+    # This whole function must never raise. It's called from
+    # fetch_metrics's `finally` block *after* a real fetch has already
+    # succeeded -- if it raised there, Python's finally-supersedes-return
+    # semantics would discard that already-fetched Metrics record and
+    # report the ticker as failed, purely because a cosmetic progress
+    # display couldn't write a file (disk full, permissions). It's also
+    # called before the real fetch even starts (_mark_ticker_started),
+    # where an unguarded raise would skip fetching entirely. Staff-
+    # engineer-reviewer finding: this display-only side channel must
+    # never be able to affect real data-fetch outcomes.
+    try:
+        with _progress_lock:
+            payload = {
+                "phase": _progress_phase,
+                "total": _progress_total,
+                "completed": _progress_completed,
+                "in_flight": sorted(_progress_in_flight),
+                "updated_at": datetime.datetime.now(datetime.UTC).isoformat(),
+            }
+            config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+            tmp_path = config.PROGRESS_FILE_PATH.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(payload))
+            tmp_path.replace(config.PROGRESS_FILE_PATH)
+    except Exception:
+        logger.warning("Failed to write live-progress file (cosmetic only)", exc_info=True)
+
+
+def _start_progress(phase: str, total: int) -> None:
+    global _progress_total, _progress_completed, _progress_phase
+    with _progress_lock:
+        _progress_phase = phase
+        _progress_total = total
+        _progress_completed = 0
+        _progress_in_flight.clear()
+    _write_progress_file()
+
+
+def _mark_ticker_started(symbol: str) -> None:
+    with _progress_lock:
+        _progress_in_flight.add(symbol)
+    _write_progress_file()
+
+
+def _mark_ticker_done(symbol: str) -> None:
+    global _progress_completed
+    with _progress_lock:
+        _progress_completed += 1
+        _progress_in_flight.discard(symbol)
+    _write_progress_file()
+
+
+def _finish_progress() -> None:
+    """Mark the batch complete so the report's progress bar hides itself.
+
+    Leaves the file in place (rather than deleting it) with completed ==
+    total, so a page that polls right after a run finishes sees a clean
+    100% state instead of a brief 404/missing-file gap. Also clears
+    in_flight explicitly, rather than assuming it's already empty --
+    normally true (every completed future's `finally` already called
+    _mark_ticker_done), but not if fetch_all_metrics's own documented
+    hung-worker case fired (concurrent.futures.wait's `not_done` branch):
+    a thread stuck past the batch timeout is still running when this is
+    called, and will call _mark_ticker_done for real after this "batch
+    finished" write, using this batch's counters -- or, if a new batch
+    has already started by then, corrupting the following batch's
+    in_flight/completed instead (staff-engineer-reviewer finding).
+    Genuinely fixing that needs a per-batch generation tag, which is more
+    machinery than a cosmetic progress display warrants on top of the
+    pre-existing, already-accepted "can't forcibly kill a hung worker
+    thread" limitation (TASKS.md M2/M11) -- not solved further here.
+    """
+    global _progress_completed
+    with _progress_lock:
+        _progress_completed = _progress_total
+        _progress_in_flight.clear()
+    _write_progress_file()
+
 
 # yfinance's rate limit (confirmed live: fetching the full ~1500-ticker
 # universe at 12 concurrent workers hit YFRateLimitError on 991/1505
@@ -197,7 +296,20 @@ def fetch_metrics(symbol: str) -> Metrics | None:
     with those fields set to None, not a None return. Callers (the thread
     pool in fetch_all_metrics) must tolerate a None return for any single
     ticker without aborting the run.
+
+    Wraps _fetch_metrics_inner only to bracket it with the live-progress
+    tracking (M13/report.py) -- a try/finally here guarantees the ticker
+    is marked done regardless of which of _fetch_metrics_inner's several
+    return points fires.
     """
+    _mark_ticker_started(symbol)
+    try:
+        return _fetch_metrics_inner(symbol)
+    finally:
+        _mark_ticker_done(symbol)
+
+
+def _fetch_metrics_inner(symbol: str) -> Metrics | None:
     last_error: Exception | None = None
     for attempt in range(config.DATA_FETCH_MAX_RETRIES):
         _wait_out_shared_rate_limit()
@@ -242,7 +354,7 @@ def fetch_metrics(symbol: str) -> Metrics | None:
     return None
 
 
-def fetch_all_metrics(symbols: list[str]) -> dict[str, Metrics | None]:
+def fetch_all_metrics(symbols: list[str], phase: str = "screening") -> dict[str, Metrics | None]:
     """Fetch fundamentals for many tickers concurrently.
 
     Uses a thread pool (config.DATA_FETCH_THREAD_POOL_WORKERS) since this
@@ -260,7 +372,13 @@ def fetch_all_metrics(symbols: list[str]) -> dict[str, Metrics | None]:
     cleanly until it finishes or an outer timeout (e.g. the scheduler
     wrapping `bot.py`) kills it. Tracked in TASKS.md as a known residual
     risk, not solved here.
+
+    `phase` labels this batch for the HTML report's live progress bar
+    (M13) -- e.g. "screening" for the full universe fetch (screener.py)
+    vs. "holdings check" for bot.py's smaller post-screen fetch of just
+    the currently-held tickers. Purely cosmetic; doesn't affect fetching.
     """
+    _start_progress(phase, len(symbols))
     results: dict[str, Metrics | None] = {}
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=config.DATA_FETCH_THREAD_POOL_WORKERS
@@ -287,6 +405,7 @@ def fetch_all_metrics(symbols: list[str]) -> dict[str, Metrics | None]:
         for symbol in stuck_symbols:
             results[symbol] = None
     executor.shutdown(wait=False, cancel_futures=True)
+    _finish_progress()
     return results
 
 

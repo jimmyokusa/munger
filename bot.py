@@ -205,7 +205,7 @@ def run(run_date: str | None = None) -> int:
     for warning in journal.check_reconciliation(set(current_holdings)):
         _alert(alerts, f"Reconciliation mismatch: {warning}")
 
-    holdings_metrics = data.fetch_all_metrics(list(current_holdings))
+    holdings_metrics = data.fetch_all_metrics(list(current_holdings), phase="holdings check")
     state = portfolio.StateTracker()
     to_liquidate = _process_sells_if_data_is_healthy(current_holdings, holdings_metrics, state)
     if to_liquidate:
