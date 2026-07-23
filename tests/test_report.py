@@ -32,6 +32,21 @@ def test_generate_report_with_no_data_writes_empty_pages() -> None:
     assert "<table" in tickers_html
 
 
+def test_index_page_includes_a_live_progress_banner_and_polling_script() -> None:
+    # User request: a progress bar showing which ticker it's working on
+    # while a screen is running. index.html is generated once, so the
+    # banner markup + polling JS must always be present (hidden by CSS
+    # until progress.json shows an in-progress batch) -- it can't depend
+    # on report.py knowing at generation time whether a run is active.
+    report.generate_report()
+
+    index_html = (config.REPORT_DIR / "index.html").read_text()
+    assert 'id="progress-banner"' in index_html
+    assert 'id="progress-bar-fill"' in index_html
+    assert "fetch('progress.json'" in index_html
+    assert "setInterval(pollProgress" in index_html
+
+
 def test_generate_report_shows_a_pick_with_its_reason_and_metrics() -> None:
     _write_screen_results("AAPL,True,90.5,,2500000000000,28.4,1.5\n")
     journal.record_order("AAPL", "buy", "NEW_POSITION score=90.5", notional=1000.0)

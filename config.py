@@ -104,6 +104,10 @@ SCREEN_RESULTS_CSV_PATH: Path = BASE_DIR / "screen_results.csv"
 SCREEN_RESULTS_ARCHIVE_DIR: Path = BASE_DIR / "screen_results_archive"
 LOG_FILE_PATH: Path = BASE_DIR / "munger.log"
 REPORT_DIR: Path = BASE_DIR / "report"
+# Inside REPORT_DIR (not BASE_DIR) so the same static server that serves
+# index.html/tickers.html also serves this live-updating file -- no
+# separate copy step needed for the report's progress-bar JS to poll it.
+PROGRESS_FILE_PATH: Path = REPORT_DIR / "progress.json"
 # DESIGN.md's PM-recommendations narrative illustrates this as "> 24
 # hours," written before the quarterly cadence was settled (M1) -- a
 # literal 24-hour threshold would fire on every single healthy quarterly

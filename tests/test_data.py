@@ -29,6 +29,16 @@ def _reset_shared_rate_limit_state() -> Generator[None, None, None]:
     data._rate_limited_until = 0.0
 
 
+@pytest.fixture(autouse=True)
+def _isolate_progress_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # fetch_all_metrics/fetch_metrics now write live progress (M13) to
+    # config.PROGRESS_FILE_PATH on every call -- without this, tests would
+    # write into this repo's real report/ directory instead of an
+    # isolated tmp_path.
+    monkeypatch.setattr(config, "REPORT_DIR", tmp_path / "report")
+    monkeypatch.setattr(config, "PROGRESS_FILE_PATH", tmp_path / "report" / "progress.json")
+
+
 class _FakeTicker:
     """Stand-in for yf.Ticker, monkeypatched onto the yfinance module directly
     (not via data.yf) so mypy's implicit-reexport check stays happy and the
@@ -367,6 +377,112 @@ def test_fetch_all_metrics_maps_each_symbol_independently(monkeypatch: pytest.Mo
     assert results["AAPL"] is not None
     assert results["MSFT"] is not None
     assert len(results) == 3
+
+
+def test_progress_tracking_reflects_in_flight_and_completed_tickers() -> None:
+    data._start_progress("screening", 3)
+    data._mark_ticker_started("AAPL")
+    data._mark_ticker_started("MSFT")
+
+    mid_payload = json.loads(config.PROGRESS_FILE_PATH.read_text())
+    assert mid_payload["total"] == 3
+    assert mid_payload["completed"] == 0
+    assert set(mid_payload["in_flight"]) == {"AAPL", "MSFT"}
+
+    data._mark_ticker_done("AAPL")
+
+    after_one_done = json.loads(config.PROGRESS_FILE_PATH.read_text())
+    assert after_one_done["completed"] == 1
+    assert after_one_done["in_flight"] == ["MSFT"]
+
+    data._finish_progress()
+
+    final_payload = json.loads(config.PROGRESS_FILE_PATH.read_text())
+    assert final_payload["completed"] == final_payload["total"] == 3
+
+
+def test_fetch_all_metrics_writes_live_progress_for_the_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M13: report.py's progress bar polls this file while a batch is in
+    # flight. Patches _fetch_metrics_inner (not fetch_metrics itself) so
+    # the real fetch_metrics wrapper's start/done tracking actually runs.
+    def _fake_inner(symbol: str) -> data.Metrics | None:
+        return None
+
+    monkeypatch.setattr(data, "_fetch_metrics_inner", _fake_inner)
+
+    data.fetch_all_metrics(["AAPL", "MSFT"], phase="screening")
+
+    payload = json.loads(config.PROGRESS_FILE_PATH.read_text())
+    assert payload["phase"] == "screening"
+    assert payload["total"] == 2
+    assert payload["completed"] == 2  # _finish_progress marks the batch done
+    assert payload["in_flight"] == []
+
+
+def test_fetch_all_metrics_survives_sustained_thread_contention_on_progress_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Staff-engineer-reviewer finding: the earlier test only submits 2
+    # symbols against a 12-worker pool, with no forced synchronization --
+    # whether two threads actually collide on _write_progress_file's
+    # shared temp filename is left to OS/GIL scheduling, so it could pass
+    # even if the lock scope regressed. Enough symbols to keep every
+    # worker thread hammering _write_progress_file concurrently for the
+    # whole batch gives the race a real chance to reproduce if reintroduced.
+    def _fake_inner(symbol: str) -> data.Metrics | None:
+        return None
+
+    monkeypatch.setattr(data, "_fetch_metrics_inner", _fake_inner)
+    symbols = [f"SYM{i}" for i in range(200)]
+
+    results = data.fetch_all_metrics(symbols, phase="screening")
+
+    assert len(results) == 200
+    payload = json.loads(config.PROGRESS_FILE_PATH.read_text())
+    assert payload["completed"] == payload["total"] == 200
+    assert payload["in_flight"] == []
+
+
+def test_progress_write_failure_never_discards_a_successful_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Staff-engineer-reviewer finding: _mark_ticker_done runs in
+    # fetch_metrics's `finally` block, AFTER a real fetch has already
+    # succeeded. If _write_progress_file raised there, Python's
+    # finally-supersedes-return semantics would discard the already-
+    # fetched Metrics record -- a cosmetic display feature silently
+    # corrupting real trading data. Forces _write_progress_file's guarded
+    # body to raise (simulating a disk-full/permissions fault) and
+    # confirms fetch_metrics still returns the real result.
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full (simulated)")
+
+    # Path is effectively immutable/slotted -- patch write_text at the
+    # class level (auto-reverted by monkeypatch after the test) rather
+    # than trying to override an instance attribute.
+    monkeypatch.setattr(Path, "write_text", _raise)
+
+    expected = data.Metrics(
+        symbol="AAPL",
+        market_cap=1.0,
+        trailing_pe=None,
+        price_to_book=None,
+        current_ratio=None,
+        debt_to_equity=None,
+        return_on_equity=None,
+        gross_margin=None,
+        operating_margin=None,
+        free_cash_flow=None,
+        dividend_yield=None,
+        consecutive_positive_earnings_years=None,
+    )
+    monkeypatch.setattr(data, "_fetch_metrics_inner", lambda symbol: expected)
+
+    result = data.fetch_metrics("AAPL")
+
+    assert result is expected  # not None -- the real fetch must survive
 
 
 def test_fetch_all_metrics_tolerates_an_unexpected_exception(

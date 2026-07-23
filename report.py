@@ -50,31 +50,84 @@ _DOLLAR_METRICS = frozenset({"market_cap", "free_cash_flow"})
 
 _CSS = """
 :root { color-scheme: light dark; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-h1 { font-size: 1.5rem; }
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  max-width: 900px; margin: 0 auto; padding: 2rem 1rem 4rem; line-height: 1.5;
+  min-height: 100vh;
+  color: light-dark(#1e1b2e, #e5e7eb);
+  background: light-dark(
+    linear-gradient(135deg, #dbeafe 0%, #ede9fe 45%, #fce7f3 100%),
+    linear-gradient(135deg, #0b1120 0%, #1e1b4b 55%, #1a1030 100%)
+  );
+  background-attachment: fixed;
+}
+h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.5rem; }
 nav { margin-bottom: 1.5rem; }
-nav a { margin-right: 1rem; }
-.pick { border: 1px solid light-dark(#ddd, #444); border-radius: 8px;
-  margin-bottom: 0.75rem; padding: 0.75rem 1rem; }
-.pick summary { cursor: pointer; display: flex; justify-content: space-between;
-  align-items: center; font-weight: 600; }
-.pick summary .score { font-weight: 400; opacity: 0.7; }
-.pick-body { margin-top: 0.75rem; }
-table.metrics { border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; }
-table.metrics td { padding: 0.15rem 0.75rem 0.15rem 0; }
-table.metrics td:first-child { opacity: 0.7; }
-.empty { opacity: 0.7; font-style: italic; }
-.generated { opacity: 0.6; font-size: 0.85rem; }
-#filter { padding: 0.4rem 0.6rem; width: 100%; max-width: 300px; margin-bottom: 1rem;
-  box-sizing: border-box; }
+nav a {
+  margin-right: 1rem; text-decoration: none; font-weight: 600;
+  color: light-dark(#4338ca, #a5b4fc);
+}
+nav a:hover { text-decoration: underline; }
+
+/* Glass card: translucent + blurred, needs the gradient body background
+   behind it to actually read as "glass" -- a flat backdrop makes blur
+   nearly invisible. */
+.glass {
+  background: light-dark(rgba(255, 255, 255, 0.55), rgba(30, 27, 55, 0.45));
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid light-dark(rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.08));
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(31, 38, 135, 0.12);
+}
+
+.pick { padding: 1rem 1.25rem; margin-bottom: 0.85rem; }
+.pick summary {
+  cursor: pointer; display: flex; justify-content: space-between;
+  align-items: center; font-weight: 600; list-style: none;
+}
+.pick summary::-webkit-details-marker { display: none; }
+.pick summary .score {
+  font-weight: 600; font-size: 0.85rem; padding: 0.2rem 0.65rem; border-radius: 999px;
+  background: light-dark(rgba(99, 102, 241, 0.15), rgba(165, 180, 252, 0.2));
+}
+.pick-body { margin-top: 0.85rem; }
+table.metrics { border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; width: 100%; }
+table.metrics td { padding: 0.25rem 0.75rem 0.25rem 0; }
+table.metrics td:first-child { opacity: 0.65; }
+
+.empty { opacity: 0.7; font-style: italic; padding: 1.5rem; text-align: center; }
+.generated { opacity: 0.55; font-size: 0.8rem; margin-bottom: 1rem; }
+
+.progress-banner { display: none; padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
+.progress-banner.active { display: block; }
+.progress-banner .phase { font-weight: 600; margin-bottom: 0.6rem; }
+.progress-bar-track {
+  background: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1));
+  border-radius: 999px; height: 10px; overflow: hidden; margin-bottom: 0.5rem;
+}
+.progress-bar-fill {
+  height: 100%; border-radius: 999px; width: 0%;
+  background: linear-gradient(90deg, #6366f1, #ec4899);
+  transition: width 0.4s ease;
+}
+.progress-detail { font-size: 0.85rem; opacity: 0.75; }
+
+#filter {
+  padding: 0.55rem 0.85rem; width: 100%; max-width: 320px; margin-bottom: 1rem;
+  border-radius: 10px; color: inherit;
+  border: 1px solid light-dark(rgba(0, 0, 0, 0.15), rgba(255, 255, 255, 0.15));
+  background: light-dark(rgba(255, 255, 255, 0.6), rgba(30, 27, 55, 0.5));
+}
+.table-wrap { padding: 0.5rem; overflow-x: auto; }
 table.tickers { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
-table.tickers th, table.tickers td { padding: 0.4rem 0.6rem; text-align: left;
-  border-bottom: 1px solid light-dark(#eee, #333); }
+table.tickers th, table.tickers td { padding: 0.5rem 0.7rem; text-align: left;
+  border-bottom: 1px solid light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.08)); }
 table.tickers th { cursor: pointer; user-select: none; position: sticky; top: 0;
-  background: light-dark(#fff, #1a1a1a); }
+  background: light-dark(rgba(255, 255, 255, 0.85), rgba(20, 18, 38, 0.85)); }
 table.tickers th:hover { opacity: 0.7; }
-tr.not-buyable { opacity: 0.6; }
+tr.not-buyable { opacity: 0.55; }
 """
 
 
@@ -173,7 +226,7 @@ def _render_pick(symbol: str, journal_row: dict[str, object] | None, results: pd
     )
     metrics_html = _render_metrics_table(metrics_row) if metrics_row is not None else ""
 
-    return f"""<details class="pick">
+    return f"""<details class="pick glass">
   <summary><span class="symbol">{esc_symbol}</span>
     <span class="score">score {score_str}</span></summary>
   <div class="pick-body">
@@ -195,19 +248,67 @@ def _generated_at() -> str:
     return f'<p class="generated">Generated {html.escape(now)}</p>'
 
 
+def _progress_polling_script() -> str:
+    """JS polling progress.json for a live progress bar (M13, user request).
+
+    index.html is generated once and doesn't change while a screen is
+    running -- this polls a SEPARATE file (progress.json, written
+    directly by data.py on every ticker completion, not regenerated by
+    report.py) so the static page can still reflect a live-in-progress
+    run without needing report.py to be re-run. Fails quietly (hides the
+    banner) if the file is missing or malformed -- no run in progress is
+    the common, expected case, not an error.
+    """
+    return """
+<script>
+async function pollProgress() {
+  const banner = document.getElementById('progress-banner');
+  try {
+    const res = await fetch('progress.json', {cache: 'no-store'});
+    if (!res.ok) throw new Error('no progress file');
+    const data = await res.json();
+    if (data.total > 0 && data.completed < data.total) {
+      banner.classList.add('active');
+      const pct = Math.round((data.completed / data.total) * 100);
+      document.getElementById('progress-phase').textContent =
+        `Screening in progress: ${data.phase}`;
+      document.getElementById('progress-bar-fill').style.width = pct + '%';
+      const current = (data.in_flight && data.in_flight.length > 0) ? data.in_flight[0] : '';
+      document.getElementById('progress-detail').textContent =
+        `${data.completed}/${data.total} tickers (${pct}%)` +
+        (current ? ` \\u2014 currently checking: ${current}` : '');
+    } else {
+      banner.classList.remove('active');
+    }
+  } catch (e) {
+    banner.classList.remove('active');
+  }
+}
+pollProgress();
+setInterval(pollProgress, 2000);
+</script>
+"""
+
+
 def _render_index(picks: list[dict[str, object]], results: pd.DataFrame) -> str:
     if picks:
         body = "\n".join(_render_pick(str(p["symbol"]), p, results) for p in picks)
     else:
-        body = '<p class="empty">No current picks yet.</p>'
+        body = '<div class="glass"><p class="empty">No current picks yet.</p></div>'
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Munger bot &mdash; current picks</title>
 <style>{_CSS}</style></head>
 <body>
 <h1>Current picks</h1>
 <nav><a href="tickers.html">See all screened tickers &rarr;</a></nav>
+<div class="progress-banner glass" id="progress-banner">
+  <div class="phase" id="progress-phase"></div>
+  <div class="progress-bar-track"><div class="progress-bar-fill" id="progress-bar-fill"></div></div>
+  <div class="progress-detail" id="progress-detail"></div>
+</div>
 {_generated_at()}
 {body}
+{_progress_polling_script()}
 </body></html>
 """
 
@@ -282,10 +383,12 @@ for (const th of table.tHead.rows[0].cells) {
 <nav><a href="index.html">&larr; Back to current picks</a></nav>
 {_generated_at()}
 <input id="filter" type="text" placeholder="Filter by symbol&hellip;">
+<div class="glass table-wrap">
 <table class="tickers" id="tickers">
 <thead><tr>{header_html}</tr></thead>
 <tbody>{"".join(rows_html)}</tbody>
 </table>
+</div>
 {script}
 </body></html>
 """
