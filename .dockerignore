@@ -1,0 +1,6 @@
+# report.Dockerfile only needs report/ -- everything else (including
+# .env, which holds live Alpaca keys) shouldn't even be sent to the
+# Docker daemon as build context.
+*
+!report/
+!report/**
