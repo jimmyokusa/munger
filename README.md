@@ -38,68 +38,90 @@ inspectable on its own before moving to the next.
       row-count band and fall back to the static file on either a fetch
       exception or a validation failure — a silently-corrupted-but-
       well-formed result is as dangerous as an outright failure.
-- [ ] **M2 — Data fetcher.** `fetch_metrics(symbol)` via yfinance; thread
-      pool (~10–15 workers) with retry-and-backoff on transient/rate-limit
-      errors; per-ticker failures tolerated without aborting the run; raw
-      responses cached per run.
-- [ ] **M3 — Data validation layer.** `validate_metrics(data)`: sanity/
+- [x] **M2 — Data fetcher.** `fetch_metrics(symbol)` via yfinance; thread
+      pool with retry-and-backoff on transient/rate-limit errors; per-ticker
+      failures tolerated without aborting the run; raw responses cached per
+      run. yfinance's rate limit is session-wide, not per-worker, so this
+      has been tuned more than once (see `TASKS.md` M2/M13) and remains a
+      known, imperfect constraint against an undocumented provider limit.
+- [x] **M3 — Data validation layer.** `validate_metrics(data)`: sanity/
       outlier checks (e.g. P/E < 10,000, realistic debt ratios); missing
       data fails with `data_missing:<field>`, implausible data fails with
       `data_invalid_outlier:<field>` — distinct codes, not one generic
       failure, so `screen_results.csv` shows which is which.
-- [ ] **M4 — Graham gate logic.** `pass_graham_gates(metrics)` implementing
+- [x] **M4 — Graham gate logic.** `pass_graham_gates(metrics)` implementing
       the 7 criteria in DESIGN.md §3.3 Stage 1; returns
       `(passed, fail_reasons)`; thresholds pulled from `config.py`.
-- [ ] **M5 — Munger scorer.** `calculate_munger_score(metrics)` (0–100,
+- [x] **M5 — Munger scorer.** `calculate_munger_score(metrics)` (0–100,
       weighted ROE/margins/FCF yield/debt) plus `run_screen(tickers)`
-      producing the full results DataFrame and `screen_results.csv`. Tune
-      thresholds against live data until the buyable list is sane
-      (~20–50 names).
-- [ ] **M6 — Strike state machine.** `StateTracker` reading/writing
+      producing the full results DataFrame and `screen_results.csv`. Live
+      data currently yields a very tight buyable list (single digits, not
+      the ~20–50 originally targeted) — today's elevated market valuations,
+      confirmed against real tickers, not a data bug; see `TASKS.md` M5.
+- [x] **M6 — Strike state machine.** `StateTracker` reading/writing
       **only the strike counters** to `state.json` (atomic: temp file +
       rename) — never current holdings, which are always fetched live from
       the broker; `process_sells(...)` implementing the two-strike rule,
       including missing-ticker-as-strike, reset-on-clean-check, and a
       reconciliation warning if live holdings diverge from what the last
       run's journal expected.
-- [ ] **M7 — Buy queue / target construction.** `generate_buy_queue(...)`:
+- [x] **M7 — Buy queue / target construction.** `generate_buy_queue(...)`:
       ~1/15 target weights, 12% single-name cap, 2% cash buffer, top-up
       existing positions before opening new ones, $50 dust filter, never
       sell-to-buy.
-- [ ] **M8 — Execution module.** `ExecutionModule` wrapping alpaca-py:
+- [x] **M8 — Execution module.** `ExecutionModule` wrapping alpaca-py:
       `market_buy(symbol, notional)`, `liquidate(symbol)`, each submitted
-      with a deterministic `client_order_id` (hash of run-date + ticker +
-      side) so the broker itself rejects duplicate submissions from a
-      crashed-and-restarted run — the primary idempotency guarantee, not
-      just a client-side pre-check. `get_todays_open_orders_and_positions()`
-      (covering filled orders too, not just open ones) is a secondary
-      guard; if that broker query fails, raise so the caller aborts the
-      run rather than proceeding blind. Every order carries a limit-price
-      band (e.g. ±2%) instead of an unconstrained market order. Paper by
-      default.
-- [ ] **M9 — Trade journal & logging.** Append-only **SQLite** journal
+      with a deterministic `client_order_id` (run-date + ticker + side) so
+      the broker itself rejects duplicate submissions from a crashed-and-
+      restarted run — the primary idempotency guarantee, not just a
+      client-side pre-check; `has_already_submitted(client_order_id)` is
+      the secondary guard, and if that broker query fails, it raises so the
+      caller aborts the run rather than proceeding blind. Every order
+      carries a limit-price band (±2%) instead of an unconstrained market
+      order. Paper by default — and now live-verified: a real `market_buy`/
+      `liquidate` round trip against Alpaca's paper API confirmed `notional`
+      sizing works on limit orders (previously ambiguous in Alpaca's own
+      docs) and that the crash-recovery idempotency path works for real,
+      not just in mocks.
+- [x] **M9 — Trade journal & logging.** Append-only **SQLite** journal
       (`journal.db`) with a reason string per order — SQLite specifically,
       since idempotency (M8) depends on reading it reliably and a torn CSV
       write is a real corruption risk; timestamped `screen_results.csv`
       archive; structured logging to file and stdout.
-- [ ] **M10 — Bot orchestration & safety controls.** `bot.py` tying every
+- [x] **M10 — Bot orchestration & safety controls.** `bot.py` tying every
       module together; startup assertion that the loaded API keys'
       account mode (paper/live) matches the configured flag, aborting on
       mismatch; `KILL_SWITCH` (config flag + filesystem flag file) forcing
       screen-only mode; `GLOBAL_ORDER_BUDGET` (max order count) **and**
-      `GLOBAL_NOTIONAL_BUDGET` (max % of equity moved per run) abort —
+      `GLOBAL_NOTIONAL_BUDGET_PCT` (max % of equity moved per run) abort —
       the notional cap bounds mistake *size*, the order-count cap only
       bounds mistake *count*; universe-fetch-fraction sanity abort.
-- [ ] **M11 — Scheduling & observability.** Cron/GitHub Action wiring for
-      quarterly cadence; same-day idempotency via `client_order_id` +
-      today's open/filled orders and positions; heartbeat/alerting on run
-      failure, an empty universe fetch, any liquidation event (the
-      rarest/highest-signal thing this system does), or a state/broker
-      reconciliation mismatch; data-freshness check.
+- [x] **M11 — Scheduling & observability.** Cron/GitHub Action wiring
+      (`.github/workflows/quarterly-run.yml`) for quarterly cadence, plus a
+      monthly `heartbeat.yml` watchdog; same-day idempotency via
+      `client_order_id` + `has_already_submitted`; alerting on run failure,
+      an empty universe fetch, per-index universe fallback, any liquidation
+      event (the rarest/highest-signal thing this system does), or a
+      state/broker reconciliation mismatch; a data-freshness dead-man's-
+      switch. **Code-complete but not yet verified against real GitHub
+      Actions** — the state-persistence and heartbeat mechanisms need the
+      user to add `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` as GitHub repo
+      secrets and manually run `workflow_dispatch` at least once; see
+      `TASKS.md` M11 for the exact sequence.
 - [ ] **M12 — Paper trading validation.** Run at least one full quarter
       cycle on Alpaca paper; audit the journal for near-zero sells, buys
       concentrated at the top of the score ranking, and weights landing
-      near target.
+      near target. One live attempt so far aborted safely at the
+      universe-fetch-fraction check (heavy yfinance rate limiting that day)
+      before any trading decision — doesn't count toward the quarter-cycle
+      requirement; genuinely blocked on ~3 months of real elapsed time once
+      M11's scheduling is verified and running.
+- [x] **M13 — HTML report** *(added after v1's original build order; user
+      request).* Static site (`report.py`, no server) showing current picks
+      with an expandable reason/metrics panel per ticker, a sortable/
+      filterable table of every other screened ticker, a live progress bar
+      while a screen is running, and a glass visual style. See
+      [DESIGN.md §3.7](DESIGN.md#37-html-report).
 
 Backtesting is explicitly out of scope for v1 (see DESIGN.md §6/§9) —
 point-in-time fundamental data would be needed to avoid a misleading
