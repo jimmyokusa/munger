@@ -18,7 +18,8 @@ effort — needs the user, e.g. an external account signup).
 | `requirements.txt` | done | 2026-07-21 — pinned with `~=` per python-reviewer finding (was unpinned) |
 | `tests/` directory | done | 2026-07-21 — `tests/test_config.py`, 7 passing tests |
 | `.gitignore` for `state.json`, `journal.db`, `screen_results*.csv`, `KILL_SWITCH` flag file | done | 2026-07-21 |
-| Alpaca paper-trading account + API key provisioning | blocked | needs the user to actually create the account — not something I can do. Tracked here because M0 is a natural time to knock it out early, but **does not gate M1+** — M1–M7 have no dependency on it, only M8 (execution) does. Definition of done: paper account created; `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` set as env vars (e.g. via a gitignored `.env`); confirmed the keys' reported account mode is actually `paper` (informal check now, formalized as the M10 startup assertion later). Shouldn't be left until M8 itself, since account approval can be slow. |
+| Alpaca paper-trading account + API key provisioning | done | 2026-07-23 — user created the paper account and provided the keys. **Handling note**: the keys were pasted directly into chat rather than added straight to a secrets store; the coding agent flagged this immediately, refused to embed them in any Bash command's literal arguments (blocked once by the environment's own credential-leakage guard, which was correct to do so), and instead wrote them to the repo's existing gitignored `.env` (which already held a stale, unrelated `FMP_API_KEY` from the reverted M1 hybrid-sourcing attempt — replaced, not appended) before sourcing that file into the shell for verification calls. `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` confirmed working and reporting `paper` mode — the `verify_account_access()` *function* was called live and succeeded, though only via a standalone script against `ExecutionModule` directly, not through `bot.run()`'s own startup call site (see M10's row for that residual gap). **Still outstanding**: these same two values need to be added as GitHub repo secrets (Settings → Secrets and variables → Actions) for `quarterly-run.yml`/`heartbeat.yml` to actually use them — not done yet, tracked in M11. |
+| **New (pm-reviewer, 2026-07-23): rotate the Alpaca key pasted into chat** | todo | the key/secret above passed through this conversation's transcript when the user pasted it directly rather than adding it straight to a secrets store — recommended at the time but not yet a tracked action item until this row. Low real-world stakes (paper-trading keys, no access to real money), but cheap to do: regenerate the key pair in Alpaca's dashboard, update the local `.env` and (once added) the GitHub repo secrets to match. |
 
 ## M1 — Universe module
 
@@ -167,31 +168,40 @@ Implemented in `portfolio.py` alongside M7, single review round (MVP pace).
 
 ## M8 — Execution module
 
-**Blocked on live verification** — Alpaca account provisioning (M0) is
-still `blocked` on the user. Everything below is code-complete and
-unit-tested against a mocked `alpaca-py` SDK (confirmed live API shapes
-by inspecting the installed 0.43.5 package directly — e.g. confirmed
-`close_position` doesn't accept a limit price, so liquidations submit an
-explicit sell `LimitOrderRequest` instead), but **none of it has run
-against Alpaca's real paper API**. Do not treat this milestone as fully
-proven until that happens.
+**Live-verified 2026-07-23.** Alpaca account provisioning (M0) is
+unblocked — the user created a paper account and this session ran
+`ExecutionModule` directly against the real paper API (`.env`,
+gitignored, holds the keys locally; not committed, not embedded in any
+Bash command — see the M0 row below for how this was handled). Every
+method was exercised live and confirmed: `verify_account_access()`,
+`get_current_holdings()` (empty on a fresh account), `get_available_cash()`
+($100,000 starting paper balance), `market_buy("AAPL", 10.0)` (accepted,
+`PENDING_NEW` → `FILLED`, resolving the `notional`-on-limit-order
+ambiguity below for real), `has_already_submitted()` (correctly `True`
+against the order just placed), the crash-recovery path (a second
+`market_buy("AAPL", 10.0)` call under the same `client_order_id`
+returned the *same* order instead of submitting a duplicate — confirmed
+via the returned `order.id` matching), and `liquidate("AAPL")` (fetched
+the exact fractional qty via `get_open_position`, submitted an explicit
+sell `LimitOrderRequest`, accepted). Final state: holdings back to `{}`,
+cash back to `$100,000` — a fully clean round trip.
 
 | Task | Status | Date / Notes |
 |---|---|---|
-| `ExecutionModule` wrapping alpaca-py | done | 2026-07-21 — `execution.py`; not live-verified, see note above |
-| `market_buy(symbol, notional)`, `liquidate(symbol)` | done | 2026-07-21 — both submit a `LimitOrderRequest` (not a market order) with the price band applied; `liquidate` fetches the exact held quantity via `get_open_position` rather than using `close_position`, since that endpoint has no limit-price control (confirmed against the SDK's `ClosePositionRequest`, which only has `qty`/`percentage` fields) |
-| **Real risk flagged (staff-engineer-reviewer):** whether `notional` works on a `LimitOrderRequest` at all is genuinely unclear from Alpaca's own docs | done (code), **unresolved pending live test** | 2026-07-21 — checked three sources, got three different signals: Alpaca's general API reference says `notional` "can only work for market order types"; Alpaca's dedicated fractional-trading page says limit orders "are supported for both fractional and notional orders"; the installed `alpaca-py` SDK's own docstring says fractional qty is "for market orders" only, but that sentence is identical boilerplate across every order-type class (market, limit, stop-limit), so it reads like an unmaintained copy-paste, not a real per-type constraint. Briefly switched `market_buy` to a computed-`qty` approach to sidestep the ambiguity, then reverted to submitting `notional` directly — simpler, matches DESIGN.md 3.5's literal wording, and **the failure mode is identical either way**: if `notional` isn't actually accepted on a limit order, Alpaca rejects it, `market_buy` catches that (same as any other rejected order) and returns `None` — never an incorrect execution, just a silently-empty buy queue until caught. **This is the first thing to smoke-test once the Alpaca account exists** — a single real buy attempt resolves the ambiguity definitively; don't trust this module for anything real before then. |
-| `get_current_holdings()` — live portfolio fetch from the broker | done | 2026-07-21 — ticker -> market value; a position with a `None` market_value (the SDK types it optional) is excluded with a warning rather than coerced to 0.0, which would corrupt `generate_buy_queue`'s weight math |
+| `ExecutionModule` wrapping alpaca-py | done | 2026-07-21 — `execution.py`; live-verified 2026-07-23, see banner note above |
+| `market_buy(symbol, notional)`, `liquidate(symbol)` | done | 2026-07-21 — both submit a `LimitOrderRequest` (not a market order) with the price band applied; `liquidate` fetches the exact held quantity via `get_open_position` rather than using `close_position`, since that endpoint has no limit-price control (confirmed against the SDK's `ClosePositionRequest`, which only has `qty`/`percentage` fields). Both live-verified 2026-07-23 against the real paper API. |
+| **Real risk flagged (staff-engineer-reviewer), resolved live 2026-07-23:** whether `notional` works on a `LimitOrderRequest` at all is genuinely unclear from Alpaca's own docs | done, **verified live** | 2026-07-21 — checked three sources, got three different signals: Alpaca's general API reference says `notional` "can only work for market order types"; Alpaca's dedicated fractional-trading page says limit orders "are supported for both fractional and notional orders"; the installed `alpaca-py` SDK's own docstring says fractional qty is "for market orders" only, but that sentence is identical boilerplate across every order-type class (market, limit, stop-limit), so it reads like an unmaintained copy-paste, not a real per-type constraint. **2026-07-23: resolved definitively** — submitted a real `market_buy("AAPL", 10.0)` against the live paper API; Alpaca accepted it (`status=PENDING_NEW`, `notional=10`, `limit_price` set), later settled to `FILLED` with `holdings["AAPL"] == 9.985954`. `notional` on a `LimitOrderRequest` genuinely works — the fractional-trading docs page was right, the general API reference and the SDK's boilerplate docstring were both stale/misleading. No code change needed; `market_buy` already submitted `notional` directly. |
+| `get_current_holdings()` — live portfolio fetch from the broker | done | 2026-07-21 — ticker -> market value; a position with a `None` market_value (the SDK types it optional) is excluded with a warning rather than coerced to 0.0, which would corrupt `generate_buy_queue`'s weight math. Live-verified 2026-07-23: correctly returned `{}` on a fresh account and `{"AAPL": ...}` after the test buy settled. |
 | Deterministic `client_order_id` (run-date + ticker + side) | done | 2026-07-21 — plain readable string (`"{run_date}-{symbol}-{side}"`), not a cryptographic hash — DESIGN.md's own example (`2026q3-AAPL-buy`) is readable, and a hash adds no idempotency value here while making Alpaca's order list harder to debug. `run_date` is same-day granularity (e.g. `"2026-07-21"`), matching DESIGN.md §4/M11's actual "same-day idempotency" requirement, not the quarter-label the doc's illustrative example uses. |
-| `has_already_submitted(client_order_id)` — secondary idempotency guard | done | 2026-07-21 — direct `get_order_by_client_id` lookup rather than a broader "today's open+filled orders" batch fetch; simpler and equally correct since `client_order_id` is already the deterministic key being checked |
+| `has_already_submitted(client_order_id)` — secondary idempotency guard | done | 2026-07-21 — direct `get_order_by_client_id` lookup rather than a broader "today's open+filled orders" batch fetch; simpler and equally correct since `client_order_id` is already the deterministic key being checked. **Live-verified 2026-07-23, including the actual crash-recovery scenario**: called `has_already_submitted` directly (returned `True` against the order just placed), then called `market_buy("AAPL", 10.0)` a second time under the same `run_date` — it correctly recovered and returned the *original* order (`order.id` identical to the first call's) instead of submitting a duplicate. This is the first live proof the M10 idempotency-guard wiring fix actually works, not just unit-tested. |
 | Raise (abort run) if the broker pre-check query itself fails | done | 2026-07-21 — `has_already_submitted` re-raises on any non-404 `APIError`, fail-closed; unlike `market_buy`/`liquidate`, which catch their own errors so one rejected order never aborts the run |
 | Limit-price band (±2%) on every order, including liquidations | done | 2026-07-21 — buys get a ceiling above last trade, sells/liquidations get a floor below it (band always favors the requester, not against them) |
 | **Real gap found (staff-engineer-reviewer):** a same-response rejection wasn't distinguished from a successful submission | done | 2026-07-21 — `submit_order` can return HTTP 200 with an `Order` whose `status` is `REJECTED` (e.g. wash-trade prevention) rather than raising; the original code only checked `isinstance(order, Order)`, so a rejected order would have been returned as if it succeeded — a caller/journal treating any non-`None` return as "order placed" would have logged a phantom buy. Fixed: `_submit_and_check()` also inspects `order.status` against `{REJECTED, CANCELED, EXPIRED, SUSPENDED}` and returns `None` for any of those. Regression test added (mocks a rejected-status response, asserts `market_buy` returns `None`). |
 | Paper mode by default | done | 2026-07-21 — `TradingClient(paper=config.PAPER_TRADING)`, and `config.PAPER_TRADING` already defaults to `True` (M0) |
 | Unit tests against a mocked Alpaca SDK | done | 2026-07-21 — 13 tests: client_order_id determinism, limit-price band direction (buy above/sell below), idempotency guard (found/404/other-error-reraises), holdings mapping, both order types' submitted request shape (including `side`/`time_in_force`, added per staff-engineer-reviewer — a flipped buy/sell would previously have passed), both order types' per-order fault tolerance, paper flag plumbing. Fake latest-trade object is `spec=Trade` (not a bare class), same reasoning as the `Order`/`Position` fakes: an unspec'd fake would stay green even if the real response shape diverged. |
 | `get_current_holdings()` fails closed, explicitly (staff-engineer-reviewer) | done | 2026-07-21 — no try/except, documented as deliberate: this is the primary input to both the sell and buy decisions, so a broker outage returning an empty dict would look identical to "you own nothing" and could drive duplicate buys. Caller (bot.py, M10) must let it propagate and abort. |
-| `verify_account_access()` — startup check that keys match configured paper/live mode | done | 2026-07-22 — added while building M10, once `bot.py` needed a concrete startup assertion. Calls `get_account()` with no try/except; a successful call under this client's configured `paper` flag inherently proves the keys match that mode, so a mismatch (e.g. stale `.env` live keys with `PAPER_TRADING=True`) raises and aborts. Same fail-closed posture as `get_current_holdings()`. |
-| `get_available_cash()` — account cash balance for `generate_buy_queue`'s input | done | 2026-07-22 — added alongside `verify_account_access()` for the same reason. No try/except; raises if `account.cash` is `None` (the SDK types it optional) rather than silently proceeding with a wrong figure (DESIGN.md 3.4). |
+| `verify_account_access()` — startup check that keys match configured paper/live mode | done | 2026-07-22 — added while building M10, once `bot.py` needed a concrete startup assertion. Calls `get_account()` with no try/except; a successful call under this client's configured `paper` flag inherently proves the keys match that mode, so a mismatch (e.g. stale `.env` live keys with `PAPER_TRADING=True`) raises and aborts. Same fail-closed posture as `get_current_holdings()`. **Live-verified 2026-07-23** against the real paper account. |
+| `get_available_cash()` — account cash balance for `generate_buy_queue`'s input | done | 2026-07-22 — added alongside `verify_account_access()` for the same reason. No try/except; raises if `account.cash` is `None` (the SDK types it optional) rather than silently proceeding with a wrong figure (DESIGN.md 3.4). **Live-verified 2026-07-23**: correctly returned `$100,000.0` (Alpaca's default fresh-paper-account balance), and settled back to exactly that after the test buy/sell round trip. |
 | **Deferred, not blocking:** no retry/backoff distinguishing transient broker errors (e.g. 429) from genuine order rejections | todo | staff-engineer-reviewer noted a rate-limited request currently looks identical in logs to a real rejection. DESIGN.md 3.5 doesn't call for retry-with-backoff on this module the way §3.2 does for the data fetcher; not adding it preemptively without a live account to observe real failure patterns against. Revisit once M8 has actually run against Alpaca. |
 
 ## M9 — Trade journal & logging
@@ -214,7 +224,7 @@ proven until that happens.
 |---|---|---|
 | `bot.py` — ties all modules together | done | 2026-07-22 — `run()`: universe -> screener -> archive always; fetch-fraction abort; kill-switch check; then reconciliation, sells, buys, budgets, journaling, all gated on the broker actually being touched. |
 | Exclude `process_sells`'s `to_liquidate` tickers from `generate_buy_queue`'s `current_holdings` input | done | 2026-07-22 — added 2026-07-21 (staff-engineer-reviewer, M6/M7 review) — `generate_buy_queue` has no visibility into what `process_sells` decided to liquidate this run; without this, a position slated for sale could get topped up in the same run it's about to be closed. Was documented as a caller contract in both functions' docstrings; now enforced in `bot.run()` via `remaining_holdings = {t: v for t, v in current_holdings.items() if t not in to_liquidate}`, covered by `test_run_full_happy_path_places_liquidations_and_buys`. |
-| Startup assertion: API key account mode matches configured paper/live flag | done | 2026-07-22 — `execution.ExecutionModule.verify_account_access()` (added to `execution.py` in this M10 window, see M8's table), called first thing in `bot.run()` after the kill-switch check, no try/except so a mismatch aborts the run. Coded and unit-tested only; not yet exercised against the real Alpaca API (see the new live-verification row below — pm-reviewer flagged this as the one row where "done" needs an asterisk, since the safeguard meant to catch a real key/mode mismatch has itself never run against real keys). |
+| Startup assertion: API key account mode matches configured paper/live flag | done | 2026-07-22 — `execution.ExecutionModule.verify_account_access()` (added to `execution.py` in this M10 window, see M8's table), called first thing in `bot.run()` after the kill-switch check, no try/except so a mismatch aborts the run. **Updated 2026-07-23**: the function itself is now live-verified against the real Alpaca API (M8's table) — but only via a standalone script calling `ExecutionModule` directly, not via `bot.run()`'s actual call site. The assertion *as wired into the orchestrator's startup sequence* is still unexercised; don't read M8's live verification as having proven this specific integration point. Closing that requires a real run through `bot.py` itself or the GitHub Actions workflow (M11). |
 | `KILL_SWITCH` (config flag + filesystem flag file) | done | 2026-07-22 — `bot._kill_switch_active()`; checked after the fetch-fraction abort and before any broker construction. Unit-tested (`test_run_screen_only_when_kill_switch_active`); the live smoke test below did not reach this branch. |
 | `GLOBAL_ORDER_BUDGET` abort (max order count) | done | 2026-07-22 — checked after `to_liquidate`/`buy_orders` are computed but before either loop submits anything, so a budget breach aborts with zero partial execution. |
 | `GLOBAL_NOTIONAL_BUDGET_PCT` abort (max % equity moved per run) | done | 2026-07-22 — added in design review round 2; same zero-partial-execution ordering as the order-count budget. |
@@ -225,7 +235,7 @@ proven until that happens.
 | Unit tests for `bot.py`'s wiring (`tests/test_bot.py`) | done | 2026-07-22 — 16 tests, all external modules mocked (this file tests wiring/ordering, not each module's own correctness): kill-switch via config flag and via flag file, fetch-fraction abort, happy path (asserts the liquidated ticker is excluded from the buy queue's input, asserts journal reasons), both budget aborts (zero orders submitted on breach), reconciliation warnings logged without aborting, a failed order not journaled while the run continues (staff-engineer-reviewer finding — this was previously zero-coverage), fail-closed propagation out of `bot.run()` when `verify_account_access`/`get_current_holdings` raise (pins the "no try/except" contract against a future well-meaning regression), and the holdings-fetch-fraction skip above. Hit the same mypy implicit-reexport issue as `test_data.py`/`test_execution.py` — fixed by importing `universe`/`screener`/`execution`/`journal`/`data`/`portfolio` directly and monkeypatching those modules rather than `bot.<module>`. 162/162 tests pass across the whole suite (`test_execution.py` grew from 13 to 21 tests covering the `has_already_submitted` wiring above). |
 | Live smoke test: universe-fetch-fraction abort fires safely under degraded conditions | done | 2026-07-22 — ran `bot.run()` live (no mocks) with the `KILL_SWITCH` flag file present. Fetched the real S&P 1500 universe, ran the real screener, archived results — process exited 0, no unhandled exceptions. yfinance rate-limited unusually hard this run (only 84.5% of tickers fetched cleanly, worse than M2's ~90% retest — the "zero margin" risk flagged in M2 materialized live), so the fetch-fraction abort fired and the run returned before ever reaching the kill-switch check or constructing `ExecutionModule`. Confirms the abort ordering fails safe (never touches the broker) under real degraded conditions. |
 | **Split out by pm-reviewer — was incorrectly bundled into "done" above:** live smoke test of the `KILL_SWITCH` screen-only branch specifically, against live data | todo | pm-reviewer finding, 2026-07-22: the row above validated a *different* safety gate (fetch-fraction) than the one this task names. `bot.run()` checks fetch-fraction before kill-switch, so on any day with degraded yfinance behavior this branch is structurally hard to reach live — re-run deliberately (not opportunistically) on a day without heavy rate limiting to actually exercise it. |
-| **New, pm-reviewer finding — gating item before M11 scheduling:** get one live run that actually reaches `ExecutionModule` against the real Alpaca paper API (even with zero orders placed) | todo | 2026-07-22 — `verify_account_access()`, `get_current_holdings()`, `liquidate()`, and `market_buy()` are all still verified only against mocks; the one live smoke test never got past the fetch-fraction abort. pm-reviewer flagged this as a gating item: don't wire up unattended cron scheduling (M11) around a broker-facing code path that has never executed outside mocks. |
+| **New, pm-reviewer finding — gating item before M11 scheduling:** get one live run that actually reaches `ExecutionModule` against the real Alpaca paper API (even with zero orders placed) | done | 2026-07-22 (gate identified), **closed 2026-07-23** — user created the Alpaca paper account; this session called `verify_account_access()`, `get_current_holdings()`, `get_available_cash()`, `market_buy()`, `has_already_submitted()`, and `liquidate()` directly (a local script, not yet via `bot.py`'s full `run()` or the GitHub Actions workflow — that's still open, see M11) against the real paper API. All six worked correctly; see M8's table for the full account. This closes the gate pm-reviewer set here: the broker-facing code path has now executed outside mocks, with a real (if small, $10) order placed, filled, and liquidated cleanly. |
 
 ## M11 — Scheduling & observability
 
@@ -239,32 +249,39 @@ exit marks the workflow run failed, which triggers GitHub's own built-in
 failure-notification email to the repo owner — using CI failure
 signaling as the alert channel, deliberately, rather than a new service.
 
-**Sequencing note (pm-reviewer, M11 delta review, 2026-07-22): M11's code
-is done and unit-tested, but this milestone is *not* trustworthy for real
-trading yet — same external blocker as M8.** M10 (TASKS.md row 228) set a
-gating item — get one live run reaching `ExecutionModule` against the
-real Alpaca paper API before scheduling goes live — and that item is
-still `todo`, blocked on the same Alpaca-account creation as M0/M8/M12.
-Nothing below should be read as "the cron is safe to let fire for real";
-`quarterly-run.yml` is wired and will run on schedule, but with no
-`ALPACA_API_KEY`/`ALPACA_SECRET_KEY` repo secrets configured yet, a
-scheduled fire today would simply crash at `verify_account_access()`
-with an auth error (a safe failure — no real order can be placed with
-missing/invalid keys). That crash would exercise the `__main__`
-exception-logging path and GitHub's own failed-run notification, but
-*not* the `_alert()`/`_finish()` list-based alerting scheme below (which
-only fires for a condition detected without an exception being raised)
-— the two are distinct mechanisms this milestone deliberately keeps
-separate; don't conflate a secrets-less crash with having verified the
-alert-list path. **Required sequence once the user creates the Alpaca
-account and adds those two secrets:** manually trigger `quarterly-run.yml`
-via `workflow_dispatch` with `screen_only` *unchecked* to close M10's
-gating item for real, before ever letting the quarterly cron fire
-unattended. **Operational gap (pm-reviewer):** nothing in code enforces
-this sequence — if secrets are added shortly before a scheduled
-quarterly date, the cron could fire for real before the manual
-verification happens. Relies on operator diligence; not worth a code
-gate for a cron that only fires 4x/year.
+**Sequencing note (pm-reviewer, M11 delta review, 2026-07-22; updated
+2026-07-23): M11's code is done and unit-tested; M10's `ExecutionModule`
+gating item is now closed (see M10's table) via a direct local
+verification — but this milestone's own *GitHub Actions* mechanisms are
+still unverified against anything real.** The Alpaca account now exists
+and its keys were confirmed to work live (M8/M10 tables), but only via a
+one-off local script run directly against `execution.py` — not via
+`bot.py`'s full `run()`, and not via the `quarterly-run.yml` workflow
+itself. Two concrete things remain, independent of each other:
+1. `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` still need to be added as GitHub
+   repo secrets (Settings → Secrets and variables → Actions) — currently
+   only sitting in the local, gitignored `.env`. Until that's done, a
+   scheduled or dispatched `quarterly-run.yml` run would still crash at
+   `verify_account_access()` with an auth error (a safe failure, and one
+   that would exercise the `__main__` exception-logging path and GitHub's
+   failed-run notification — but *not* the `_alert()`/`_finish()`
+   list-based alerting scheme below, which only fires for a condition
+   detected without an exception being raised; the two are distinct
+   mechanisms this milestone deliberately keeps separate).
+2. Once those secrets exist, the `bot-state` persistence mechanism and
+   the `heartbeat.yml` watchdog are *still* unverified against real
+   GitHub Actions (see their own rows below) — closing M10's gate locally
+   doesn't substitute for that.
+
+**Required next step:** add the two secrets, then manually trigger
+`quarterly-run.yml` via `workflow_dispatch` with `screen_only` unchecked
+— this becomes the first real end-to-end run through `bot.py` itself
+(not just `execution.py` in isolation) and the first live test of the
+`bot-state` persistence mechanism. **Operational gap (pm-reviewer):**
+nothing in code enforces this sequence — if secrets are added shortly
+before a scheduled quarterly date, the cron could fire for real before
+the manual verification happens. Relies on operator diligence; not worth
+a code gate for a cron that only fires 4x/year.
 
 | Task | Status | Date / Notes |
 |---|---|---|
