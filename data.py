@@ -57,12 +57,21 @@ def _write_progress_file() -> None:
     # engineer-reviewer finding: this display-only side channel must
     # never be able to affect real data-fetch outcomes.
     try:
+        with _rate_limit_lock:
+            rate_limited_until = _rate_limited_until
         with _progress_lock:
             payload = {
                 "phase": _progress_phase,
                 "total": _progress_total,
                 "completed": _progress_completed,
                 "in_flight": sorted(_progress_in_flight),
+                # User-requested (2026-07-23): the report's live view should
+                # say explicitly when missing data is because a shared
+                # yfinance rate-limit cooldown is in effect -- not that the
+                # data doesn't exist. now() < rate_limited_until means
+                # every worker is currently paused waiting it out.
+                "rate_limited_until": rate_limited_until,
+                "now": time.time(),
                 "updated_at": datetime.datetime.now(datetime.UTC).isoformat(),
             }
             config.REPORT_DIR.mkdir(parents=True, exist_ok=True)

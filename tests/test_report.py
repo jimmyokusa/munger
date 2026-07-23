@@ -45,6 +45,34 @@ def test_index_page_includes_a_live_progress_banner_and_polling_script() -> None
     assert 'id="progress-bar-fill"' in index_html
     assert "fetch('progress.json'" in index_html
     assert "setInterval(pollProgress" in index_html
+    # User request (2026-07-23): the live view must say explicitly when
+    # missing data is due to a shared rate-limit cooldown, not a
+    # permanent gap.
+    assert "rate_limited_until" in index_html
+    assert "waiting out a shared" in index_html
+
+
+def test_tickers_page_shows_a_note_when_any_row_has_fetch_failed() -> None:
+    # User request (2026-07-23): data_missing:fetch_failed must read as
+    # "yfinance rate-limited this run," not "this data doesn't exist."
+    _write_screen_results(
+        "AAPL,True,90.5,,2500000000.0,28.4,1.5\nXYZ,False,0.0,data_missing:fetch_failed,,,\n"
+    )
+    results = report._load_screen_results()
+
+    html_out = report._render_tickers(results, held_symbols=set())
+
+    assert "not that the data doesn't exist" in html_out
+    assert 'title="yfinance rate-limiting' in html_out
+
+
+def test_tickers_page_omits_the_fetch_failed_note_when_no_row_has_it() -> None:
+    _write_screen_results("AAPL,True,90.5,,2500000000.0,28.4,1.5\n")
+    results = report._load_screen_results()
+
+    html_out = report._render_tickers(results, held_symbols=set())
+
+    assert "fetch_failed" not in html_out
 
 
 def test_generate_report_shows_a_pick_with_its_reason_and_metrics() -> None:
