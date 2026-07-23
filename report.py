@@ -270,13 +270,30 @@ async function pollProgress() {
     if (data.total > 0 && data.completed < data.total) {
       banner.classList.add('active');
       const pct = Math.round((data.completed / data.total) * 100);
-      document.getElementById('progress-phase').textContent =
-        `Screening in progress: ${data.phase}`;
       document.getElementById('progress-bar-fill').style.width = pct + '%';
       const current = (data.in_flight && data.in_flight.length > 0) ? data.in_flight[0] : '';
-      document.getElementById('progress-detail').textContent =
-        `${data.completed}/${data.total} tickers (${pct}%)` +
-        (current ? ` \\u2014 currently checking: ${current}` : '');
+      // User request (2026-07-23): make it explicit in the UI when
+      // missing/slow data is because every worker is waiting out a
+      // shared yfinance rate-limit cooldown, not because the data
+      // doesn't exist -- this is the single biggest cause of tickers
+      // showing data_missing:fetch_failed on tickers.html.
+      const rateLimited = data.rate_limited_until && data.now && data.rate_limited_until > data.now;
+      if (rateLimited) {
+        const waitSecs = Math.max(0, Math.round(data.rate_limited_until - data.now));
+        document.getElementById('progress-phase').textContent =
+          `Screening in progress: ${data.phase} \\u2014 paused, waiting out a shared ` +
+          `yfinance rate limit (~${waitSecs}s)`;
+        document.getElementById('progress-detail').textContent =
+          `${data.completed}/${data.total} tickers (${pct}%) \\u2014 ` +
+          `this is expected under yfinance's rate limiting, not a permanent gap; ` +
+          `slowly gathering the rest as the limit clears.`;
+      } else {
+        document.getElementById('progress-phase').textContent =
+          `Screening in progress: ${data.phase}`;
+        document.getElementById('progress-detail').textContent =
+          `${data.completed}/${data.total} tickers (${pct}%)` +
+          (current ? ` \\u2014 currently checking: ${current}` : '');
+      }
     } else {
       banner.classList.remove('active');
     }
@@ -330,6 +347,7 @@ def _render_tickers(results: pd.DataFrame, held_symbols: set[str]) -> str:
     )
 
     rows_html = []
+    any_fetch_failed = False
     for _, row in other.iterrows():
         css_class = "" if _is_buyable(row["buyable"]) else "not-buyable"
         cells = []
@@ -337,10 +355,30 @@ def _render_tickers(results: pd.DataFrame, held_symbols: set[str]) -> str:
             if col in metric_cols or col == "score":
                 cells.append(_metric_cell(col, row.get(col)))
             elif col == "fail_reasons":
-                cells.append(f"<td>{html.escape(str(row.get('fail_reasons') or ''))}</td>")
+                reasons = str(row.get("fail_reasons") or "")
+                if "fetch_failed" in reasons:
+                    any_fetch_failed = True
+                    title = (
+                        "yfinance rate-limiting during this fetch, not permanently "
+                        "missing data -- see the note above the table"
+                    )
+                    cells.append(f'<td title="{html.escape(title)}">{html.escape(reasons)}</td>')
+                else:
+                    cells.append(f"<td>{html.escape(reasons)}</td>")
             else:
                 cells.append(f"<td>{html.escape(str(row[col]))}</td>")
         rows_html.append(f'<tr class="{css_class}">{"".join(cells)}</tr>')
+
+    fetch_failed_note = (
+        '<div class="glass" style="padding: 0.75rem 1rem; margin-bottom: 1rem; '
+        'font-size: 0.85rem;">'
+        "&#9432; Some rows show <code>data_missing:fetch_failed</code> &mdash; this means "
+        "yfinance's shared rate limit was hit during that run and the fetch didn't complete "
+        "in time, not that the data doesn't exist. It's usually recoverable on the next run."
+        "</div>"
+        if any_fetch_failed
+        else ""
+    )
 
     script = """
 <script>
@@ -382,6 +420,7 @@ for (const th of table.tHead.rows[0].cells) {
 <h1>All screened tickers</h1>
 <nav><a href="index.html">&larr; Back to current picks</a></nav>
 {_generated_at()}
+{fetch_failed_note}
 <input id="filter" type="text" placeholder="Filter by symbol&hellip;">
 <div class="glass table-wrap">
 <table class="tickers" id="tickers">

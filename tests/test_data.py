@@ -401,6 +401,16 @@ def test_progress_tracking_reflects_in_flight_and_completed_tickers() -> None:
     assert final_payload["completed"] == final_payload["total"] == 3
 
 
+def test_progress_file_reports_an_active_rate_limit_cooldown() -> None:
+    # User request (2026-07-23): the report's live view needs to tell
+    # "waiting out a shared rate limit" apart from "genuinely missing."
+    data._register_rate_limit()
+    data._write_progress_file()
+
+    payload = json.loads(config.PROGRESS_FILE_PATH.read_text())
+    assert payload["rate_limited_until"] > payload["now"]
+
+
 def test_fetch_all_metrics_writes_live_progress_for_the_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

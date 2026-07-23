@@ -29,21 +29,36 @@ UNIVERSE_TICKER_COUNT_BANDS: dict[str, tuple[int, int]] = {
 STATIC_UNIVERSE_FALLBACK_PATH = "data/universe_fallback.csv"
 
 # --- Data module (DESIGN.md 3.2) ---
-DATA_FETCH_THREAD_POOL_WORKERS = 12
-DATA_FETCH_MAX_RETRIES = 3
+# Reduced from 12 -- user-reported observation (2026-07-23) that a live
+# run only fetched 80.5% cleanly (worse than M2's 90% retest). Since
+# yfinance's rate limit is session/IP-wide, not per-worker (see below),
+# more concurrent workers doesn't buy more real throughput once the
+# limit is hit -- it just means more threads simultaneously trigger it.
+# Fewer workers should reduce how often that first 429 fires at all.
+# Best-effort tuning against an undocumented, opaque provider limit, not
+# a guaranteed fix -- revisit against another live run.
+DATA_FETCH_THREAD_POOL_WORKERS = 6
+DATA_FETCH_MAX_RETRIES = 4
 # Base delay for exponential backoff (delay = this * 2**attempt, plus
 # jitter) between retries on a single ticker, not a flat per-retry sleep.
 DATA_FETCH_RETRY_BACKOFF_SECONDS = 2.0
 # Upper bound on how long fetch_all_metrics waits for the whole batch --
 # see its docstring for why this can't fully protect against a hung
-# worker thread, only bound the caller's logical wait.
-DATA_FETCH_BATCH_TIMEOUT_SECONDS = 600.0
+# worker thread, only bound the caller's logical wait. Doubled from 600s
+# (2026-07-23): this is a quarterly batch job with no minute-level time
+# pressure, so giving a rate-limited run more real wall-clock time to
+# cycle through cooldowns and actually finish is a free way to improve
+# the completion rate, unlike anything that costs more requests.
+DATA_FETCH_BATCH_TIMEOUT_SECONDS = 1200.0
 # yfinance's rate limit is session/IP-wide, not per-ticker (confirmed
 # live: a full ~1500-ticker universe fetch at 12 workers hit
 # YFRateLimitError on 991/1505 tickers) -- when hit, every worker pauses
 # for this long before its next attempt, rather than each burning its
 # own retries hammering an already-limited session independently.
-DATA_RATE_LIMIT_COOLDOWN_SECONDS = 20.0
+# Increased from 20s (2026-07-23): a live run still saw heavy repeated
+# rate-limiting at 20s, suggesting the backend needs longer to actually
+# reset before it's safe to resume hammering it.
+DATA_RATE_LIMIT_COOLDOWN_SECONDS = 45.0
 # Raw per-ticker provider responses, overwritten each run -- a debugging
 # aid, not a permanent audit trail (that's journal.db, DESIGN.md 3.6).
 DATA_RAW_CACHE_DIR: Path = BASE_DIR / "data_cache"
