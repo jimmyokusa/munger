@@ -18,6 +18,7 @@ import datetime
 import html
 import logging
 import math
+import shutil
 from pathlib import Path
 from typing import TypeGuard
 
@@ -128,6 +129,33 @@ table.tickers th { cursor: pointer; user-select: none; position: sticky; top: 0;
   background: light-dark(rgba(255, 255, 255, 0.85), rgba(20, 18, 38, 0.85)); }
 table.tickers th:hover { opacity: 0.7; }
 tr.not-buyable { opacity: 0.55; }
+
+.cal-month { padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
+.cal-month h2 { font-size: 1.1rem; margin: 0 0 0.75rem; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0.35rem; }
+.cal-weekday { font-size: 0.75rem; opacity: 0.6; text-align: center; padding-bottom: 0.25rem; }
+.cal-cell, a.cal-cell {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  aspect-ratio: 1; border-radius: 8px; text-decoration: none; color: inherit;
+  font-size: 0.8rem;
+}
+.cal-blank { visibility: hidden; }
+.cal-empty { opacity: 0.35; }
+.cal-has-data {
+  background: light-dark(rgba(99, 102, 241, 0.12), rgba(99, 102, 241, 0.15));
+}
+.cal-has-buyable {
+  background: light-dark(rgba(236, 72, 153, 0.2), rgba(236, 72, 153, 0.25));
+  font-weight: 600;
+}
+a.cal-cell:hover { filter: brightness(0.95); }
+.cal-day { line-height: 1.3; }
+.cal-count { font-size: 0.7rem; opacity: 0.8; }
+.cal-legend { font-size: 0.8rem; opacity: 0.75; margin-bottom: 1rem; }
+.cal-legend-swatch {
+  display: inline-block; width: 0.8rem; height: 0.8rem; border-radius: 3px;
+  vertical-align: middle; margin-right: 0.25rem;
+}
 """
 
 
@@ -307,17 +335,71 @@ setInterval(pollProgress, 2000);
 """
 
 
+def _render_candidate(metrics_row: pd.Series) -> str:
+    """A buyable-candidate card from the latest screen (not a held position).
+
+    Same expandable metrics layout as `_render_pick`, but honestly labeled:
+    it deliberately does not render "Reason/Bought/Notional", which would
+    imply a position the screen-only path never took.
+    """
+    symbol = html.escape(str(metrics_row["symbol"]))
+    score_str = (
+        f"{float(metrics_row['score']):.1f}" if _is_numeric(metrics_row.get("score")) else "—"
+    )
+    metrics_html = _render_metrics_table(metrics_row)
+    return f"""<details class="pick glass">
+  <summary><span class="symbol">{symbol}</span>
+    <span class="score">score {score_str}</span></summary>
+  <div class="pick-body">
+    <p><strong>Status:</strong> buyable in the latest screen &mdash; not a held position</p>
+    {metrics_html}
+  </div>
+</details>"""
+
+
+def _render_candidates_or_empty(results: pd.DataFrame) -> str:
+    """Home-page body when no positions are currently held.
+
+    Scopes the page to what's actually known (staff-engineer-reviewer):
+    rather than a bare "No current picks yet", show the latest screen's
+    buyable candidates, clearly marked as screen output, not holdings.
+    Falls back to the original empty state (exact string preserved) when
+    the screen found nothing buyable. Deliberately doesn't claim *why*
+    nothing is held -- that's true both for a screen-only deployment with
+    no trade journal at all, and for a trading deployment mid-cycle between
+    a full liquidation and the next buy (which does have a journal, just no
+    currently open position) -- the candidate label is accurate either way.
+    """
+    buyable = pd.DataFrame()
+    if len(results) > 0 and "buyable" in results.columns:
+        buyable = results[results["buyable"].apply(_is_buyable)]
+        if "score" in buyable.columns:
+            buyable = buyable.sort_values("score", ascending=False)
+    if len(buyable) == 0:
+        return '<div class="glass"><p class="empty">No current picks yet.</p></div>'
+    intro = (
+        '<div class="glass" style="padding: 0.75rem 1rem; margin-bottom: 1rem; '
+        'font-size: 0.9rem;">No positions are currently held. Showing the latest '
+        f"screen&rsquo;s <strong>{len(buyable)}</strong> buyable candidate(s), ranked "
+        "by score &mdash; these passed every gate but are screen output, not holdings."
+        "</div>"
+    )
+    cards = "\n".join(_render_candidate(row) for _, row in buyable.iterrows())
+    return f"{intro}\n{cards}"
+
+
 def _render_index(picks: list[dict[str, object]], results: pd.DataFrame) -> str:
     if picks:
         body = "\n".join(_render_pick(str(p["symbol"]), p, results) for p in picks)
     else:
-        body = '<div class="glass"><p class="empty">No current picks yet.</p></div>'
+        body = _render_candidates_or_empty(results)
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Munger bot &mdash; current picks</title>
 <style>{_CSS}</style></head>
 <body>
 <h1>Current picks</h1>
-<nav><a href="tickers.html">See all screened tickers &rarr;</a></nav>
+<nav><a href="tickers.html">See all screened tickers &rarr;</a>
+<a href="calendar.html">Daily calendar &rarr;</a></nav>
 <div class="progress-banner glass" id="progress-banner">
   <div class="phase" id="progress-phase"></div>
   <div class="progress-bar-track"><div class="progress-bar-fill" id="progress-bar-fill"></div></div>
@@ -418,7 +500,8 @@ for (const th of table.tHead.rows[0].cells) {
 <style>{_CSS}</style></head>
 <body>
 <h1>All screened tickers</h1>
-<nav><a href="index.html">&larr; Back to current picks</a></nav>
+<nav><a href="index.html">&larr; Back to current picks</a>
+<a href="calendar.html">Daily calendar &rarr;</a></nav>
 {_generated_at()}
 {fetch_failed_note}
 <input id="filter" type="text" placeholder="Filter by symbol&hellip;">
@@ -431,6 +514,155 @@ for (const th of table.tHead.rows[0].cells) {
 {script}
 </body></html>
 """
+
+
+_CALENDAR_MONTHS_SHOWN = 3
+
+
+def _load_daily_summaries() -> dict[datetime.date, dict[str, int]]:
+    """One summary (total, buyable) per archived day, keyed by date.
+
+    Reads only the `symbol`/`buyable` columns (pandas `usecols`), not the
+    whole CSV -- this can scale to a year+ of daily archives without a real
+    cost, unlike loading every metric column for every historical day.
+    Requiring both columns also means a file that isn't a real screen-
+    results archive (wrong schema) is skipped rather than miscounted.
+    """
+    summaries: dict[datetime.date, dict[str, int]] = {}
+    if not config.SCREEN_RESULTS_ARCHIVE_DIR.exists():
+        return summaries
+    for path in config.SCREEN_RESULTS_ARCHIVE_DIR.glob("screen_results_*.csv"):
+        date_str = path.stem.removeprefix("screen_results_")
+        try:
+            day = datetime.date.fromisoformat(date_str)
+        except ValueError:
+            continue
+        try:
+            frame = pd.read_csv(path, usecols=["symbol", "buyable"])
+        except (ValueError, KeyError):
+            continue
+        summaries[day] = {
+            "total": len(frame),
+            "buyable": sum(1 for v in frame["buyable"] if _is_buyable(v)),
+        }
+    return summaries
+
+
+def _render_month(year: int, month: int, summaries: dict[datetime.date, dict[str, int]]) -> str:
+    first_of_month = datetime.date(year, month, 1)
+    # Monday-first grid, padded with blank cells so the 1st lines up
+    # under the correct weekday column.
+    lead_blanks = first_of_month.weekday()
+    days_in_month = (
+        (datetime.date(year + 1, 1, 1) if month == 12 else datetime.date(year, month + 1, 1))
+        - first_of_month
+    ).days
+
+    cells = ['<div class="cal-cell cal-blank"></div>' for _ in range(lead_blanks)]
+    for day_num in range(1, days_in_month + 1):
+        day = datetime.date(year, month, day_num)
+        summary = summaries.get(day)
+        if summary is None:
+            cells.append(
+                f'<div class="cal-cell cal-empty"><span class="cal-day">{day_num}</span></div>'
+            )
+            continue
+        has_buyable = summary["buyable"] > 0
+        css_class = "cal-cell cal-has-data" + (" cal-has-buyable" if has_buyable else "")
+        # Link within REPORT_DIR: generate_report() copies each referenced
+        # archive CSV into REPORT_DIR/screen_results_archive/ so the report
+        # is self-contained no matter where report/ is served as web root
+        # (local nginx, k8s, or the GH archive branch) -- see _copy_archives.
+        archive_href = f"screen_results_archive/screen_results_{day.isoformat()}.csv"
+        cells.append(
+            f'<a class="{css_class}" href="{html.escape(archive_href)}" '
+            f'title="{summary["total"]} tickers, {summary["buyable"]} buyable">'
+            f'<span class="cal-day">{day_num}</span>'
+            f'<span class="cal-count">{summary["buyable"]}</span>'
+            f"</a>"
+        )
+
+    month_name = first_of_month.strftime("%B %Y")
+    weekday_headers = "".join(
+        f'<div class="cal-weekday">{d}</div>' for d in ("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
+    )
+    return f"""<div class="glass cal-month">
+  <h2>{html.escape(month_name)}</h2>
+  <div class="cal-grid">{weekday_headers}{"".join(cells)}</div>
+</div>"""
+
+
+def _render_calendar() -> str:
+    summaries = _load_daily_summaries()
+    today = datetime.date.today()
+    months_html = []
+    year, month = today.year, today.month
+    for _ in range(_CALENDAR_MONTHS_SHOWN):
+        months_html.append(_render_month(year, month, summaries))
+        month -= 1
+        if month == 0:
+            month, year = 12, year - 1
+    # Most recent month first.
+    body = "\n".join(months_html)
+
+    legend = (
+        '<div class="cal-legend">'
+        '<span class="cal-legend-swatch cal-has-buyable"></span> buyable names found &nbsp;'
+        '<span class="cal-legend-swatch cal-has-data"></span> screened, none buyable &nbsp;'
+        '<span class="cal-legend-swatch cal-empty"></span> no run that day'
+        "</div>"
+    )
+
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Munger bot &mdash; calendar</title>
+<style>{_CSS}</style></head>
+<body>
+<h1>Daily screen calendar</h1>
+<nav><a href="index.html">&larr; Back to current picks</a>
+<a href="tickers.html">See all screened tickers &rarr;</a></nav>
+{_generated_at()}
+<p style="font-size: 0.85rem; opacity: 0.75; margin-bottom: 1rem;">
+  Each day's screen is informational only &mdash; daily_screen.py never places orders;
+  trading decisions stay on the quarterly cadence. Click a day to see its full results.
+</p>
+{legend}
+{body}
+</body></html>
+"""
+
+
+def _copy_archives_into_report() -> None:
+    """Mirror the daily archive CSVs into REPORT_DIR/screen_results_archive/.
+
+    The calendar links to these files with a report-relative path, so they
+    must live under REPORT_DIR itself -- otherwise a browser serving report/
+    as its web root (local nginx, the k8s deployment, or the GH archive
+    branch) cannot reach the real archive dir, which is REPORT_DIR's sibling
+    under BASE_DIR. Copying keeps the whole report self-contained.
+    """
+    if not config.SCREEN_RESULTS_ARCHIVE_DIR.exists():
+        return
+    dest_dir = config.REPORT_DIR / "screen_results_archive"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for src in config.SCREEN_RESULTS_ARCHIVE_DIR.glob("screen_results_*.csv"):
+        dest = dest_dir / src.name
+        # Incremental: past days' archives are immutable once written, so
+        # only copy a file that's new or changed (today's dated archive can
+        # be overwritten by a same-day re-run -> newer mtime/different size).
+        # This keeps the per-run copy O(new files), not O(all history), and
+        # avoids needlessly rewriting a file nginx may be serving.
+        src_stat = src.stat()
+        if dest.exists():
+            dest_stat = dest.stat()
+            if dest_stat.st_size == src_stat.st_size and dest_stat.st_mtime >= src_stat.st_mtime:
+                continue
+        # Copy to a temp file + rename (staff-engineer-reviewer), matching
+        # this module's own _write_text_atomically/screener's
+        # _write_csv_atomically pattern -- a crash mid-copy must not leave a
+        # truncated CSV live at the name nginx is already serving.
+        tmp_dest = dest.with_suffix(dest.suffix + ".tmp")
+        shutil.copy2(src, tmp_dest)
+        tmp_dest.replace(dest)
 
 
 def _write_text_atomically(path: Path, text: str) -> None:
@@ -469,6 +701,8 @@ def generate_report() -> None:
         _write_text_atomically(
             config.REPORT_DIR / "tickers.html", _render_tickers(results, held_symbols)
         )
+        _write_text_atomically(config.REPORT_DIR / "calendar.html", _render_calendar())
+        _copy_archives_into_report()
     except Exception:
         logger.exception("report.py failed to generate the report")
         raise

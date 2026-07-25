@@ -9,6 +9,15 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 
+# Writable runtime artifacts (report/, archives, journal.db, the raw-
+# response cache, logs, state) live under DATA_DIR, which defaults to the
+# code directory (unchanged local/test behavior) but can be repointed at a
+# mounted volume via MUNGER_DATA_DIR -- e.g. a Kubernetes PersistentVolume
+# so the daily CronJob's output survives pod restarts and is shared with
+# the nginx pod that serves it. Read-only inputs (STATIC_UNIVERSE_FALLBACK
+# etc.) stay under BASE_DIR since they ship inside the image.
+DATA_DIR = Path(os.environ.get("MUNGER_DATA_DIR", str(BASE_DIR)))
+
 # --- Secrets (env vars only, never hard-coded; see DESIGN.md section 4) ---
 # Empty-string default is intentional here: this layer only reads config,
 # it doesn't validate it. The paper/live startup assertion in bot.py (M10)
@@ -61,7 +70,7 @@ DATA_FETCH_BATCH_TIMEOUT_SECONDS = 1200.0
 DATA_RATE_LIMIT_COOLDOWN_SECONDS = 45.0
 # Raw per-ticker provider responses, overwritten each run -- a debugging
 # aid, not a permanent audit trail (that's journal.db, DESIGN.md 3.6).
-DATA_RAW_CACHE_DIR: Path = BASE_DIR / "data_cache"
+DATA_RAW_CACHE_DIR: Path = DATA_DIR / "data_cache"
 
 # Sanity bounds for validate_metrics (DESIGN.md 3.2, Deliverable 1.3).
 # Same ratio/decimal-fraction units as the corresponding Metrics field and
@@ -113,12 +122,12 @@ LIMIT_PRICE_BAND_PCT = 0.02  # +/-2% of last trade, applied to every order
 # invoking bot.py from a different working directory than an interactive
 # run still reads/writes the same state.json instead of silently starting
 # from a fresh, empty strike history.
-STATE_FILE_PATH: Path = BASE_DIR / "state.json"
-JOURNAL_DB_PATH: Path = BASE_DIR / "journal.db"
-SCREEN_RESULTS_CSV_PATH: Path = BASE_DIR / "screen_results.csv"
-SCREEN_RESULTS_ARCHIVE_DIR: Path = BASE_DIR / "screen_results_archive"
-LOG_FILE_PATH: Path = BASE_DIR / "munger.log"
-REPORT_DIR: Path = BASE_DIR / "report"
+STATE_FILE_PATH: Path = DATA_DIR / "state.json"
+JOURNAL_DB_PATH: Path = DATA_DIR / "journal.db"
+SCREEN_RESULTS_CSV_PATH: Path = DATA_DIR / "screen_results.csv"
+SCREEN_RESULTS_ARCHIVE_DIR: Path = DATA_DIR / "screen_results_archive"
+LOG_FILE_PATH: Path = DATA_DIR / "munger.log"
+REPORT_DIR: Path = DATA_DIR / "report"
 # Inside REPORT_DIR (not BASE_DIR) so the same static server that serves
 # index.html/tickers.html also serves this live-updating file -- no
 # separate copy step needed for the report's progress-bar JS to poll it.
@@ -134,7 +143,7 @@ DATA_FRESHNESS_MAX_HOURS = 130 * 24
 
 # --- Risk controls (DESIGN.md 5) ---
 KILL_SWITCH = False
-KILL_SWITCH_FLAG_FILE_PATH: Path = BASE_DIR / "KILL_SWITCH"
+KILL_SWITCH_FLAG_FILE_PATH: Path = DATA_DIR / "KILL_SWITCH"
 GLOBAL_ORDER_BUDGET = 20  # max orders per run
 GLOBAL_NOTIONAL_BUDGET_PCT = 0.25  # max fraction of equity moved per run
 MIN_UNIVERSE_FETCH_FRACTION = 0.90  # abort if fewer tickers than this fetch cleanly
