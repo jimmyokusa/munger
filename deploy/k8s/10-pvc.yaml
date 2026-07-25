@@ -1,0 +1,17 @@
+# Shared data volume: the daily-screen CronJob writes report/ + archives
+# here, the nginx Deployment serves them. k3s's default local-path
+# provisioner is node-local + ReadWriteOnce, so BOTH workloads are pinned
+# to the same node (nodeSelector kubernetes.io/hostname: pi1) -- otherwise
+# the second pod could be scheduled elsewhere and fail to mount.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: munger-data
+  namespace: munger
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi

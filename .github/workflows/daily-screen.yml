@@ -1,0 +1,83 @@
+name: Daily screen-only snapshot
+
+# M14 (user request): a daily, read-only screen purely to populate the
+# HTML report's calendar view with richer history than the quarterly
+# trading cadence alone produces. Deliberately does NOT receive
+# ALPACA_API_KEY/ALPACA_SECRET_KEY at all -- daily_screen.py never
+# imports execution.py, so it's architecturally incapable of placing an
+# order, not just configured not to; omitting the secrets here is
+# defense in depth on top of that. Trading decisions stay on
+# quarterly-run.yml's own cadence (DESIGN.md 4) -- this workflow never
+# submits anything to Alpaca.
+on:
+  schedule:
+    - cron: "0 13 * * *"
+  workflow_dispatch: {}
+
+# Separate branch from quarterly-run.yml's bot-state (which holds
+# state.json/journal.db -- irrelevant here) so the two workflows can
+# never race on the same persisted branch even if their schedules
+# happen to coincide.
+concurrency:
+  group: daily-screen
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare persisted daily-screen-archive branch
+        run: |
+          set -e
+          if git ls-remote --exit-code --heads origin daily-screen-archive >/dev/null 2>&1; then
+            git fetch origin daily-screen-archive
+            git worktree add ../daily-archive-wt -b daily-screen-archive origin/daily-screen-archive
+          else
+            echo "No daily-screen-archive branch yet -- first run, starting fresh."
+            git worktree add --detach ../daily-archive-wt
+            git -C ../daily-archive-wt checkout --orphan daily-screen-archive
+            git -C ../daily-archive-wt rm -rf . >/dev/null 2>&1 || true
+          fi
+          if [ -d ../daily-archive-wt/screen_results_archive ]; then
+            mkdir -p screen_results_archive
+            cp -a ../daily-archive-wt/screen_results_archive/. screen_results_archive/
+          fi
+          if [ -d ../daily-archive-wt/report ]; then
+            mkdir -p report
+            cp -a ../daily-archive-wt/report/. report/
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily screen (no broker access, no Alpaca keys)
+        run: python daily_screen.py
+
+      - name: Persist archive and report
+        if: always()
+        run: |
+          set -e
+          git config user.name "munger-bot"
+          git config user.email "munger-bot@users.noreply.github.com"
+          if [ -d screen_results_archive ]; then
+            mkdir -p ../daily-archive-wt/screen_results_archive
+            cp -a screen_results_archive/. ../daily-archive-wt/screen_results_archive/
+          fi
+          if [ -d report ]; then
+            mkdir -p ../daily-archive-wt/report
+            cp -a report/. ../daily-archive-wt/report/
+          fi
+          cd ../daily-archive-wt
+          git add -A
+          git commit -q -m "Daily screen snapshot from run ${{ github.run_id }}" --allow-empty
+          git push origin HEAD:daily-screen-archive
