@@ -37,6 +37,13 @@ def _isolate_progress_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     # isolated tmp_path.
     monkeypatch.setattr(config, "REPORT_DIR", tmp_path / "report")
     monkeypatch.setattr(config, "PROGRESS_FILE_PATH", tmp_path / "report" / "progress.json")
+    # The fetch path also writes a raw-response cache to DATA_RAW_CACHE_DIR.
+    # Isolate it here so every test in this module is hermetic -- otherwise
+    # tests that don't redirect it individually write into the real cache
+    # dir, which fails outright when it isn't writable (e.g. the non-root
+    # CI container's read-only /app). Individual per-test overrides below
+    # still win where a test needs to inspect the cache.
+    monkeypatch.setattr(config, "DATA_RAW_CACHE_DIR", tmp_path / "data_cache")
 
 
 class _FakeTicker:

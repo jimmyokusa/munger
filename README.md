@@ -122,7 +122,35 @@ inspectable on its own before moving to the next.
       filterable table of every other screened ticker, a live progress bar
       while a screen is running, and a glass visual style. See
       [DESIGN.md §3.7](DESIGN.md#37-html-report).
+- [x] **M14 — Daily screen-only snapshot + report calendar** *(user
+      request).* `daily_screen.py`: a read-only daily job that fetches the
+      universe, screens it, archives the result, and regenerates the report
+      — deliberately never importing `execution.py`, so it is
+      architecturally incapable of placing an order (trading stays on
+      `bot.py`'s quarterly cadence). `report.py` gains a calendar view
+      (`calendar.html`) linking each day to its archived results, and copies
+      archives under `report/` so the site is self-contained wherever it's
+      served. Runs both via `.github/workflows/daily-screen.yml` and as a
+      k3s CronJob (see Deployment).
 
 Backtesting is explicitly out of scope for v1 (see DESIGN.md §6/§9) —
 point-in-time fundamental data would be needed to avoid a misleading
 result.
+
+## Deployment (Raspberry Pi k3s cluster)
+
+munger runs on a 4-node Raspberry Pi **k3s** cluster (arm64). One command,
+`deploy/build-and-deploy.sh`, builds the arm64 image (`deploy/Dockerfile`),
+side-loads it into the cluster's containerd (no registry), runs the full
+test suite as an **in-cluster CI Job**, and — only if CI is green — applies
+the CD workloads: an nginx **Deployment/Service** (report viewer, NodePort
+30080) and the daily-screen **CronJob**, both backed by a PVC. Writable
+paths are relocatable onto that PVC via the `MUNGER_DATA_DIR` env var
+(`config.py`). Manifests live in `deploy/k8s/`; the end-to-end workflow,
+review gates, and CI/CD flow are documented in the project skill,
+`.claude/skills/munger-workflow/SKILL.md`.
+
+A distributed **v2 architecture** — sharding the rate-limited data-fetch
+stage across all four nodes behind a shared fundamentals cache — is drafted
+in [DESIGN_DISTRIBUTED.md](DESIGN_DISTRIBUTED.md) (not yet built; gated on
+empirically confirming the yfinance rate limit is per-IP).

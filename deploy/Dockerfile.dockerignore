@@ -1,0 +1,32 @@
+# Build context for deploy/Dockerfile (the app image). BuildKit prefers
+# this <dockerfile>.dockerignore over the repo-root .dockerignore (which is
+# scoped to report.Dockerfile), so the two image builds don't collide.
+#
+# Ship source + static inputs + tests (the image runs pytest for CI).
+# Exclude secrets, local runtime artifacts, and caches.
+.env
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Local runtime/state artifacts -- regenerated on the cluster onto the PVC,
+# never baked into the image (and .env/journal must never leak in).
+state.json
+journal.db
+screen_results.csv
+screen_results_archive
+munger.log
+report
+data_cache
+KILL_SWITCH
+
+# Not needed at runtime.
+.github
+.claude
+DESIGN.md
+TASKS.md

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "SCREEN_RESULTS_CSV_PATH", tmp_path / "screen_results.csv")
     monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
     monkeypatch.setattr(config, "REPORT_DIR", tmp_path / "report")
+    monkeypatch.setattr(config, "SCREEN_RESULTS_ARCHIVE_DIR", tmp_path / "archive")
 
 
 def _write_screen_results(rows: str) -> None:
@@ -30,6 +32,37 @@ def test_generate_report_with_no_data_writes_empty_pages() -> None:
     tickers_html = (config.REPORT_DIR / "tickers.html").read_text()
     assert "No current picks yet." in index_html
     assert "<table" in tickers_html
+
+
+def test_index_shows_buyable_candidates_when_no_positions_are_journaled() -> None:
+    # staff-engineer-reviewer / user "implement the todo": the screen-only
+    # deployment has no trade journal, so the home page must show the latest
+    # screen's buyable candidates (honestly labeled as not-held) instead of
+    # a bare "No current picks yet".
+    _write_screen_results(
+        "AAPL,True,90.5,,2500000000000,28.4,1.5\n"
+        "MSFT,True,88.0,,2000000000000,30.1,1.4\n"
+        "XYZ,False,10.0,graham_pe,,,\n"
+    )
+    results = report._load_screen_results()
+
+    html_out = report._render_index(picks=[], results=results)
+
+    assert "No current picks yet." not in html_out
+    assert "buyable candidate" in html_out
+    assert "not holdings" in html_out
+    assert "AAPL" in html_out and "MSFT" in html_out
+    # The non-buyable name must not be surfaced as a candidate.
+    assert "XYZ" not in html_out
+
+
+def test_index_falls_back_to_empty_state_when_screen_finds_nothing_buyable() -> None:
+    _write_screen_results("XYZ,False,10.0,graham_pe,,,\n")
+    results = report._load_screen_results()
+
+    html_out = report._render_index(picks=[], results=results)
+
+    assert "No current picks yet." in html_out
 
 
 def test_index_page_includes_a_live_progress_banner_and_polling_script() -> None:
@@ -176,3 +209,97 @@ def test_tickers_page_carries_raw_numeric_value_for_js_sorting() -> None:
     html_out = report._render_tickers(results, held_symbols=set())
 
     assert 'data-sort="2500000000.0"' in html_out
+
+
+def _write_archive(day: str, rows: str) -> None:
+    config.SCREEN_RESULTS_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    header = "symbol,buyable,score,fail_reasons\n"
+    (config.SCREEN_RESULTS_ARCHIVE_DIR / f"screen_results_{day}.csv").write_text(header + rows)
+
+
+def test_load_daily_summaries_counts_buyable_per_day() -> None:
+    _write_archive("2026-07-01", "AAPL,True,90.0,\nMSFT,False,10.0,graham_pe\n")
+    _write_archive("2026-07-02", "AAPL,False,5.0,graham_pe\n")
+
+    summaries = report._load_daily_summaries()
+
+    assert summaries[datetime.date(2026, 7, 1)] == {"total": 2, "buyable": 1}
+    assert summaries[datetime.date(2026, 7, 2)] == {"total": 1, "buyable": 0}
+
+
+def test_load_daily_summaries_ignores_malformed_filenames_and_files() -> None:
+    config.SCREEN_RESULTS_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    (config.SCREEN_RESULTS_ARCHIVE_DIR / "screen_results_not-a-date.csv").write_text("junk")
+    (config.SCREEN_RESULTS_ARCHIVE_DIR / "screen_results_2026-07-05.csv").write_text(
+        "not,a,valid,buyable,column\n1,2,3,4,5\n"
+    )
+
+    summaries = report._load_daily_summaries()
+
+    assert summaries == {}
+
+
+def test_calendar_page_shows_a_day_with_buyable_names() -> None:
+    import datetime
+
+    today = datetime.date.today().isoformat()
+    _write_archive(today, "AAPL,True,90.0,\nMSFT,False,10.0,graham_pe\n")
+
+    report.generate_report()
+
+    calendar_html = (config.REPORT_DIR / "calendar.html").read_text()
+    assert "cal-has-buyable" in calendar_html
+    assert f"screen_results_archive/screen_results_{today}.csv" in calendar_html
+
+
+def test_calendar_page_never_places_orders_note_is_present() -> None:
+    report.generate_report()
+
+    calendar_html = (config.REPORT_DIR / "calendar.html").read_text()
+    assert "never places orders" in calendar_html
+
+
+def test_copy_archives_into_report_copies_files_and_leaves_no_tmp_artifact() -> None:
+    # staff-engineer-reviewer: the new copy logic was untested. Confirm the
+    # archive actually lands under REPORT_DIR (not just that the calendar
+    # *links* to the expected path) and that the atomic-copy tmp file is
+    # cleaned up (renamed away), not left sitting alongside the real one.
+    _write_archive("2026-07-01", "AAPL,True,90.0,\n")
+    config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+    report._copy_archives_into_report()
+
+    dest = config.REPORT_DIR / "screen_results_archive" / "screen_results_2026-07-01.csv"
+    assert dest.exists()
+    assert dest.read_text() == (config.SCREEN_RESULTS_ARCHIVE_DIR / "screen_results_2026-07-01.csv").read_text()
+    assert not dest.with_suffix(dest.suffix + ".tmp").exists()
+
+
+def test_copy_archives_into_report_skips_an_unchanged_file() -> None:
+    _write_archive("2026-07-01", "AAPL,True,90.0,\n")
+    config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    report._copy_archives_into_report()
+    dest = config.REPORT_DIR / "screen_results_archive" / "screen_results_2026-07-01.csv"
+    first_copy_mtime = dest.stat().st_mtime
+
+    # Re-running with the source unchanged must not rewrite the dest (same
+    # size + not-older mtime skip condition) -- this is what keeps the copy
+    # O(new files), not O(all history), on every report generation.
+    report._copy_archives_into_report()
+
+    assert dest.stat().st_mtime == first_copy_mtime
+
+
+def test_copy_archives_into_report_recopies_a_changed_same_day_file() -> None:
+    # A same-day re-run can overwrite today's dated archive with different
+    # content -- confirm the changed-size case is actually re-copied, not
+    # just skipped because the filename already exists.
+    _write_archive("2026-07-01", "AAPL,True,90.0,\n")
+    config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    report._copy_archives_into_report()
+
+    _write_archive("2026-07-01", "AAPL,True,90.0,\nMSFT,False,10.0,graham_pe\n")
+    report._copy_archives_into_report()
+
+    dest = config.REPORT_DIR / "screen_results_archive" / "screen_results_2026-07-01.csv"
+    assert "MSFT" in dest.read_text()

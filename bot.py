@@ -38,14 +38,12 @@ def _kill_switch_active() -> bool:
 def _fetched_fraction(results: pd.DataFrame) -> float:
     """Fraction of screened tickers that got real data.
 
-    1 - fraction tagged data_missing:fetch_failed (DESIGN.md 5). A
-    half-empty screen would make every holding look delisted and
-    trigger mass strikes.
+    Thin delegate to `screener.fetched_fraction` (the single source of
+    truth) so the trading path and the screen-only daily path can't drift
+    on this safety threshold. A half-empty screen would make every holding
+    look delisted and trigger mass strikes (DESIGN.md §5).
     """
-    if len(results) == 0:
-        return 0.0
-    fetch_failed = results["fail_reasons"].fillna("").str.contains("fetch_failed")
-    return 1.0 - (fetch_failed.sum() / len(results))
+    return screener.fetched_fraction(results)
 
 
 def _process_sells_if_data_is_healthy(

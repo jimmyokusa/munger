@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pandas as pd
 import pytest
 
 import config
@@ -388,3 +389,32 @@ def test_run_screen_isolates_a_single_ticker_crash(
     assert bool(exploded_row["buyable"]) is False
     assert exploded_row["fail_reasons"] == "data_invalid_outlier:unhandled"
     assert bool(good_row["buyable"]) is True
+
+
+def test_fetched_fraction_all_clean() -> None:
+    # Direct test of the single source of truth (staff-engineer-reviewer):
+    # bot._fetched_fraction now delegates here, and daily_screen.py's
+    # archive gate calls this directly -- both share this exact function.
+    results = pd.DataFrame(
+        [{"symbol": "A", "buyable": True, "score": 1.0, "fail_reasons": "graham_pe"}]
+    )
+    assert screener.fetched_fraction(results) == 1.0
+
+
+def test_fetched_fraction_some_missing() -> None:
+    results = pd.DataFrame(
+        [
+            {
+                "symbol": "A",
+                "buyable": False,
+                "score": 0.0,
+                "fail_reasons": "data_missing:fetch_failed",
+            },
+            {"symbol": "B", "buyable": True, "score": 1.0, "fail_reasons": ""},
+        ]
+    )
+    assert screener.fetched_fraction(results) == pytest.approx(0.5)
+
+
+def test_fetched_fraction_empty_results() -> None:
+    assert screener.fetched_fraction(pd.DataFrame(columns=["symbol", "fail_reasons"])) == 0.0

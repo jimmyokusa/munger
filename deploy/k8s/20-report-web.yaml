@@ -1,0 +1,69 @@
+# Static report viewer: stock nginx serving the report/ directory the
+# CronJob generates onto the shared PVC. No custom image -- nginx:alpine is
+# multi-arch (arm64) and pulls from Docker Hub.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: munger-report
+  namespace: munger
+  labels:
+    app.kubernetes.io/name: munger-report
+spec:
+  replicas: 1
+  # Recreate (not RollingUpdate): the PVC is ReadWriteOnce, so a second
+  # (new) pod can't mount it alongside the old one during a rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: munger-report
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: munger-report
+    spec:
+      # Pin to the same node as the PVC / CronJob (see 10-pvc.yaml).
+      nodeSelector:
+        kubernetes.io/hostname: pi1
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: data
+              # Only the generated site, read-only -- nginx never writes
+              # to the report data.
+              mountPath: /usr/share/nginx/html
+              subPath: report
+              readOnly: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: munger-data
+---
+# NodePort so the report is reachable on the LAN without DNS or an Ingress
+# host rule: http://<any-node-ip>:30080 (e.g. http://192.168.20.204:30080).
+# k3s already binds :80/:443 on every node for Traefik, so a bare port-80
+# LoadBalancer would collide -- NodePort sidesteps that.
+apiVersion: v1
+kind: Service
+metadata:
+  name: munger-report
+  namespace: munger
+  labels:
+    app.kubernetes.io/name: munger-report
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: munger-report
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30080

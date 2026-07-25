@@ -1,0 +1,77 @@
+# CD: the daily screen-only run (M14). Fetches the universe, screens it,
+# archives the result, and regenerates the HTML report onto the shared PVC
+# -- exactly what .github/workflows/daily-screen.yml does, but in-cluster.
+# Screen-only by construction: daily_screen.py never imports execution.py,
+# so it CANNOT place an order; no Alpaca secrets are mounted here either
+# (defense in depth). Trading stays on bot.py's own quarterly cadence.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: munger-daily-screen
+  namespace: munger
+  labels:
+    app.kubernetes.io/name: munger-daily-screen
+spec:
+  # 13:00 UTC daily, matching the GitHub Actions cadence.
+  schedule: "0 13 * * *"
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # A full ~1500-ticker yfinance screen is slow and rate-limited on a
+      # 1GB Pi; give it room but don't let a wedged run hang forever.
+      activeDeadlineSeconds: 3000
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: munger-daily-screen
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            kubernetes.io/hostname: pi1
+          # Make the PVC group-writable by the image's non-root uid (1000).
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+          containers:
+            - name: daily-screen
+              image: munger:latest
+              # Image is side-loaded into containerd via `k3s ctr images
+              # import` (no registry), so never try to pull it.
+              imagePullPolicy: Never
+              command: ["python", "daily_screen.py"]
+              env:
+                - name: MUNGER_DATA_DIR
+                  value: /data
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+              # Memory (staff-engineer-reviewer, round 2): limits are not
+              # reservations, and the previous 640Mi limit was already over
+              # budget by its own math -- 640 (this) + 64 (nginx's limit) +
+              # ~250MB k3s/kubelet/flannel baseline = ~954Mi vs. a 900Mi node,
+              # worse in the worst case even though one cold-fetch run
+              # (2026-07-24) happened not to hit it. Sized instead to leave
+              # real headroom: 900 - 64 (nginx) - 250 (baseline) = ~586Mi
+              # available, so this limit stays meaningfully under that, not
+              # flush against it. If a run still approaches this, lower
+              # DATA_FETCH_THREAD_POOL_WORKERS or shrink the universe rather
+              # than raising the limit (which only defers a node-level OOM,
+              # per the observability gap noted in daily_screen.py's
+              # non-zero-exit-on-degraded-run fix -- an OOM-kill here looks
+              # identical to a healthy day unless something pages on it).
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  memory: 512Mi
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: munger-data

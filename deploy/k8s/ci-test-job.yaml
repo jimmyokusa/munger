@@ -1,0 +1,37 @@
+# CI: run the full pytest suite in-cluster, on the same arm64 image that
+# CD ships. Applied by deploy/build-and-deploy.sh, which gates the rest of
+# the rollout on this Job completing successfully. Tests are self-contained
+# (they use tmp_path fixtures), so no PVC or secrets are mounted.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: munger-ci-test
+  namespace: munger
+  labels:
+    app.kubernetes.io/name: munger-ci-test
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: munger-ci-test
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: pi1
+      containers:
+        - name: pytest
+          image: munger:latest
+          imagePullPolicy: Never
+          # -p no:cacheprovider: the image's /app is root-owned and the
+          # job runs as non-root, so pytest can't write its .pytest_cache
+          # there (harmless warnings otherwise).
+          command: ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 640Mi

@@ -169,6 +169,23 @@ def calculate_munger_score(metrics: data.Metrics) -> float:
 _KEY_COLUMNS = ["symbol", "buyable", "score", "fail_reasons"]
 
 
+def fetched_fraction(results: pd.DataFrame) -> float:
+    """Fraction of screened tickers that got real data (not fetch_failed).
+
+    `1 - fraction tagged data_missing:fetch_failed` (DESIGN.md §5). A
+    half-empty screen would make every holding look delisted (trading
+    path) or archive a throttled snapshot as if it were clean history
+    (daily-screen path) -- both callers gate on this against
+    `config.MIN_UNIVERSE_FETCH_FRACTION`. Lives here (not in bot.py) so
+    the screen-only `daily_screen` can use it without importing the
+    trading/execution path.
+    """
+    if len(results) == 0:
+        return 0.0
+    fetch_failed = results["fail_reasons"].fillna("").str.contains("fetch_failed")
+    return 1.0 - (fetch_failed.sum() / len(results))
+
+
 def run_screen(tickers: list[str]) -> pd.DataFrame:
     """Fetch, gate, and score every ticker; always writes screen_results.csv.
 
