@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from pathlib import Path
 
@@ -105,6 +106,28 @@ def test_archive_screen_results_copies_the_current_csv(
     archived_path = journal.archive_screen_results("2026-07-21")
 
     assert archived_path == archive_dir / "screen_results_2026-07-21.csv"
+    assert archived_path.read_text() == csv_path.read_text()
+
+
+def test_archive_screen_results_never_calls_chmod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Real bug (2026-07-25 Cloud Run crash): shutil.copy (unlike copyfile)
+    # also calls os.chmod to preserve the source's permission bits, which
+    # GCS FUSE rejects with PermissionError -- worked fine on local disk/
+    # k3s's PVC, so it never surfaced there. Forcing os.chmod to raise
+    # proves archive_screen_results no longer calls it at all.
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise PermissionError("[Errno 1] Operation not permitted (simulated GCS FUSE)")
+
+    monkeypatch.setattr(os, "chmod", _raise)
+    csv_path = tmp_path / "screen_results.csv"
+    csv_path.write_text("symbol,buyable,score\nAAPL,True,90.0\n")
+    monkeypatch.setattr(config, "SCREEN_RESULTS_CSV_PATH", csv_path)
+    monkeypatch.setattr(config, "SCREEN_RESULTS_ARCHIVE_DIR", tmp_path / "archive")
+
+    archived_path = journal.archive_screen_results("2026-07-21")
+
     assert archived_path.read_text() == csv_path.read_text()
 
 

@@ -36,9 +36,14 @@ _progress_total = 0
 _progress_completed = 0
 _progress_in_flight: set[str] = set()
 _progress_phase = ""
+# Monotonic timestamp of the last *attempted* progress-file write (success
+# or failure), used to throttle the high-volume per-ticker calls -- see
+# config.PROGRESS_WRITE_MIN_INTERVAL_SECONDS. Starts at 0.0 so the very
+# first call, whenever it happens, is never skipped.
+_progress_last_write_monotonic = 0.0
 
 
-def _write_progress_file() -> None:
+def _write_progress_file(*, force: bool = True) -> None:
     # The write+rename must happen INSIDE the lock, not just the payload
     # construction -- every worker thread shares the same tmp_path, so
     # two threads racing past an unlocked write/rename could have one
@@ -56,10 +61,36 @@ def _write_progress_file() -> None:
     # where an unguarded raise would skip fetching entirely. Staff-
     # engineer-reviewer finding: this display-only side channel must
     # never be able to affect real data-fetch outcomes.
+    #
+    # force=False (used only by the per-ticker start/done calls) applies
+    # PROGRESS_WRITE_MIN_INTERVAL_SECONDS: on a GCS-backed deployment,
+    # writing this same object on every one of ~3000 per-ticker events
+    # blows through GCS's per-object mutation rate limit and the
+    # resulting 429 retries starve the fetch threads themselves (real
+    # 2026-07-25 Cloud Run incident -- see config.py). Skipping a throttled
+    # write only delays *this* update; _start_progress/_finish_progress
+    # always force a write, so the batch's start and final state are never
+    # lost even if every per-ticker write in between was skipped.
     try:
-        with _rate_limit_lock:
-            rate_limited_until = _rate_limited_until
+        global _progress_last_write_monotonic
         with _progress_lock:
+            now_monotonic = time.monotonic()
+            if not force and (
+                now_monotonic - _progress_last_write_monotonic
+                < config.PROGRESS_WRITE_MIN_INTERVAL_SECONDS
+            ):
+                return
+            # Record the timestamp of every write that actually proceeds
+            # (force=True or a force=False call that passed the throttle),
+            # not just throttled ones -- otherwise a force=True write (which
+            # never updated this) would leave the *next* force=False call
+            # measuring elapsed time from a stale/zero timestamp and write
+            # immediately regardless of how recently the force=True write
+            # just happened.
+            _progress_last_write_monotonic = now_monotonic
+
+            with _rate_limit_lock:
+                rate_limited_until = _rate_limited_until
             payload = {
                 "phase": _progress_phase,
                 "total": _progress_total,
@@ -89,13 +120,13 @@ def _start_progress(phase: str, total: int) -> None:
         _progress_total = total
         _progress_completed = 0
         _progress_in_flight.clear()
-    _write_progress_file()
+    _write_progress_file(force=True)
 
 
 def _mark_ticker_started(symbol: str) -> None:
     with _progress_lock:
         _progress_in_flight.add(symbol)
-    _write_progress_file()
+    _write_progress_file(force=False)
 
 
 def _mark_ticker_done(symbol: str) -> None:
@@ -103,7 +134,7 @@ def _mark_ticker_done(symbol: str) -> None:
     with _progress_lock:
         _progress_completed += 1
         _progress_in_flight.discard(symbol)
-    _write_progress_file()
+    _write_progress_file(force=False)
 
 
 def _finish_progress() -> None:

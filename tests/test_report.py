@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 from pathlib import Path
 
 import pytest
@@ -273,6 +274,26 @@ def test_copy_archives_into_report_copies_files_and_leaves_no_tmp_artifact() -> 
     assert dest.exists()
     assert dest.read_text() == (config.SCREEN_RESULTS_ARCHIVE_DIR / "screen_results_2026-07-01.csv").read_text()
     assert not dest.with_suffix(dest.suffix + ".tmp").exists()
+
+
+def test_copy_archives_into_report_never_calls_chmod(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Real bug (2026-07-25 Cloud Run crash): shutil.copy2 (unlike
+    # copyfile) also calls os.chmod to preserve the source's permission
+    # bits, which GCS FUSE rejects with PermissionError -- worked fine on
+    # local disk/k3s's PVC, so it never surfaced there (same bug found in
+    # journal.archive_screen_results). Forcing os.chmod to raise proves
+    # this function no longer calls it at all.
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise PermissionError("[Errno 1] Operation not permitted (simulated GCS FUSE)")
+
+    monkeypatch.setattr(os, "chmod", _raise)
+    _write_archive("2026-07-01", "AAPL,True,90.0,\n")
+    config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+    report._copy_archives_into_report()
+
+    dest = config.REPORT_DIR / "screen_results_archive" / "screen_results_2026-07-01.csv"
+    assert dest.exists()
 
 
 def test_copy_archives_into_report_skips_an_unchanged_file() -> None:

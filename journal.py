@@ -149,7 +149,14 @@ def archive_screen_results(run_date: str) -> Path:
     """
     config.SCREEN_RESULTS_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     archive_path = config.SCREEN_RESULTS_ARCHIVE_DIR / f"screen_results_{run_date}.csv"
-    shutil.copy(config.SCREEN_RESULTS_CSV_PATH, archive_path)
+    # copyfile (content only), not copy/copy2 -- both of those also call
+    # os.chmod to preserve the source file's permission bits, which GCS
+    # FUSE (Cloud Run's DATA_DIR volume) rejects outright with
+    # PermissionError: [Errno 1] Operation not permitted, since GCS
+    # objects have no POSIX permission bits to set (real crash,
+    # 2026-07-25 Cloud Run run -- this is the archive path, so on local
+    # disk/k3s's PVC it worked fine and this never surfaced there).
+    shutil.copyfile(config.SCREEN_RESULTS_CSV_PATH, archive_path)
     return archive_path
 
 

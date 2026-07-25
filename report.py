@@ -660,8 +660,14 @@ def _copy_archives_into_report() -> None:
         # this module's own _write_text_atomically/screener's
         # _write_csv_atomically pattern -- a crash mid-copy must not leave a
         # truncated CSV live at the name nginx is already serving.
+        #
+        # copyfile (content only), not copy2 -- copy2 also calls os.chmod
+        # to preserve the source file's permission bits, which GCS FUSE
+        # (Cloud Run's DATA_DIR volume) rejects with PermissionError:
+        # [Errno 1] Operation not permitted (same real crash found in
+        # journal.archive_screen_results, 2026-07-25 Cloud Run run).
         tmp_dest = dest.with_suffix(dest.suffix + ".tmp")
-        shutil.copy2(src, tmp_dest)
+        shutil.copyfile(src, tmp_dest)
         tmp_dest.replace(dest)
 
 

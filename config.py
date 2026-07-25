@@ -72,6 +72,23 @@ DATA_RATE_LIMIT_COOLDOWN_SECONDS = 45.0
 # aid, not a permanent audit trail (that's journal.db, DESIGN.md 3.6).
 DATA_RAW_CACHE_DIR: Path = DATA_DIR / "data_cache"
 
+# Throttle for the per-ticker live-progress file write (data.py's
+# _mark_ticker_started/_mark_ticker_done). Zero (the default) writes on
+# every single call, unchanged from the original local-disk/k3s-PVC
+# behavior, where a real block device has no per-object write-rate limit.
+# Cloud Run's GCS-backed volume does: a full universe run
+# (DATA_FETCH_THREAD_POOL_WORKERS concurrent threads, ~3000 progress
+# writes) blew through GCS's per-object mutation rate limit, and the
+# resulting 429/stale-file-handle retries starved the fetch threads badly
+# enough that 489/1503 tickers timed out (first Cloud Run seed run,
+# 2026-07-25). Set via MUNGER_PROGRESS_WRITE_MIN_INTERVAL_SECONDS on any
+# GCS-backed deployment; _start_progress/_finish_progress always write
+# immediately regardless of this value -- only the high-volume per-ticker
+# calls are throttled.
+PROGRESS_WRITE_MIN_INTERVAL_SECONDS = float(
+    os.environ.get("MUNGER_PROGRESS_WRITE_MIN_INTERVAL_SECONDS", "0")
+)
+
 # Sanity bounds for validate_metrics (DESIGN.md 3.2, Deliverable 1.3).
 # Same ratio/decimal-fraction units as the corresponding Metrics field and
 # gate threshold (e.g. MAX_DEBT_TO_EQUITY above) -- data.py normalizes

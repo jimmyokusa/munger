@@ -30,6 +30,17 @@ def _reset_shared_rate_limit_state() -> Generator[None, None, None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_progress_write_throttle() -> Generator[None, None, None]:
+    # Same reasoning as the rate-limit reset above: _progress_last_write_
+    # monotonic is module-level shared state, so a prior test's timestamp
+    # could otherwise cause a false skip in a later test that enables the
+    # throttle (config.PROGRESS_WRITE_MIN_INTERVAL_SECONDS > 0).
+    data._progress_last_write_monotonic = 0.0
+    yield
+    data._progress_last_write_monotonic = 0.0
+
+
+@pytest.fixture(autouse=True)
 def _isolate_progress_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # fetch_all_metrics/fetch_metrics now write live progress (M13) to
     # config.PROGRESS_FILE_PATH on every call -- without this, tests would
@@ -406,6 +417,42 @@ def test_progress_tracking_reflects_in_flight_and_completed_tickers() -> None:
 
     final_payload = json.loads(config.PROGRESS_FILE_PATH.read_text())
     assert final_payload["completed"] == final_payload["total"] == 3
+
+
+def test_progress_write_throttle_skips_rapid_per_ticker_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real bug (2026-07-25 Cloud Run incident): GCS enforces a per-object
+    # mutation rate limit that a local disk/PVC doesn't, and writing
+    # progress.json on every one of ~3000 per-ticker events blew through
+    # it, starving the fetch threads with 429 retries. Fix: throttle the
+    # per-ticker (force=False) writes via PROGRESS_WRITE_MIN_INTERVAL_
+    # SECONDS; force=True callers (_start_progress/_finish_progress) must
+    # always write regardless.
+    monkeypatch.setattr(config, "PROGRESS_WRITE_MIN_INTERVAL_SECONDS", 60.0)
+
+    data._start_progress("screening", 2)
+    started_payload = json.loads(config.PROGRESS_FILE_PATH.read_text())
+    assert started_payload["total"] == 2  # force=True: always writes
+
+    mtime_after_start = config.PROGRESS_FILE_PATH.stat().st_mtime_ns
+
+    # Both calls land well inside the 60s throttle window -- neither
+    # per-ticker write should actually touch the file.
+    data._mark_ticker_started("AAPL")
+    data._mark_ticker_done("AAPL")
+
+    assert config.PROGRESS_FILE_PATH.stat().st_mtime_ns == mtime_after_start
+    # But the in-memory state is still correct -- nothing is lost, it's
+    # just not yet flushed to disk.
+    assert data._progress_completed == 1
+    assert data._progress_in_flight == set()
+
+    # _finish_progress is force=True and must always write, capturing the
+    # true final state even though every write in between was throttled.
+    data._finish_progress()
+    final_payload = json.loads(config.PROGRESS_FILE_PATH.read_text())
+    assert final_payload["completed"] == final_payload["total"] == 2
 
 
 def test_progress_file_reports_an_active_rate_limit_cooldown() -> None:
