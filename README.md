@@ -154,3 +154,19 @@ A distributed **v2 architecture** — sharding the rate-limited data-fetch
 stage across all four nodes behind a shared fundamentals cache — is drafted
 in [DESIGN_DISTRIBUTED.md](DESIGN_DISTRIBUTED.md) (not yet built; gated on
 empirically confirming the yfinance rate limit is per-IP).
+
+## Deployment (Google Cloud Run) — in progress
+
+A second target stood up alongside the Pi cluster: GCP project
+`munger-503515` (`us-central1`), same screen-only image and
+`MUNGER_DATA_DIR` mechanism, with writable state on a GCS bucket
+(`munger-503515-data`) mounted via `gcsfuse` instead of a k8s PVC. A Cloud
+Run **service** (`report-web`, `deploy/cloudrun/report-web/`) serves the
+report and is live; a Cloud Run **Job** (`daily-screen`) runs the same
+screen-only entrypoint as the k3s CronJob but hasn't completed successfully
+yet — two real GCS-specific bugs (a per-object mutation rate limit on the
+live-progress file, and `chmod` calls during archival that GCS FUSE
+rejects) were found and fixed in code, but not yet redeployed. Unlike the
+k3s side, there's no one-command deploy script for this target yet, and
+whether it supplements or replaces the k3s deployment isn't decided. See
+the Infra — Google Cloud Run section of `TASKS.md` for the full detail.
