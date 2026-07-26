@@ -136,6 +136,12 @@ def test_all_pages_have_a_favicon_link_and_no_generic_bot_title() -> None:
         assert "Munger bot" not in html_out
         assert "<title>Munger Screener" in html_out
 
+    feed_json = json.loads((config.REPORT_DIR / "feed.json").read_text())
+    assert feed_json["title"].startswith("Munger Screener")
+    rss_xml = (config.REPORT_DIR / "rss.xml").read_text()
+    assert "Munger bot" not in rss_xml
+    assert "<title>Munger Screener" in rss_xml
+
 
 def test_generate_report_shows_a_pick_with_its_reason_and_metrics() -> None:
     _write_screen_results("AAPL,True,90.5,,2500000000000,28.4,1.5\n")
