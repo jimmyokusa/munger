@@ -83,6 +83,59 @@ _METRIC_TOOLTIPS: dict[str, str] = {
     "10-year earnings-stability test (data availability limit).",
 }
 
+# Plain-language explanations for each Graham/Munger gate fail-reason code,
+# shown as a hover tooltip on the Fail reasons cell (user request: a raw
+# code like "graham_current_ratio" doesn't explain itself, and a ticker can
+# have a high score yet still fail one gate -- this is where a reader finds
+# out which one and why).
+_GATE_REASON_TOOLTIPS: dict[str, str] = {
+    "graham_size": "Market cap below Graham's gate 1 minimum "
+    f"(${config.MIN_MARKET_CAP / 1e9:.0f}B).",
+    "graham_current_ratio": "Current ratio below Graham's gate 2 minimum "
+    f"({config.MIN_CURRENT_RATIO}).",
+    "graham_debt_to_equity": "Debt/equity above Graham's gate 3 maximum "
+    f"({config.MAX_DEBT_TO_EQUITY}), or negative (liabilities exceed assets).",
+    "graham_earnings_stability": "Fewer than Graham's gate 4 minimum "
+    f"({config.MIN_CONSECUTIVE_POSITIVE_EARNINGS_YEARS}) consecutive years of "
+    "positive net income.",
+    "graham_dividend_record": "No qualifying dividend -- Graham's gate 5, "
+    "only checked when the REQUIRE_DIVIDEND_RECORD toggle is enabled.",
+    "graham_pe": f"P/E above Graham's gate 6 maximum ({config.MAX_PE}), or "
+    "negative (unprofitable).",
+    "graham_pe_times_pb": "Combined P/E x P/B above Graham's gate 7 "
+    f"maximum ({config.MAX_PE_TIMES_PB}), or non-positive.",
+    "munger_roe": "Return on equity below Munger's quality floor "
+    f"({config.MIN_ROE:.0%}).",
+    "munger_gross_margin": "Gross margin below Munger's quality floor "
+    f"({config.MIN_GROSS_MARGIN:.0%}).",
+    "munger_fcf": "Free cash flow is not positive.",
+    "data_missing:fetch_failed": "yfinance's shared rate limit was hit during "
+    "this run and the fetch didn't complete in time -- not that the data "
+    "doesn't exist. Usually recoverable on the next run.",
+    "data_invalid_outlier:unhandled": "An unexpected error occurred computing "
+    "this ticker's gates/score; treated as a fail, not silently skipped.",
+}
+
+
+def _fail_reason_tooltip(token: str) -> str:
+    """Plain-language explanation for one fail_reasons token (user request).
+
+    Static gate codes look up directly; data_missing:<field> and
+    data_invalid_outlier:<field> carry a dynamic field name suffix (see
+    data.validate_metrics), so those are built from _METRIC_LABELS instead
+    of needing one dict entry per field.
+    """
+    if token in _GATE_REASON_TOOLTIPS:
+        return _GATE_REASON_TOOLTIPS[token]
+    if ":" in token:
+        prefix, field = token.split(":", 1)
+        label = _METRIC_LABELS.get(field, field)
+        if prefix == "data_missing":
+            return f"{label} wasn't returned by the data provider for this fetch."
+        if prefix == "data_invalid_outlier":
+            return f"{label}'s value was an implausible outlier and excluded."
+    return ""
+
 # A rounded-square "M" monogram in the site's own gradient (matching the
 # body background below) -- inlined as a data URI so the favicon needs no
 # extra file to host or build step, just this one string.
@@ -826,16 +879,28 @@ def _render_tickers(results: pd.DataFrame, held_symbols: set[str]) -> str:
                 reasons = "" if pd.isna(raw_reasons) else str(raw_reasons)
                 if "fetch_failed" in reasons:
                     any_fetch_failed = True
-                    title = (
-                        "yfinance rate-limiting during this fetch, not permanently "
-                        "missing data -- see the note above the table"
-                    )
-                    cells.append(f'<td title="{html.escape(title)}">{html.escape(reasons)}</td>')
-                else:
-                    cells.append(f"<td>{html.escape(reasons)}</td>")
+                # Each comma-separated token gets its own hover tooltip
+                # (user request: a code like "graham_current_ratio" doesn't
+                # explain itself) rather than one title on the whole cell.
+                tokens = [t for t in reasons.split(",") if t]
+                spans = ", ".join(
+                    f'<span title="{html.escape(_fail_reason_tooltip(t))}">{html.escape(t)}</span>'
+                    for t in tokens
+                )
+                cells.append(f"<td>{spans}</td>")
             else:
                 cells.append(f"<td>{html.escape(str(row[col]))}</td>")
         rows_html.append(f'<tr class="{css_class}">{"".join(cells)}</tr>')
+
+    score_buyable_note = (
+        '<div class="glass" style="padding: 0.75rem 1rem; margin-bottom: 1rem; '
+        'font-size: 0.85rem;">'
+        "&#9432; Score and Buyable are independent: Score ranks quality across "
+        "every screened ticker, while Buyable requires passing <em>every</em> "
+        "Graham/Munger gate. A high score can still be non-buyable &mdash; "
+        "hover a Fail reasons code to see which gate it failed and why."
+        "</div>"
+    )
 
     fetch_failed_note = (
         '<div class="glass" style="padding: 0.75rem 1rem; margin-bottom: 1rem; '
@@ -890,6 +955,7 @@ for (const th of table.tHead.rows[0].cells) {
 <nav><a href="index.html">&larr; Back to current picks</a>
 <a href="calendar.html">Daily calendar &rarr;</a></nav>
 {_generated_at()}
+{score_buyable_note}
 {fetch_failed_note}
 <input id="filter" type="text" placeholder="Filter by symbol&hellip;">
 <div class="glass table-wrap">

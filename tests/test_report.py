@@ -100,7 +100,24 @@ def test_tickers_page_shows_a_note_when_any_row_has_fetch_failed() -> None:
     html_out = report._render_tickers(results, held_symbols=set())
 
     assert "not that the data doesn't exist" in html_out
-    assert 'title="yfinance rate-limiting' in html_out
+    assert 'title="yfinance' in html_out
+
+
+def test_tickers_page_gives_each_fail_reason_its_own_tooltip() -> None:
+    # User request: raw gate codes like "graham_current_ratio" don't
+    # explain themselves, especially confusing on a high-scoring ticker
+    # that's still non-buyable (e.g. HCI: score 97.8, buyable False,
+    # fail_reasons "graham_current_ratio,graham_earnings_stability").
+    _write_screen_results(
+        "HCI,False,97.8,\"graham_current_ratio,graham_earnings_stability\",,,\n"
+    )
+    results = report._load_screen_results()
+
+    html_out = report._render_tickers(results, held_symbols=set())
+
+    assert '<span title="Current ratio below' in html_out
+    assert '<span title="Fewer than Graham' in html_out
+    assert "Score and Buyable are independent" in html_out
 
 
 def test_tickers_page_omits_the_fetch_failed_note_when_no_row_has_it() -> None:
