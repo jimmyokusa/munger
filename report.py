@@ -49,6 +49,38 @@ _PERCENT_METRICS = frozenset(
 )
 _DOLLAR_METRICS = frozenset({"market_cap", "free_cash_flow"})
 
+# Plain-language, Munger/Graham-style explanations shown as a title
+# tooltip on each metric label (user request). Kept short -- this is a
+# hover hint, not the methodology drawer (_render_methodology_drawer),
+# which has the full gate/score writeup.
+_METRIC_TOOLTIPS: dict[str, str] = {
+    "market_cap": "Total market value of the company's shares. Graham's gate 1 "
+    "requires at least $2B, avoiding fragile small caps.",
+    "trailing_pe": "Price / trailing 12-month earnings. Lower means you're paying "
+    "less per dollar of current profit. Graham's gate 6 caps this at 20.",
+    "price_to_book": "Price / book (accounting net worth) value. Combined with "
+    "P/E in Graham's gate 7 (P/E x P/B <= 30) as a margin-of-safety check.",
+    "current_ratio": "Current assets / current liabilities. A rough near-term "
+    "solvency check -- Graham's gate 2 requires at least 1.5.",
+    "debt_to_equity": "Total debt / shareholder equity. Lower is safer. Graham's "
+    "gate 3 caps this at 1.0; the Munger score also rewards low debt directly.",
+    "return_on_equity": "Net income / shareholder equity -- how efficiently the "
+    "business turns owners' capital into profit. Munger's quality floor "
+    "requires at least 15%; it's the single heaviest-weighted score component.",
+    "gross_margin": "Gross profit / revenue. A proxy for pricing power / moat "
+    "strength. Munger's quality floor requires at least 30%.",
+    "operating_margin": "Operating income / revenue -- profitability after "
+    "operating costs, before interest and taxes.",
+    "free_cash_flow": "Cash generated after the capital spending needed to run "
+    "the business. Must be positive to clear Munger's quality floor.",
+    "dividend_yield": "Annual dividend / share price. Not required (Graham's "
+    "gate 5 is an optional toggle, off by default) -- a quality overlay "
+    "substitutes for it in this system.",
+    "consecutive_positive_earnings_years": "How many years running the company "
+    "posted positive net income -- a v1 stand-in for Graham's original "
+    "10-year earnings-stability test (data availability limit).",
+}
+
 _CSS = """
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
@@ -94,9 +126,50 @@ nav a:hover { text-decoration: underline; }
   background: light-dark(rgba(99, 102, 241, 0.15), rgba(165, 180, 252, 0.2));
 }
 .pick-body { margin-top: 0.85rem; }
-table.metrics { border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; width: 100%; }
+/* overflow-x: auto, not the table itself, so a long metric value (or a
+   narrow phone viewport) scrolls its own row instead of breaking the
+   page layout -- same pattern as .table-wrap around table.tickers. */
+.metrics-wrap { overflow-x: auto; margin-top: 0.5rem; }
+table.metrics { border-collapse: collapse; font-size: 0.9rem; width: 100%; }
 table.metrics td { padding: 0.25rem 0.75rem 0.25rem 0; }
-table.metrics td:first-child { opacity: 0.65; }
+table.metrics td:first-child { opacity: 0.65; cursor: help; }
+
+/* Visual badges (user request): quick-scan highlights on a pick, ranked
+   green > blue > neutral by how directly they signal quality vs. just
+   informational. Kept to text + background, no icons, so they read fine
+   at the tiny sizes a badge needs. */
+.badge {
+  display: inline-block; font-size: 0.72rem; font-weight: 600;
+  padding: 0.15rem 0.55rem; border-radius: 999px; margin: 0 0.3rem 0.3rem 0;
+  white-space: nowrap;
+}
+.badge-green {
+  color: light-dark(#166534, #86efac);
+  background: light-dark(rgba(34, 197, 94, 0.15), rgba(34, 197, 94, 0.2));
+}
+.badge-blue {
+  color: light-dark(#1e40af, #93c5fd);
+  background: light-dark(rgba(59, 130, 246, 0.15), rgba(59, 130, 246, 0.2));
+}
+/* Provisioned per the user's spec (a 3rd, non-quality-signal tier) but
+   not yet emitted by any renderer -- _render_badges only produces
+   green/blue today. Kept defined so a future informational badge (e.g. a
+   "held position" tag) doesn't need a new CSS pass. */
+.badge-neutral {
+  color: light-dark(#3f3f46, #d4d4d8);
+  background: light-dark(rgba(113, 113, 122, 0.15), rgba(161, 161, 170, 0.2));
+}
+
+/* Methodology drawer: same <details>/glass pattern as .pick, so it costs
+   no new CSS beyond spacing -- just needs to read as a document, not a
+   card. */
+.methodology { padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
+.methodology summary { cursor: pointer; font-weight: 600; }
+.methodology .methodology-body { margin-top: 0.85rem; font-size: 0.9rem; }
+.methodology h3 { font-size: 0.95rem; margin: 0.9rem 0 0.3rem; }
+.methodology h3:first-child { margin-top: 0; }
+.methodology ul { margin: 0.2rem 0; padding-left: 1.2rem; }
+.methodology li { margin-bottom: 0.15rem; }
 
 .empty { opacity: 0.7; font-style: italic; padding: 1.5rem; text-align: center; }
 .generated { opacity: 0.55; font-size: 0.8rem; margin-bottom: 1rem; }
@@ -231,11 +304,111 @@ def _metric_cell(name: str, value: object) -> str:
 
 def _render_metrics_table(metrics_row: pd.Series) -> str:
     rows = "".join(
-        f"<tr><td>{html.escape(label)}</td>"
+        f'<tr><td title="{html.escape(_METRIC_TOOLTIPS.get(key, ""))}">{html.escape(label)}</td>'
         f"<td>{_format_metric(key, metrics_row.get(key))}</td></tr>"
         for key, label in _METRIC_LABELS.items()
     )
-    return f'<table class="metrics">{rows}</table>'
+    return f'<div class="metrics-wrap"><table class="metrics">{rows}</table></div>'
+
+
+# Thresholds are informational display copy, not new screening logic --
+# they mirror DESIGN.md 3.3's existing gate/score constants (Graham gate 3
+# "debt/equity <= 1.0", Munger's ROE >= 15% floor, dividend gate 5) and are
+# intentionally not read from config.py: these are round, human-facing
+# "what counts as a highlight" numbers for the report, not tunable
+# screening parameters, so keeping them here (not config.py) avoids
+# implying they gate buyability the way the real thresholds do.
+_BADGE_ZERO_DEBT_MAX = 0.0
+_BADGE_HIGH_ROE_MIN = 0.20
+_BADGE_HIGH_DIVIDEND_YIELD_MIN = 0.03
+
+
+def _render_badges(metrics_row: pd.Series | None) -> str:
+    """Quick-scan highlight badges for a pick (user request).
+
+    green: zero debt or high ROE (the two strongest quality signals this
+    system already scores on -- DESIGN.md 3.3's low-debt and ROE score
+    components). blue: a meaningful dividend, informational only (v1's
+    dividend gate is an explicit optional toggle, off by default, so this
+    is not a buy signal, just a highlight). Silent (empty string) when
+    nothing qualifies or there's no metrics row at all -- a badge is a
+    bonus signal, never a placeholder.
+    """
+    if metrics_row is None:
+        return ""
+    badges: list[str] = []
+    debt_to_equity = metrics_row.get("debt_to_equity")
+    roe = metrics_row.get("return_on_equity")
+    dividend_yield = metrics_row.get("dividend_yield")
+    # >= 0 guard, not just <= _BADGE_ZERO_DEBT_MAX: a negative debt/equity
+    # means negative book equity (liabilities exceed assets) -- a red flag,
+    # not "no debt" -- and would otherwise satisfy "<= 0.0" too. Same trap
+    # screener.py's own gate/score logic already guards against (see its
+    # comments on negative debt_to_equity); staff-engineer-reviewer finding.
+    if (
+        _is_numeric(debt_to_equity)
+        and 0.0 <= float(debt_to_equity) <= _BADGE_ZERO_DEBT_MAX
+    ):
+        badges.append('<span class="badge badge-green">Zero debt</span>')
+    if _is_numeric(roe) and float(roe) >= _BADGE_HIGH_ROE_MIN:
+        badges.append('<span class="badge badge-green">High ROE</span>')
+    if _is_numeric(dividend_yield) and float(dividend_yield) >= _BADGE_HIGH_DIVIDEND_YIELD_MIN:
+        badges.append('<span class="badge badge-blue">Dividend</span>')
+    return "".join(badges)
+
+
+def _render_methodology_drawer() -> str:
+    """"How scoring & screening works" section (user request).
+
+    Collapsed by default via native <details> -- same zero-JS pattern as
+    each pick's own expandable panel. Content mirrors DESIGN.md 3.3
+    exactly, keeping its Stage 1 (7 Graham gates, pass/fail) vs. Stage 2
+    (Munger quality floor + score) split explicit rather than flattening
+    both into one undifferentiated list -- staff-engineer-reviewer finding
+    on an earlier draft that miscounted the gates and blurred the two
+    stages together. Keep the two in sync if the gates/weights ever change.
+    """
+    return """<details class="methodology glass">
+  <summary>How scoring &amp; screening works</summary>
+  <div class="methodology-body">
+    <p><strong>Stage 1:</strong> every ticker must first clear all
+    <strong>7 Graham entry gates</strong> (pass/fail) to even be
+    considered:</p>
+    <h3>Valuation</h3>
+    <ul>
+      <li>Trailing P/E &le; 20</li>
+      <li>P/E &times; Price/Book &le; 30 (Munger's twist on Graham's own
+      margin-of-safety check &mdash; paying a fair price for a wonderful
+      business, not just a statistically cheap one)</li>
+    </ul>
+    <h3>Financial health</h3>
+    <ul>
+      <li>Market cap &ge; $2B (avoids fragile small caps)</li>
+      <li>Current ratio &ge; 1.5</li>
+      <li>Debt / equity &le; 1.0</li>
+    </ul>
+    <h3>Profitability</h3>
+    <ul>
+      <li>4 consecutive years of positive net income</li>
+      <li>Dividend record: an optional gate, off by default in this
+      system &mdash; a quality overlay substitutes for it</li>
+    </ul>
+    <p><strong>Stage 2:</strong> stocks clearing Stage 1 must also meet a
+    Munger quality floor before they're eligible for a score:</p>
+    <ul>
+      <li><strong>Profitability</strong> &mdash; return on equity &ge; 15%,
+      gross margin &ge; 30%</li>
+      <li><strong>Cash flow</strong> &mdash; positive free cash flow</li>
+    </ul>
+    <p>Everything clearing both stages gets a <strong>0&ndash;100 Munger
+    score</strong>, weighted: return on equity 30%, gross margin 20%, FCF
+    yield 20%, low debt 15%, operating margin 15%. Ranking, not a pass/fail
+    bar &mdash; the buy queue takes the top-scoring names within the
+    portfolio's position limits. Full detail:
+    <a href="https://github.com/jimmyokusa/munger/blob/main/DESIGN.md#33-screener"
+      >DESIGN.md &sect;3.3</a>.</p>
+  </div>
+</details>"""
 
 
 def _render_pick(symbol: str, journal_row: dict[str, object] | None, results: pd.DataFrame) -> str:
@@ -253,11 +426,13 @@ def _render_pick(symbol: str, journal_row: dict[str, object] | None, results: pd
         else "—"
     )
     metrics_html = _render_metrics_table(metrics_row) if metrics_row is not None else ""
+    badges_html = _render_badges(metrics_row)
 
     return f"""<details class="pick glass">
   <summary><span class="symbol">{esc_symbol}</span>
     <span class="score">score {score_str}</span></summary>
   <div class="pick-body">
+    {f'<div class="badges">{badges_html}</div>' if badges_html else ""}
     <p><strong>Reason:</strong> {reason}</p>
     <p><strong>Bought:</strong> {timestamp} &middot; <strong>Notional:</strong> {notional_str}</p>
     {metrics_html}
@@ -347,10 +522,12 @@ def _render_candidate(metrics_row: pd.Series) -> str:
         f"{float(metrics_row['score']):.1f}" if _is_numeric(metrics_row.get("score")) else "—"
     )
     metrics_html = _render_metrics_table(metrics_row)
+    badges_html = _render_badges(metrics_row)
     return f"""<details class="pick glass">
   <summary><span class="symbol">{symbol}</span>
     <span class="score">score {score_str}</span></summary>
   <div class="pick-body">
+    {f'<div class="badges">{badges_html}</div>' if badges_html else ""}
     <p><strong>Status:</strong> buyable in the latest screen &mdash; not a held position</p>
     {metrics_html}
   </div>
@@ -400,6 +577,7 @@ def _render_index(picks: list[dict[str, object]], results: pd.DataFrame) -> str:
 <h1>Current picks</h1>
 <nav><a href="tickers.html">See all screened tickers &rarr;</a>
 <a href="calendar.html">Daily calendar &rarr;</a></nav>
+{_render_methodology_drawer()}
 <div class="progress-banner glass" id="progress-banner">
   <div class="phase" id="progress-phase"></div>
   <div class="progress-bar-track"><div class="progress-bar-fill" id="progress-bar-fill"></div></div>
@@ -424,9 +602,14 @@ def _render_tickers(results: pd.DataFrame, held_symbols: set[str]) -> str:
     }
     labels.update(_METRIC_LABELS)
 
-    header_html = "".join(
-        f'<th data-col="{i}">{html.escape(labels[c])}</th>' for i, c in enumerate(header_cols)
-    )
+    def _header_cell(i: int, col: str) -> str:
+        label = html.escape(labels[col])
+        if col not in _METRIC_TOOLTIPS:
+            return f'<th data-col="{i}">{label}</th>'
+        tooltip = html.escape(_METRIC_TOOLTIPS[col])
+        return f'<th data-col="{i}" title="{tooltip}">{label}</th>'
+
+    header_html = "".join(_header_cell(i, c) for i, c in enumerate(header_cols))
 
     rows_html = []
     any_fetch_failed = False

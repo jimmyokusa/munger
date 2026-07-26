@@ -6,6 +6,7 @@ import datetime
 import os
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 import config
@@ -157,6 +158,96 @@ def test_format_metric_formats_dollar_and_percent_metrics() -> None:
     assert report._format_metric("free_cash_flow", 500_000.0) == "$0.5M"
     assert report._format_metric("return_on_equity", 0.185) == "18.5%"
     assert report._format_metric("consecutive_positive_earnings_years", 4.0) == "4"
+
+
+def test_render_badges_shows_zero_debt_and_high_roe_as_green() -> None:
+    # User request: quick-scan highlight badges. Zero debt and high ROE
+    # (>= 20%) are the two strongest quality signals this system already
+    # scores on (DESIGN.md 3.3) -- both can be true for the same pick.
+    row = pd.Series({"debt_to_equity": 0.0, "return_on_equity": 0.25, "dividend_yield": 0.0})
+
+    html_out = report._render_badges(row)
+
+    assert html_out.count('class="badge badge-green"') == 2
+    assert "Zero debt" in html_out
+    assert "High ROE" in html_out
+    assert "badge-blue" not in html_out
+
+
+def test_render_badges_shows_dividend_as_blue() -> None:
+    row = pd.Series({"debt_to_equity": 0.4, "return_on_equity": 0.10, "dividend_yield": 0.035})
+
+    html_out = report._render_badges(row)
+
+    assert 'class="badge badge-blue"' in html_out
+    assert "Dividend" in html_out
+    assert "badge-green" not in html_out
+
+
+def test_render_badges_empty_when_nothing_qualifies() -> None:
+    row = pd.Series({"debt_to_equity": 0.4, "return_on_equity": 0.10, "dividend_yield": 0.0})
+
+    assert report._render_badges(row) == ""
+
+
+def test_render_badges_does_not_award_zero_debt_for_negative_debt_to_equity() -> None:
+    # Real bug (staff-engineer-reviewer): negative debt_to_equity means
+    # negative book equity (liabilities exceed assets) -- a red flag, not
+    # "no debt" -- and satisfies a naive "<= 0.0" check just as much as a
+    # genuine zero would. screener.py's own gate/score logic already
+    # guards against this exact trap; _render_badges must too.
+    row = pd.Series({"debt_to_equity": -0.3, "return_on_equity": 0.10, "dividend_yield": 0.0})
+
+    html_out = report._render_badges(row)
+
+    assert "Zero debt" not in html_out
+    assert html_out == ""
+
+
+def test_render_pick_and_candidate_include_rendered_badges() -> None:
+    # Integration check: the badges wiring in _render_pick/_render_candidate
+    # (not just _render_badges in isolation) actually reaches the page.
+    _write_screen_results("AAPL,True,90.5,,2500000000000,28.4,0.30\n")
+    results = report._load_screen_results()
+    results["debt_to_equity"] = [0.0]
+    results["dividend_yield"] = [0.0]
+
+    pick_html = report._render_pick("AAPL", journal_row=None, results=results)
+    candidate_html = report._render_candidate(results.iloc[0])
+
+    assert 'class="badges"' in pick_html
+    assert "High ROE" in pick_html
+    assert 'class="badges"' in candidate_html
+    assert "High ROE" in candidate_html
+
+
+def test_render_badges_handles_missing_metrics_row() -> None:
+    # _render_candidate/_render_pick can have no matching metrics row at
+    # all (data missing that run) -- must not raise.
+    assert report._render_badges(None) == ""
+
+
+def test_index_page_includes_methodology_drawer() -> None:
+    # User request: a collapsible "How scoring & screening works" section.
+    report.generate_report()
+
+    index_html = (config.REPORT_DIR / "index.html").read_text()
+    assert "How scoring &amp; screening works" in index_html
+    assert "Graham entry gates" in index_html
+    assert 'class="methodology glass"' in index_html
+
+
+def test_metrics_table_and_tickers_header_carry_tooltip_titles() -> None:
+    # User request: inline tooltips explaining each metric in a
+    # Munger-style value context.
+    _write_screen_results("AAPL,True,90.5,,2500000000000,28.4,1.5\n")
+    results = report._load_screen_results()
+
+    pick_html = report._render_metrics_table(results.iloc[0])
+    tickers_html = report._render_tickers(results, held_symbols=set())
+
+    assert 'title="Total debt / shareholder equity' in pick_html
+    assert 'title="Total market value' in tickers_html
 
 
 def test_is_buyable_handles_real_bools_and_pandas_object_dtype_strings() -> None:
