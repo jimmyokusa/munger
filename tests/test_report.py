@@ -124,6 +124,19 @@ def test_tickers_page_renders_empty_fail_reasons_as_blank_not_literal_nan() -> N
     assert ">nan<" not in html_out
 
 
+def test_all_pages_have_a_favicon_link_and_no_generic_bot_title() -> None:
+    # User request: the site had no favicon at all, and every page's
+    # <title> read "Munger bot" (an internal-sounding codename) rather
+    # than a public-facing name.
+    report.generate_report()
+
+    for filename in ("index.html", "tickers.html", "calendar.html"):
+        html_out = (config.REPORT_DIR / filename).read_text()
+        assert 'rel="icon"' in html_out
+        assert "Munger bot" not in html_out
+        assert "<title>Munger Screener" in html_out
+
+
 def test_generate_report_shows_a_pick_with_its_reason_and_metrics() -> None:
     _write_screen_results("AAPL,True,90.5,,2500000000000,28.4,1.5\n")
     journal.record_order("AAPL", "buy", "NEW_POSITION score=90.5", notional=1000.0)

@@ -83,6 +83,22 @@ _METRIC_TOOLTIPS: dict[str, str] = {
     "10-year earnings-stability test (data availability limit).",
 }
 
+# A rounded-square "M" monogram in the site's own gradient (matching the
+# body background below) -- inlined as a data URI so the favicon needs no
+# extra file to host or build step, just this one string.
+_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#60a5fa"/>
+<stop offset="50%" stop-color="#a78bfa"/>
+<stop offset="100%" stop-color="#f472b6"/>
+</linearGradient></defs>
+<rect width="64" height="64" rx="14" fill="url(#g)"/>
+<text x="32" y="46" font-family="-apple-system,Segoe UI,sans-serif" font-size="36" \
+font-weight="700" fill="#1e1b2e" text-anchor="middle">M</text>
+</svg>"""
+_FAVICON_HREF = "data:image/svg+xml," + urllib.parse.quote(_FAVICON_SVG)
+_FAVICON_LINK = f'<link rel="icon" type="image/svg+xml" href="{_FAVICON_HREF}">'
+
 _CSS = """
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
@@ -747,7 +763,8 @@ def _render_index(picks: list[dict[str, object]], results: pd.DataFrame) -> str:
         body = _render_candidates_or_empty(results)
     export_controls = _render_export_controls(_export_rows(picks, results))
     return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Munger bot &mdash; current picks</title>
+<html><head><meta charset="utf-8"><title>Munger Screener &mdash; current picks</title>
+{_FAVICON_LINK}
 <link rel="alternate" type="application/feed+json" title="Munger daily candidates" href="feed.json">
 <link rel="alternate" type="application/rss+xml" title="Munger daily candidates" href="rss.xml">
 <style>{_CSS}</style></head>
@@ -865,7 +882,8 @@ for (const th of table.tHead.rows[0].cells) {
 """
 
     return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Munger bot &mdash; all screened tickers</title>
+<html><head><meta charset="utf-8"><title>Munger Screener &mdash; all screened tickers</title>
+{_FAVICON_LINK}
 <style>{_CSS}</style></head>
 <body>
 <h1>All screened tickers</h1>
@@ -995,7 +1013,8 @@ def _render_calendar(
     )
 
     return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Munger bot &mdash; calendar</title>
+<html><head><meta charset="utf-8"><title>Munger Screener &mdash; calendar</title>
+{_FAVICON_LINK}
 <style>{_CSS}</style></head>
 <body>
 <h1>Daily screen calendar</h1>
@@ -1139,7 +1158,7 @@ def _render_feed_json(entries: list[tuple[datetime.date, list[str]]] | None = No
         )
     feed = {
         "version": "https://jsonfeed.org/version/1.1",
-        "title": "Munger bot — daily candidates",
+        "title": "Munger Screener — daily candidates",
         "home_page_url": f"{base}/index.html",
         "feed_url": f"{base}/feed.json",
         "description": "New buyable candidates from each archived daily screen.",
@@ -1185,7 +1204,7 @@ def _render_feed_rss(entries: list[tuple[datetime.date, list[str]]] | None = Non
     # the output instead of parsing it as XML.
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel>
-<title>Munger bot &#8212; daily candidates</title>
+<title>Munger Screener &#8212; daily candidates</title>
 <link>{html.escape(base)}/index.html</link>
 <description>New buyable candidates from each archived daily screen.</description>
 {"".join(items_xml)}
