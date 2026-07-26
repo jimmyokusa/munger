@@ -101,14 +101,15 @@ _GATE_REASON_TOOLTIPS: dict[str, str] = {
     "graham_dividend_record": "No qualifying dividend -- Graham's gate 5, "
     "only checked when the REQUIRE_DIVIDEND_RECORD toggle is enabled.",
     "graham_pe": f"P/E above Graham's gate 6 maximum ({config.MAX_PE}), or "
-    "negative (unprofitable).",
+    "zero/negative (unprofitable).",
     "graham_pe_times_pb": "Combined P/E x P/B above Graham's gate 7 "
     f"maximum ({config.MAX_PE_TIMES_PB}), or non-positive.",
     "munger_roe": "Return on equity below Munger's quality floor "
     f"({config.MIN_ROE:.0%}).",
     "munger_gross_margin": "Gross margin below Munger's quality floor "
     f"({config.MIN_GROSS_MARGIN:.0%}).",
-    "munger_fcf": "Free cash flow is not positive.",
+    "munger_fcf": "Free cash flow is not positive -- only checked when the "
+    "REQUIRE_POSITIVE_FCF toggle is enabled (on by default).",
     "data_missing:fetch_failed": "yfinance's shared rate limit was hit during "
     "this run and the fetch didn't complete in time -- not that the data "
     "doesn't exist. Usually recoverable on the next run.",
