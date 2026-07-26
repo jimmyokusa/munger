@@ -133,6 +133,14 @@ inspectable on its own before moving to the next.
       served. Runs both via `.github/workflows/daily-screen.yml` and as a
       k3s CronJob (see Deployment).
 
+- [ ] **M15 — Report UX overhaul** *(user request, in progress)*. Visual
+      badges (zero-debt/high-ROE/dividend highlights), plain-language
+      metric tooltips, and a collapsible "how scoring & screening works"
+      methodology drawer are done. Still to come: export buttons (copy
+      JSON / CSV) + outbound research links (SEC EDGAR, Finviz), and a
+      `feed.json`/`rss.xml` so new candidate drops are subscribable. All
+      static/vanilla-JS, matching DESIGN.md §3.7's no-server constraint.
+
 Backtesting is explicitly out of scope for v1 (see DESIGN.md §6/§9) —
 point-in-time fundamental data would be needed to avoid a misleading
 result.
@@ -162,11 +170,15 @@ A second target stood up alongside the Pi cluster: GCP project
 `MUNGER_DATA_DIR` mechanism, with writable state on a GCS bucket
 (`munger-503515-data`) mounted via `gcsfuse` instead of a k8s PVC. A Cloud
 Run **service** (`report-web`, `deploy/cloudrun/report-web/`) serves the
-report and is live; a Cloud Run **Job** (`daily-screen`) runs the same
-screen-only entrypoint as the k3s CronJob but hasn't completed successfully
-yet — two real GCS-specific bugs (a per-object mutation rate limit on the
-live-progress file, and `chmod` calls during archival that GCS FUSE
-rejects) were found and fixed in code, but not yet redeployed. Unlike the
-k3s side, there's no one-command deploy script for this target yet, and
-whether it supplements or replaces the k3s deployment isn't decided. See
-the Infra — Google Cloud Run section of `TASKS.md` for the full detail.
+report and is live at **gramunger.com** (registered and domain-mapped
+2026-07-25); a Cloud Run **Job** (`daily-screen`) runs the same screen-only
+entrypoint as the k3s CronJob on a daily Cloud Scheduler trigger. Two real
+GCS-specific bugs (a per-object mutation rate limit on the live-progress
+file, and `chmod` calls during archival that GCS FUSE rejects) were found,
+fixed, and redeployed — the two most recent executions (2026-07-25 and the
+first scheduled run, 2026-07-26) both completed end-to-end, so
+`gramunger.com` is now serving real, current screen data. Unlike the k3s
+side, there's no one-command deploy script for this target yet, and
+whether it replaces or supplements the k3s CronJob long-term isn't decided.
+See the Infra — Google Cloud Run section of `TASKS.md` for the full
+detail.
