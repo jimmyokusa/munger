@@ -1,0 +1,216 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Munger bot &mdash; current picks</title>
+<style>
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  max-width: 900px; margin: 0 auto; padding: 2rem 1rem 4rem; line-height: 1.5;
+  min-height: 100vh;
+  color: light-dark(#1e1b2e, #e5e7eb);
+  background: light-dark(
+    linear-gradient(135deg, #dbeafe 0%, #ede9fe 45%, #fce7f3 100%),
+    linear-gradient(135deg, #0b1120 0%, #1e1b4b 55%, #1a1030 100%)
+  );
+  background-attachment: fixed;
+}
+h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.5rem; }
+nav { margin-bottom: 1.5rem; }
+nav a {
+  margin-right: 1rem; text-decoration: none; font-weight: 600;
+  color: light-dark(#4338ca, #a5b4fc);
+}
+nav a:hover { text-decoration: underline; }
+
+/* Glass card: translucent + blurred, needs the gradient body background
+   behind it to actually read as "glass" -- a flat backdrop makes blur
+   nearly invisible. */
+.glass {
+  background: light-dark(rgba(255, 255, 255, 0.55), rgba(30, 27, 55, 0.45));
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid light-dark(rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.08));
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(31, 38, 135, 0.12);
+}
+
+.pick { padding: 1rem 1.25rem; margin-bottom: 0.85rem; }
+.pick summary {
+  cursor: pointer; display: flex; justify-content: space-between;
+  align-items: center; font-weight: 600; list-style: none;
+}
+.pick summary::-webkit-details-marker { display: none; }
+.pick summary .score {
+  font-weight: 600; font-size: 0.85rem; padding: 0.2rem 0.65rem; border-radius: 999px;
+  background: light-dark(rgba(99, 102, 241, 0.15), rgba(165, 180, 252, 0.2));
+}
+.pick-body { margin-top: 0.85rem; }
+table.metrics { border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; width: 100%; }
+table.metrics td { padding: 0.25rem 0.75rem 0.25rem 0; }
+table.metrics td:first-child { opacity: 0.65; }
+
+.empty { opacity: 0.7; font-style: italic; padding: 1.5rem; text-align: center; }
+.generated { opacity: 0.55; font-size: 0.8rem; margin-bottom: 1rem; }
+
+.progress-banner { display: none; padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
+.progress-banner.active { display: block; }
+.progress-banner .phase { font-weight: 600; margin-bottom: 0.6rem; }
+.progress-bar-track {
+  background: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1));
+  border-radius: 999px; height: 10px; overflow: hidden; margin-bottom: 0.5rem;
+}
+.progress-bar-fill {
+  height: 100%; border-radius: 999px; width: 0%;
+  background: linear-gradient(90deg, #6366f1, #ec4899);
+  transition: width 0.4s ease;
+}
+.progress-detail { font-size: 0.85rem; opacity: 0.75; }
+
+#filter {
+  padding: 0.55rem 0.85rem; width: 100%; max-width: 320px; margin-bottom: 1rem;
+  border-radius: 10px; color: inherit;
+  border: 1px solid light-dark(rgba(0, 0, 0, 0.15), rgba(255, 255, 255, 0.15));
+  background: light-dark(rgba(255, 255, 255, 0.6), rgba(30, 27, 55, 0.5));
+}
+.table-wrap { padding: 0.5rem; overflow-x: auto; }
+table.tickers { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+table.tickers th, table.tickers td { padding: 0.5rem 0.7rem; text-align: left;
+  border-bottom: 1px solid light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.08)); }
+table.tickers th { cursor: pointer; user-select: none; position: sticky; top: 0;
+  background: light-dark(rgba(255, 255, 255, 0.85), rgba(20, 18, 38, 0.85)); }
+table.tickers th:hover { opacity: 0.7; }
+tr.not-buyable { opacity: 0.55; }
+
+.cal-month { padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
+.cal-month h2 { font-size: 1.1rem; margin: 0 0 0.75rem; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0.35rem; }
+.cal-weekday { font-size: 0.75rem; opacity: 0.6; text-align: center; padding-bottom: 0.25rem; }
+.cal-cell, a.cal-cell {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  aspect-ratio: 1; border-radius: 8px; text-decoration: none; color: inherit;
+  font-size: 0.8rem;
+}
+.cal-blank { visibility: hidden; }
+.cal-empty { opacity: 0.35; }
+.cal-has-data {
+  background: light-dark(rgba(99, 102, 241, 0.12), rgba(99, 102, 241, 0.15));
+}
+.cal-has-buyable {
+  background: light-dark(rgba(236, 72, 153, 0.2), rgba(236, 72, 153, 0.25));
+  font-weight: 600;
+}
+a.cal-cell:hover { filter: brightness(0.95); }
+.cal-day { line-height: 1.3; }
+.cal-count { font-size: 0.7rem; opacity: 0.8; }
+.cal-legend { font-size: 0.8rem; opacity: 0.75; margin-bottom: 1rem; }
+.cal-legend-swatch {
+  display: inline-block; width: 0.8rem; height: 0.8rem; border-radius: 3px;
+  vertical-align: middle; margin-right: 0.25rem;
+}
+</style></head>
+<body>
+<h1>Current picks</h1>
+<nav><a href="tickers.html">See all screened tickers &rarr;</a>
+<a href="calendar.html">Daily calendar &rarr;</a></nav>
+<div class="progress-banner glass" id="progress-banner">
+  <div class="phase" id="progress-phase"></div>
+  <div class="progress-bar-track"><div class="progress-bar-fill" id="progress-bar-fill"></div></div>
+  <div class="progress-detail" id="progress-detail"></div>
+</div>
+<p class="generated">Generated 2026-07-26 14:36 UTC</p>
+<div class="glass" style="padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.9rem;">No positions are currently held. Showing the latest screen&rsquo;s <strong>6</strong> buyable candidate(s), ranked by score &mdash; these passed every gate but are screen output, not holdings.</div>
+<details class="pick glass">
+  <summary><span class="symbol">TROW</span>
+    <span class="score">score 79.6</span></summary>
+  <div class="pick-body">
+    <p><strong>Status:</strong> buyable in the latest screen &mdash; not a held position</p>
+    <table class="metrics"><tr><td>Market Cap</td><td>$24.96B</td></tr><tr><td>Trailing P/E</td><td>12.50</td></tr><tr><td>Price / Book</td><td>2.32</td></tr><tr><td>Current Ratio</td><td>5.54</td></tr><tr><td>Debt / Equity</td><td>0.04</td></tr><tr><td>Return on Equity</td><td>18.7%</td></tr><tr><td>Gross Margin</td><td>52.0%</td></tr><tr><td>Operating Margin</td><td>37.2%</td></tr><tr><td>Free Cash Flow</td><td>$1.88B</td></tr><tr><td>Dividend Yield</td><td>4.5%</td></tr><tr><td>Consecutive Positive-Earnings Years</td><td>4</td></tr></table>
+  </div>
+</details>
+<details class="pick glass">
+  <summary><span class="symbol">HIG</span>
+    <span class="score">score 68.4</span></summary>
+  <div class="pick-body">
+    <p><strong>Status:</strong> buyable in the latest screen &mdash; not a held position</p>
+    <table class="metrics"><tr><td>Market Cap</td><td>$38.52B</td></tr><tr><td>Trailing P/E</td><td>9.71</td></tr><tr><td>Price / Book</td><td>2.08</td></tr><tr><td>Current Ratio</td><td>1.77</td></tr><tr><td>Debt / Equity</td><td>0.22</td></tr><tr><td>Return on Equity</td><td>22.1%</td></tr><tr><td>Gross Margin</td><td>37.9%</td></tr><tr><td>Operating Margin</td><td>17.6%</td></tr><tr><td>Free Cash Flow</td><td>$5.51B</td></tr><tr><td>Dividend Yield</td><td>1.7%</td></tr><tr><td>Consecutive Positive-Earnings Years</td><td>4</td></tr></table>
+  </div>
+</details>
+<details class="pick glass">
+  <summary><span class="symbol">INSW</span>
+    <span class="score">score 66.9</span></summary>
+  <div class="pick-body">
+    <p><strong>Status:</strong> buyable in the latest screen &mdash; not a held position</p>
+    <table class="metrics"><tr><td>Market Cap</td><td>$4.57B</td></tr><tr><td>Trailing P/E</td><td>8.40</td></tr><tr><td>Price / Book</td><td>2.08</td></tr><tr><td>Current Ratio</td><td>7.34</td></tr><tr><td>Debt / Equity</td><td>0.28</td></tr><tr><td>Return on Equity</td><td>26.9%</td></tr><tr><td>Gross Margin</td><td>67.7%</td></tr><tr><td>Operating Margin</td><td>61.3%</td></tr><tr><td>Free Cash Flow</td><td>$16.6M</td></tr><tr><td>Dividend Yield</td><td>4.2%</td></tr><tr><td>Consecutive Positive-Earnings Years</td><td>4</td></tr></table>
+  </div>
+</details>
+<details class="pick glass">
+  <summary><span class="symbol">FOX</span>
+    <span class="score">score 54.6</span></summary>
+  <div class="pick-body">
+    <p><strong>Status:</strong> buyable in the latest screen &mdash; not a held position</p>
+    <table class="metrics"><tr><td>Market Cap</td><td>$20.75B</td></tr><tr><td>Trailing P/E</td><td>13.00</td></tr><tr><td>Price / Book</td><td>1.90</td></tr><tr><td>Current Ratio</td><td>2.90</td></tr><tr><td>Debt / Equity</td><td>0.68</td></tr><tr><td>Return on Equity</td><td>15.2%</td></tr><tr><td>Gross Margin</td><td>36.8%</td></tr><tr><td>Operating Margin</td><td>21.4%</td></tr><tr><td>Free Cash Flow</td><td>$1.41B</td></tr><tr><td>Dividend Yield</td><td>1.1%</td></tr><tr><td>Consecutive Positive-Earnings Years</td><td>4</td></tr></table>
+  </div>
+</details>
+<details class="pick glass">
+  <summary><span class="symbol">SIG</span>
+    <span class="score">score 52.6</span></summary>
+  <div class="pick-body">
+    <p><strong>Status:</strong> buyable in the latest screen &mdash; not a held position</p>
+    <table class="metrics"><tr><td>Market Cap</td><td>$3.55B</td></tr><tr><td>Trailing P/E</td><td>12.89</td></tr><tr><td>Price / Book</td><td>1.91</td></tr><tr><td>Current Ratio</td><td>1.61</td></tr><tr><td>Debt / Equity</td><td>0.64</td></tr><tr><td>Return on Equity</td><td>15.9%</td></tr><tr><td>Gross Margin</td><td>39.3%</td></tr><tr><td>Operating Margin</td><td>5.1%</td></tr><tr><td>Free Cash Flow</td><td>$451.8M</td></tr><tr><td>Dividend Yield</td><td>1.5%</td></tr><tr><td>Consecutive Positive-Earnings Years</td><td>4</td></tr></table>
+  </div>
+</details>
+<details class="pick glass">
+  <summary><span class="symbol">ASO</span>
+    <span class="score">score 36.7</span></summary>
+  <div class="pick-body">
+    <p><strong>Status:</strong> buyable in the latest screen &mdash; not a held position</p>
+    <table class="metrics"><tr><td>Market Cap</td><td>$2.89B</td></tr><tr><td>Trailing P/E</td><td>8.23</td></tr><tr><td>Price / Book</td><td>1.39</td></tr><tr><td>Current Ratio</td><td>1.68</td></tr><tr><td>Debt / Equity</td><td>0.92</td></tr><tr><td>Return on Equity</td><td>18.8%</td></tr><tr><td>Gross Margin</td><td>34.6%</td></tr><tr><td>Operating Margin</td><td>5.2%</td></tr><tr><td>Free Cash Flow</td><td>$88.3M</td></tr><tr><td>Dividend Yield</td><td>1.3%</td></tr><tr><td>Consecutive Positive-Earnings Years</td><td>4</td></tr></table>
+  </div>
+</details>
+
+<script>
+async function pollProgress() {
+  const banner = document.getElementById('progress-banner');
+  try {
+    const res = await fetch('progress.json', {cache: 'no-store'});
+    if (!res.ok) throw new Error('no progress file');
+    const data = await res.json();
+    if (data.total > 0 && data.completed < data.total) {
+      banner.classList.add('active');
+      const pct = Math.round((data.completed / data.total) * 100);
+      document.getElementById('progress-bar-fill').style.width = pct + '%';
+      const current = (data.in_flight && data.in_flight.length > 0) ? data.in_flight[0] : '';
+      // User request (2026-07-23): make it explicit in the UI when
+      // missing/slow data is because every worker is waiting out a
+      // shared yfinance rate-limit cooldown, not because the data
+      // doesn't exist -- this is the single biggest cause of tickers
+      // showing data_missing:fetch_failed on tickers.html.
+      const rateLimited = data.rate_limited_until && data.now && data.rate_limited_until > data.now;
+      if (rateLimited) {
+        const waitSecs = Math.max(0, Math.round(data.rate_limited_until - data.now));
+        document.getElementById('progress-phase').textContent =
+          `Screening in progress: ${data.phase} \u2014 paused, waiting out a shared ` +
+          `yfinance rate limit (~${waitSecs}s)`;
+        document.getElementById('progress-detail').textContent =
+          `${data.completed}/${data.total} tickers (${pct}%) \u2014 ` +
+          `this is expected under yfinance's rate limiting, not a permanent gap; ` +
+          `slowly gathering the rest as the limit clears.`;
+      } else {
+        document.getElementById('progress-phase').textContent =
+          `Screening in progress: ${data.phase}`;
+        document.getElementById('progress-detail').textContent =
+          `${data.completed}/${data.total} tickers (${pct}%)` +
+          (current ? ` \u2014 currently checking: ${current}` : '');
+      }
+    } else {
+      banner.classList.remove('active');
+    }
+  } catch (e) {
+    banner.classList.remove('active');
+  }
+}
+pollProgress();
+setInterval(pollProgress, 2000);
+</script>
+
+</body></html>

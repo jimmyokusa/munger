@@ -1,0 +1,133 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Munger bot &mdash; calendar</title>
+<style>
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  max-width: 900px; margin: 0 auto; padding: 2rem 1rem 4rem; line-height: 1.5;
+  min-height: 100vh;
+  color: light-dark(#1e1b2e, #e5e7eb);
+  background: light-dark(
+    linear-gradient(135deg, #dbeafe 0%, #ede9fe 45%, #fce7f3 100%),
+    linear-gradient(135deg, #0b1120 0%, #1e1b4b 55%, #1a1030 100%)
+  );
+  background-attachment: fixed;
+}
+h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.5rem; }
+nav { margin-bottom: 1.5rem; }
+nav a {
+  margin-right: 1rem; text-decoration: none; font-weight: 600;
+  color: light-dark(#4338ca, #a5b4fc);
+}
+nav a:hover { text-decoration: underline; }
+
+/* Glass card: translucent + blurred, needs the gradient body background
+   behind it to actually read as "glass" -- a flat backdrop makes blur
+   nearly invisible. */
+.glass {
+  background: light-dark(rgba(255, 255, 255, 0.55), rgba(30, 27, 55, 0.45));
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid light-dark(rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.08));
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(31, 38, 135, 0.12);
+}
+
+.pick { padding: 1rem 1.25rem; margin-bottom: 0.85rem; }
+.pick summary {
+  cursor: pointer; display: flex; justify-content: space-between;
+  align-items: center; font-weight: 600; list-style: none;
+}
+.pick summary::-webkit-details-marker { display: none; }
+.pick summary .score {
+  font-weight: 600; font-size: 0.85rem; padding: 0.2rem 0.65rem; border-radius: 999px;
+  background: light-dark(rgba(99, 102, 241, 0.15), rgba(165, 180, 252, 0.2));
+}
+.pick-body { margin-top: 0.85rem; }
+table.metrics { border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; width: 100%; }
+table.metrics td { padding: 0.25rem 0.75rem 0.25rem 0; }
+table.metrics td:first-child { opacity: 0.65; }
+
+.empty { opacity: 0.7; font-style: italic; padding: 1.5rem; text-align: center; }
+.generated { opacity: 0.55; font-size: 0.8rem; margin-bottom: 1rem; }
+
+.progress-banner { display: none; padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
+.progress-banner.active { display: block; }
+.progress-banner .phase { font-weight: 600; margin-bottom: 0.6rem; }
+.progress-bar-track {
+  background: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1));
+  border-radius: 999px; height: 10px; overflow: hidden; margin-bottom: 0.5rem;
+}
+.progress-bar-fill {
+  height: 100%; border-radius: 999px; width: 0%;
+  background: linear-gradient(90deg, #6366f1, #ec4899);
+  transition: width 0.4s ease;
+}
+.progress-detail { font-size: 0.85rem; opacity: 0.75; }
+
+#filter {
+  padding: 0.55rem 0.85rem; width: 100%; max-width: 320px; margin-bottom: 1rem;
+  border-radius: 10px; color: inherit;
+  border: 1px solid light-dark(rgba(0, 0, 0, 0.15), rgba(255, 255, 255, 0.15));
+  background: light-dark(rgba(255, 255, 255, 0.6), rgba(30, 27, 55, 0.5));
+}
+.table-wrap { padding: 0.5rem; overflow-x: auto; }
+table.tickers { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+table.tickers th, table.tickers td { padding: 0.5rem 0.7rem; text-align: left;
+  border-bottom: 1px solid light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.08)); }
+table.tickers th { cursor: pointer; user-select: none; position: sticky; top: 0;
+  background: light-dark(rgba(255, 255, 255, 0.85), rgba(20, 18, 38, 0.85)); }
+table.tickers th:hover { opacity: 0.7; }
+tr.not-buyable { opacity: 0.55; }
+
+.cal-month { padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
+.cal-month h2 { font-size: 1.1rem; margin: 0 0 0.75rem; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0.35rem; }
+.cal-weekday { font-size: 0.75rem; opacity: 0.6; text-align: center; padding-bottom: 0.25rem; }
+.cal-cell, a.cal-cell {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  aspect-ratio: 1; border-radius: 8px; text-decoration: none; color: inherit;
+  font-size: 0.8rem;
+}
+.cal-blank { visibility: hidden; }
+.cal-empty { opacity: 0.35; }
+.cal-has-data {
+  background: light-dark(rgba(99, 102, 241, 0.12), rgba(99, 102, 241, 0.15));
+}
+.cal-has-buyable {
+  background: light-dark(rgba(236, 72, 153, 0.2), rgba(236, 72, 153, 0.25));
+  font-weight: 600;
+}
+a.cal-cell:hover { filter: brightness(0.95); }
+.cal-day { line-height: 1.3; }
+.cal-count { font-size: 0.7rem; opacity: 0.8; }
+.cal-legend { font-size: 0.8rem; opacity: 0.75; margin-bottom: 1rem; }
+.cal-legend-swatch {
+  display: inline-block; width: 0.8rem; height: 0.8rem; border-radius: 3px;
+  vertical-align: middle; margin-right: 0.25rem;
+}
+</style></head>
+<body>
+<h1>Daily screen calendar</h1>
+<nav><a href="index.html">&larr; Back to current picks</a>
+<a href="tickers.html">See all screened tickers &rarr;</a></nav>
+<p class="generated">Generated 2026-07-26 14:36 UTC</p>
+<p style="font-size: 0.85rem; opacity: 0.75; margin-bottom: 1rem;">
+  Each day's screen is informational only &mdash; daily_screen.py never places orders;
+  trading decisions stay on the quarterly cadence. Click a day to see its full results.
+</p>
+<div class="cal-legend"><span class="cal-legend-swatch cal-has-buyable"></span> buyable names found &nbsp;<span class="cal-legend-swatch cal-has-data"></span> screened, none buyable &nbsp;<span class="cal-legend-swatch cal-empty"></span> no run that day</div>
+<div class="glass cal-month">
+  <h2>July 2026</h2>
+  <div class="cal-grid"><div class="cal-weekday">Mo</div><div class="cal-weekday">Tu</div><div class="cal-weekday">We</div><div class="cal-weekday">Th</div><div class="cal-weekday">Fr</div><div class="cal-weekday">Sa</div><div class="cal-weekday">Su</div><div class="cal-cell cal-blank"></div><div class="cal-cell cal-blank"></div><div class="cal-cell cal-empty"><span class="cal-day">1</span></div><div class="cal-cell cal-empty"><span class="cal-day">2</span></div><div class="cal-cell cal-empty"><span class="cal-day">3</span></div><div class="cal-cell cal-empty"><span class="cal-day">4</span></div><div class="cal-cell cal-empty"><span class="cal-day">5</span></div><div class="cal-cell cal-empty"><span class="cal-day">6</span></div><div class="cal-cell cal-empty"><span class="cal-day">7</span></div><div class="cal-cell cal-empty"><span class="cal-day">8</span></div><div class="cal-cell cal-empty"><span class="cal-day">9</span></div><div class="cal-cell cal-empty"><span class="cal-day">10</span></div><div class="cal-cell cal-empty"><span class="cal-day">11</span></div><div class="cal-cell cal-empty"><span class="cal-day">12</span></div><div class="cal-cell cal-empty"><span class="cal-day">13</span></div><div class="cal-cell cal-empty"><span class="cal-day">14</span></div><div class="cal-cell cal-empty"><span class="cal-day">15</span></div><div class="cal-cell cal-empty"><span class="cal-day">16</span></div><div class="cal-cell cal-empty"><span class="cal-day">17</span></div><div class="cal-cell cal-empty"><span class="cal-day">18</span></div><div class="cal-cell cal-empty"><span class="cal-day">19</span></div><div class="cal-cell cal-empty"><span class="cal-day">20</span></div><div class="cal-cell cal-empty"><span class="cal-day">21</span></div><div class="cal-cell cal-empty"><span class="cal-day">22</span></div><div class="cal-cell cal-empty"><span class="cal-day">23</span></div><div class="cal-cell cal-empty"><span class="cal-day">24</span></div><div class="cal-cell cal-empty"><span class="cal-day">25</span></div><a class="cal-cell cal-has-data cal-has-buyable" href="screen_results_archive/screen_results_2026-07-26.csv" title="1503 tickers, 6 buyable"><span class="cal-day">26</span><span class="cal-count">6</span></a><div class="cal-cell cal-empty"><span class="cal-day">27</span></div><div class="cal-cell cal-empty"><span class="cal-day">28</span></div><div class="cal-cell cal-empty"><span class="cal-day">29</span></div><div class="cal-cell cal-empty"><span class="cal-day">30</span></div><div class="cal-cell cal-empty"><span class="cal-day">31</span></div></div>
+</div>
+<div class="glass cal-month">
+  <h2>June 2026</h2>
+  <div class="cal-grid"><div class="cal-weekday">Mo</div><div class="cal-weekday">Tu</div><div class="cal-weekday">We</div><div class="cal-weekday">Th</div><div class="cal-weekday">Fr</div><div class="cal-weekday">Sa</div><div class="cal-weekday">Su</div><div class="cal-cell cal-empty"><span class="cal-day">1</span></div><div class="cal-cell cal-empty"><span class="cal-day">2</span></div><div class="cal-cell cal-empty"><span class="cal-day">3</span></div><div class="cal-cell cal-empty"><span class="cal-day">4</span></div><div class="cal-cell cal-empty"><span class="cal-day">5</span></div><div class="cal-cell cal-empty"><span class="cal-day">6</span></div><div class="cal-cell cal-empty"><span class="cal-day">7</span></div><div class="cal-cell cal-empty"><span class="cal-day">8</span></div><div class="cal-cell cal-empty"><span class="cal-day">9</span></div><div class="cal-cell cal-empty"><span class="cal-day">10</span></div><div class="cal-cell cal-empty"><span class="cal-day">11</span></div><div class="cal-cell cal-empty"><span class="cal-day">12</span></div><div class="cal-cell cal-empty"><span class="cal-day">13</span></div><div class="cal-cell cal-empty"><span class="cal-day">14</span></div><div class="cal-cell cal-empty"><span class="cal-day">15</span></div><div class="cal-cell cal-empty"><span class="cal-day">16</span></div><div class="cal-cell cal-empty"><span class="cal-day">17</span></div><div class="cal-cell cal-empty"><span class="cal-day">18</span></div><div class="cal-cell cal-empty"><span class="cal-day">19</span></div><div class="cal-cell cal-empty"><span class="cal-day">20</span></div><div class="cal-cell cal-empty"><span class="cal-day">21</span></div><div class="cal-cell cal-empty"><span class="cal-day">22</span></div><div class="cal-cell cal-empty"><span class="cal-day">23</span></div><div class="cal-cell cal-empty"><span class="cal-day">24</span></div><div class="cal-cell cal-empty"><span class="cal-day">25</span></div><div class="cal-cell cal-empty"><span class="cal-day">26</span></div><div class="cal-cell cal-empty"><span class="cal-day">27</span></div><div class="cal-cell cal-empty"><span class="cal-day">28</span></div><div class="cal-cell cal-empty"><span class="cal-day">29</span></div><div class="cal-cell cal-empty"><span class="cal-day">30</span></div></div>
+</div>
+<div class="glass cal-month">
+  <h2>May 2026</h2>
+  <div class="cal-grid"><div class="cal-weekday">Mo</div><div class="cal-weekday">Tu</div><div class="cal-weekday">We</div><div class="cal-weekday">Th</div><div class="cal-weekday">Fr</div><div class="cal-weekday">Sa</div><div class="cal-weekday">Su</div><div class="cal-cell cal-blank"></div><div class="cal-cell cal-blank"></div><div class="cal-cell cal-blank"></div><div class="cal-cell cal-blank"></div><div class="cal-cell cal-empty"><span class="cal-day">1</span></div><div class="cal-cell cal-empty"><span class="cal-day">2</span></div><div class="cal-cell cal-empty"><span class="cal-day">3</span></div><div class="cal-cell cal-empty"><span class="cal-day">4</span></div><div class="cal-cell cal-empty"><span class="cal-day">5</span></div><div class="cal-cell cal-empty"><span class="cal-day">6</span></div><div class="cal-cell cal-empty"><span class="cal-day">7</span></div><div class="cal-cell cal-empty"><span class="cal-day">8</span></div><div class="cal-cell cal-empty"><span class="cal-day">9</span></div><div class="cal-cell cal-empty"><span class="cal-day">10</span></div><div class="cal-cell cal-empty"><span class="cal-day">11</span></div><div class="cal-cell cal-empty"><span class="cal-day">12</span></div><div class="cal-cell cal-empty"><span class="cal-day">13</span></div><div class="cal-cell cal-empty"><span class="cal-day">14</span></div><div class="cal-cell cal-empty"><span class="cal-day">15</span></div><div class="cal-cell cal-empty"><span class="cal-day">16</span></div><div class="cal-cell cal-empty"><span class="cal-day">17</span></div><div class="cal-cell cal-empty"><span class="cal-day">18</span></div><div class="cal-cell cal-empty"><span class="cal-day">19</span></div><div class="cal-cell cal-empty"><span class="cal-day">20</span></div><div class="cal-cell cal-empty"><span class="cal-day">21</span></div><div class="cal-cell cal-empty"><span class="cal-day">22</span></div><div class="cal-cell cal-empty"><span class="cal-day">23</span></div><div class="cal-cell cal-empty"><span class="cal-day">24</span></div><div class="cal-cell cal-empty"><span class="cal-day">25</span></div><div class="cal-cell cal-empty"><span class="cal-day">26</span></div><div class="cal-cell cal-empty"><span class="cal-day">27</span></div><div class="cal-cell cal-empty"><span class="cal-day">28</span></div><div class="cal-cell cal-empty"><span class="cal-day">29</span></div><div class="cal-cell cal-empty"><span class="cal-day">30</span></div><div class="cal-cell cal-empty"><span class="cal-day">31</span></div></div>
+</div>
+</body></html>
