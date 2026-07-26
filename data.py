@@ -451,7 +451,16 @@ def fetch_all_metrics(symbols: list[str], phase: str = "screening") -> dict[str,
 
 # Every Metrics field except symbol is required for the screener (DESIGN.md
 # 3.2/3.3) -- a missing one is a failed check, not silently skipped.
-_REQUIRED_METRICS_FIELDS = tuple(f.name for f in dataclasses.fields(Metrics) if f.name != "symbol")
+# dividend_yield is excluded: yfinance returns None for it when a company
+# simply doesn't pay a dividend, which is real, valid data, not a fetch
+# gap -- the graham_dividend_record gate (screener.py, gated by
+# config.REQUIRE_DIVIDEND_RECORD) already handles a missing/zero dividend
+# correctly, so tagging it data_missing here would both duplicate that
+# gate under a misleading label and wrongly fail the screen for
+# non-dividend payers even when REQUIRE_DIVIDEND_RECORD is off.
+_REQUIRED_METRICS_FIELDS = tuple(
+    f.name for f in dataclasses.fields(Metrics) if f.name not in ("symbol", "dividend_yield")
+)
 
 
 def validate_metrics(metrics: Metrics) -> list[str]:

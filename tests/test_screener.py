@@ -85,11 +85,14 @@ def test_graham_gate_earnings_stability_fails_below_minimum_years() -> None:
 
 def test_graham_gate_dividend_record_off_by_default() -> None:
     # REQUIRE_DIVIDEND_RECORD defaults to False -- no dividend shouldn't
-    # fail anything unless explicitly turned on.
+    # fail anything unless explicitly turned on. Previously this still
+    # failed via data_missing:dividend_yield (a bug: validate_metrics
+    # treated "no dividend" as missing data) -- fixed by excluding
+    # dividend_yield from data._REQUIRED_METRICS_FIELDS.
     metrics = _passing_metrics(dividend_yield=None)
     passed, reasons = screener.pass_graham_gates(metrics)
-    assert passed is False  # data_missing:dividend_yield still fires
-    assert reasons == ["data_missing:dividend_yield"]
+    assert passed is True
+    assert reasons == []
 
 
 def test_graham_gate_dividend_record_fails_when_required_and_absent(
@@ -326,6 +329,27 @@ def test_run_screen_writes_csv_and_sorts_by_score(
     assert list(results["symbol"]) == ["HIGH", "LOW"]  # sorted by score descending
     assert bool(results.iloc[0]["buyable"]) is True
     assert list(results.columns[:4]) == ["symbol", "buyable", "score", "fail_reasons"]
+
+
+def test_run_screen_scores_a_ticker_that_fails_a_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # User request: score is a continuous quality signal across the whole
+    # universe, not just among buyable survivors -- previously every
+    # non-buyable ticker was forced to score=0.0 regardless of its actual
+    # quality metrics, which made "most tickers score 0" look like a data
+    # problem when it was really this gating.
+    monkeypatch.setattr(config, "SCREEN_RESULTS_CSV_PATH", tmp_path / "screen_results.csv")
+    failing_gate_metrics = _passing_metrics(symbol="SMALLCAP", market_cap=1_000_000_000.0)
+    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols: {"SMALLCAP": failing_gate_metrics})
+
+    results = screener.run_screen(["SMALLCAP"])
+
+    row = results.iloc[0]
+    assert bool(row["buyable"]) is False
+    assert row["fail_reasons"] == "graham_size"
+    assert row["score"] == pytest.approx(screener.calculate_munger_score(failing_gate_metrics))
+    assert row["score"] > 0.0
 
 
 def test_run_screen_handles_an_empty_ticker_list(

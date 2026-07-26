@@ -223,11 +223,27 @@ gate failed for every stock — this audit trail matters more than the
 pass/fail bit. Fail reasons originating from the data layer (§3.2) keep
 their `data_missing:*` / `data_invalid_outlier:*` distinction rather than
 being flattened into a generic gate-failure code, so `screen_results.csv`
-always shows whether a ticker failed on valuation or on data quality.
+always shows whether a ticker failed on valuation or on data quality. An
+absent dividend is *not* `data_missing` — a `None` `dividend_yield` means
+the company simply doesn't pay one, which is valid data, not a fetch gap;
+the dedicated `graham_dividend_record` gate (row 5, off by default) is the
+only place that judges it.
 
-**Stage 2 — Munger quality floor and score.** Hard floors that must be met:
-ROE ≥ 15%, gross margin ≥ 30%, positive free cash flow. Stocks passing both
-stages get a 0–100 composite quality score used for ranking:
+**Stage 2 — Munger quality floor and score.** Hard floors that must be met
+to be `buyable`: ROE ≥ 15%, gross margin ≥ 30%, positive free cash flow.
+Every ticker with at least partial fundamentals gets a 0–100 composite
+quality score, whether or not it's buyable — score and buyable are
+independent signals (score ranks quality across the whole screened
+universe; buyable is the pass/fail gate on top of it), not one gating the
+other. A ticker that fails a Graham gate or a quality floor can still carry
+a real, informative score computed from whichever of its metrics are
+present. `score=0.0` is still a real, distinct value, but now means only
+"total fetch failure" (`data_missing:fetch_failed`) or an unhandled
+computation error (`data_invalid_outlier:unhandled`) — not "didn't pass
+the gates." A missing component contributes 0 to the weighted sum rather
+than being excluded/renormalized among the components that *are* present,
+so a low score can mean either low quality or incomplete data — the
+`fail_reasons` column (not the score) is the source of truth for which:
 
 | Component | Weight | Normalization (→ 1.0 at) |
 |-----------|--------|--------------------------|

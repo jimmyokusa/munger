@@ -253,7 +253,14 @@ def run_screen(tickers: list[str]) -> pd.DataFrame:
             {
                 "symbol": symbol,
                 "buyable": buyable,
-                "score": calculate_munger_score(metrics) if buyable else 0.0,
+                # Scored unconditionally, not just when buyable -- score is
+                # a continuous quality signal across the whole universe
+                # (DESIGN.md 3.3), independent of whether a ticker cleared
+                # every hard Graham/Munger gate. calculate_munger_score
+                # already tolerates partial metrics (each component
+                # contributes 0 if its field is None), so this is safe even
+                # for a ticker that failed a gate on missing/outlier data.
+                "score": calculate_munger_score(metrics),
                 "fail_reasons": ",".join(fail_reasons),
                 "market_cap": metrics.market_cap,
                 "trailing_pe": metrics.trailing_pe,

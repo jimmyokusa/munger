@@ -643,11 +643,23 @@ def test_validate_metrics_clean_record_has_no_fail_reasons() -> None:
 
 
 def test_validate_metrics_flags_each_missing_field_distinctly() -> None:
-    metrics = _clean_metrics(market_cap=None, dividend_yield=None)
+    metrics = _clean_metrics(market_cap=None, trailing_pe=None)
     reasons = data.validate_metrics(metrics)
     assert "data_missing:market_cap" in reasons
-    assert "data_missing:dividend_yield" in reasons
+    assert "data_missing:trailing_pe" in reasons
     assert len(reasons) == 2
+
+
+def test_validate_metrics_never_flags_a_missing_dividend_yield() -> None:
+    # A None dividend_yield means "this company doesn't pay a dividend,"
+    # which is real, valid data -- not a fetch gap. The dedicated
+    # graham_dividend_record gate (screener.py) is the right place to
+    # judge that, gated by config.REQUIRE_DIVIDEND_RECORD; validate_metrics
+    # must not also flag it as data_missing, which both duplicates that
+    # gate under a misleading label and would fail the screen for every
+    # non-dividend payer even when REQUIRE_DIVIDEND_RECORD is off.
+    metrics = _clean_metrics(dividend_yield=None)
+    assert data.validate_metrics(metrics) == []
 
 
 def test_validate_metrics_never_flags_symbol_as_missing() -> None:
