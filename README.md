@@ -133,13 +133,15 @@ inspectable on its own before moving to the next.
       served. Runs both via `.github/workflows/daily-screen.yml` and as a
       k3s CronJob (see Deployment).
 
-- [ ] **M15 — Report UX overhaul** *(user request, in progress)*. Visual
-      badges (zero-debt/high-ROE/dividend highlights), plain-language
-      metric tooltips, and a collapsible "how scoring & screening works"
-      methodology drawer are done. Still to come: export buttons (copy
-      JSON / CSV) + outbound research links (SEC EDGAR, Finviz), and a
-      `feed.json`/`rss.xml` so new candidate drops are subscribable. All
-      static/vanilla-JS, matching DESIGN.md §3.7's no-server constraint.
+- [x] **M15 — Report UX overhaul** *(user request)*. Visual badges
+      (zero-debt/high-ROE/dividend highlights), plain-language metric
+      tooltips, a collapsible "how scoring & screening works" methodology
+      drawer, Copy-JSON/Export-CSV buttons, per-ticker outbound research
+      links (SEC EDGAR, Finviz), and a `feed.json`/`rss.xml` so new
+      candidate drops are subscribable. All static/vanilla-JS, matching
+      DESIGN.md §3.7's no-server constraint. Nobody has visually confirmed
+      the rendered pages yet (see `TASKS.md`); the feed's absolute-URL
+      base isn't set on the Cloud Run deployment yet either.
 
 Backtesting is explicitly out of scope for v1 (see DESIGN.md §6/§9) —
 point-in-time fundamental data would be needed to avoid a misleading
