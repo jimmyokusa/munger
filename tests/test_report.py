@@ -112,6 +112,18 @@ def test_tickers_page_omits_the_fetch_failed_note_when_no_row_has_it() -> None:
     assert "fetch_failed" not in html_out
 
 
+def test_tickers_page_renders_empty_fail_reasons_as_blank_not_literal_nan() -> None:
+    # Real bug found live on gramunger.com: a passing ticker's fail_reasons
+    # is written to CSV as "", but pd.read_csv reads that back as NaN, and
+    # `str(nan or "")` still renders "nan" (NaN is truthy) instead of "".
+    _write_screen_results("AAPL,True,90.5,,2500000000.0,28.4,1.5\n")
+    results = report._load_screen_results()
+
+    html_out = report._render_tickers(results, held_symbols=set())
+
+    assert ">nan<" not in html_out
+
+
 def test_generate_report_shows_a_pick_with_its_reason_and_metrics() -> None:
     _write_screen_results("AAPL,True,90.5,,2500000000000,28.4,1.5\n")
     journal.record_order("AAPL", "buy", "NEW_POSITION score=90.5", notional=1000.0)

@@ -799,7 +799,14 @@ def _render_tickers(results: pd.DataFrame, held_symbols: set[str]) -> str:
             if col in metric_cols or col == "score":
                 cells.append(_metric_cell(col, row.get(col)))
             elif col == "fail_reasons":
-                reasons = str(row.get("fail_reasons") or "")
+                raw_reasons = row.get("fail_reasons")
+                # A ticker that passes every gate has an empty fail_reasons
+                # string, but the CSV round-trip (write "" -> read back)
+                # turns that into a pandas NaN, not "" -- `NaN or ""` is
+                # still NaN (NaN is truthy), so a naive `str(x or "")`
+                # rendered the literal text "nan" in the table for every
+                # passing ticker. Must check isna() explicitly.
+                reasons = "" if pd.isna(raw_reasons) else str(raw_reasons)
                 if "fetch_failed" in reasons:
                     any_fetch_failed = True
                     title = (
