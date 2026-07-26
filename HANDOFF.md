@@ -6,7 +6,7 @@ each section. Formal work log is in [TASKS.md](TASKS.md); durable facts are
 in Claude memory (`pi-k3s-cluster`, `pi-k3s-munger-deploy`). This file is
 the "what were we doing and what's next" narrative.
 
-_Last updated: 2026-07-26._
+_Last updated: 2026-07-26 (this update)._
 
 ---
 
@@ -40,17 +40,35 @@ _Last updated: 2026-07-26._
   section: GCP cost/billing exposure (now more pressing given the daily
   Scheduler trigger) hasn't been confirmed as free-tier/negligible, and the
   domain registration's own recurring cost isn't folded into that either.
-- **M15 (Report UX overhaul) slice 1 shipped**: visual badges, metric
-  tooltips, and a methodology drawer on `report.py`'s pages. Two real bugs
-  a staff-engineer-reviewer round caught and fixed before push: a badge
-  logic error that would have shown "Zero debt" for a *negative*
-  debt/equity (negative book equity — a red flag, the same trap
-  `screener.py` already guards against), and a methodology drawer that
-  miscounted the Graham gates and blurred them with the separate Munger
-  quality-floor stage. **Still open: nobody has looked at the actual
-  rendered page yet** (same checkpoint M13 kept open even after code
-  review passed) — do that before starting slice 2 (export buttons +
-  outbound research links) or slice 3 (JSON/RSS feed).
+- **M15 (Report UX overhaul): all 3 slices shipped, committed, and pushed**
+  (`c96eb90`, `b43f3de`, `f6214fd` — this was stale in the prior version of
+  this file, which still said only slice 1 had landed). Slice 1: visual
+  badges, metric tooltips, methodology drawer. Slice 2: SEC EDGAR/Finviz
+  research links, Copy-JSON/Export-CSV buttons. Slice 3: `feed.json`/
+  `rss.xml`. Several real bugs caught by staff-engineer-reviewer rounds
+  across the three slices before push (badge logic, Graham-gate miscount,
+  an XSS-adjacent unescaped `</script>` in the export JSON embed, invalid
+  XML entity in `rss.xml`, redundant archive re-scans, a silent-zero data
+  gap) — full detail in `TASKS.md`'s M15 rows.
+- **2026-07-26: agent-run visual smoke-test done, but does NOT close the
+  user-confirmation item.** Rendered a fresh local `report.generate_report()`
+  and opened it in-browser (via a local static server — `file://` doesn't
+  load in the browser tooling used). All three slices check out
+  structurally: badges, tooltips, methodology drawer (correctly separates
+  Stage 1/Stage 2), research links, export buttons, and a valid
+  `feed.json`/`rss.xml` all render/parse correctly (responsive/narrow-
+  viewport behavior wasn't exercised). **pm-reviewer flagged that marking
+  the actual "user visual confirmation" row `done` off this would repeat
+  exactly the self-certification M13 row 354 was created to prevent** —
+  that row stays `todo`, and is now doubly blocked: even if the user looks
+  at `gramunger.com` today, they won't see M15 (next item).
+- **Real gap found in the process: `gramunger.com` (Cloud Run) is stale.**
+  Its live report shows *none* of M15 — no badges, drawer, links, or export
+  buttons, just bare ticker/score rows. The Cloud Run images were last
+  rebuilt 2026-07-25 ~18:54 UTC (for the GCS bug fixes only), before any
+  M15 commit landed. `daily-screen` has kept running successfully since,
+  but it's the *old* report code regenerating output — a redeploy is
+  needed to actually ship M15 to prod. See the new `TASKS.md` row.
 - **v2 distributed architecture: designed, not built.** See
   `DESIGN_DISTRIBUTED.md`. Unchanged this session.
 - **Nothing committed/pushed since 2026-07-24** (the last PR, #1, merged
@@ -117,33 +135,35 @@ faster than the doc update cycle so far.
 
 ## Immediate next steps (resume here)
 
-1. **Look at the actual rendered report** (`gramunger.com` or a local
-   `report.generate_report()` run) and confirm M15 slice 1 (badges,
-   tooltips, methodology drawer) reads and looks right. This is the one
-   open item blocking slice 1 from being fully closed out (M13 precedent).
+1. ~~Look at the actual rendered report and confirm M15 reads and looks
+   right~~ — **done 2026-07-26**, all 3 slices confirmed via a local
+   render (see above). Superseded by #1 below.
+1. **Rebuild + redeploy the Cloud Run images so `gramunger.com` actually
+   serves M15.** The live site is running pre-M15 code (see the gap noted
+   above / `TASKS.md`'s new "Cloud Run image is stale" row). This is now
+   the most concrete, low-risk next action.
 2. **Decide which deployment target is canonical** — k3s, Cloud Run, or
    both permanently — and write it down in `TASKS.md`. Gates further
    investment in either (deploy scripts, migrations, feed work that needs
-   a stable canonical URL).
+   a stable canonical URL). *(Note: TASKS.md's Infra section already
+   records a 2026-07-26 user decision — k3s dev / Cloud Run prod — so this
+   may already be resolved; double check before treating it as still open.)*
 3. **Confirm GCP cost/billing exposure** (Cloud Run, Artifact Registry,
    GCS, and the `gramunger.com` domain registration) is within free-tier
    limits or an accepted cost — more pressing now that `daily-screen` runs
    on an automated daily trigger, not just ad hoc.
-4. **Sync to GitHub.** We're on `main`, remote `github.com:jimmyokusa/munger`,
-   HEAD even with origin. Both review gates already ran (see above) —
-   remaining mechanics: update
-   `.claude/review-markers/tasks-pm-reviewer.sha256` = `sha256(TASKS.md)`
-   (final content, post-fixes) before committing, and write
-   `git rev-parse HEAD` to `.claude/review-markers/code-push-staff-engineer.sha`
-   (untracked) before pushing. Commit in logical chunks (Cloud Run bug
-   fixes, M15 slice 1, docs), push, open a PR.
+4. **Sync to GitHub.** As of 2026-07-26 the M15 slices are already
+   committed and pushed (`c96eb90`, `b43f3de`, `f6214fd`); working tree is
+   clean and even with `origin/main`. This step is done for that work —
+   only re-applies to whatever new changes come out of steps above (e.g.
+   setting `MUNGER_REPORT_BASE_URL` on Cloud Run, a deploy script).
 5. **Re-verify the k3s report still serves end-to-end** — last confirmed
    2026-07-24, not re-checked since:
    `ssh pi4 'sudo kubectl -n munger get pods'` then
    `ssh pi4 'curl -s -o /dev/null -w "%{http_code}\n" http://localhost:30080/'`.
-6. **M15 slice 2** (export buttons + outbound research links) once slice 1
-   is confirmed (#1 above). **v2 build**: start at **D0** in
-   `DESIGN_DISTRIBUTED.md`, whenever picked back up.
+6. **Fully automated CI/CD pipeline** (user request, 2026-07-26) — needs
+   its own design pass first; see `TASKS.md`'s Infra section. **v2 build**:
+   start at **D0** in `DESIGN_DISTRIBUTED.md`, whenever picked back up.
 
 ---
 
