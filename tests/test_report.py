@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime
+import json
 import os
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pandas as pd
@@ -248,6 +250,206 @@ def test_metrics_table_and_tickers_header_carry_tooltip_titles() -> None:
 
     assert 'title="Total debt / shareholder equity' in pick_html
     assert 'title="Total market value' in tickers_html
+
+
+def test_render_research_links_includes_sec_edgar_and_finviz() -> None:
+    # User request: outbound research links per ticker.
+    html_out = report._render_research_links("AAPL")
+
+    assert "https://www.sec.gov/edgar/searchedgar/companysearch" in html_out
+    assert "https://finviz.com/quote.ashx?t=AAPL" in html_out
+    assert 'target="_blank"' in html_out
+    assert 'rel="noopener noreferrer"' in html_out
+
+
+def test_render_pick_and_candidate_include_research_links() -> None:
+    _write_screen_results("AAPL,True,90.5,,2500000000000,28.4,1.5\n")
+    results = report._load_screen_results()
+
+    pick_html = report._render_pick("AAPL", journal_row=None, results=results)
+    candidate_html = report._render_candidate(results.iloc[0])
+
+    assert "https://finviz.com/quote.ashx?t=AAPL" in pick_html
+    assert "https://finviz.com/quote.ashx?t=AAPL" in candidate_html
+
+
+def test_export_rows_for_buyable_candidates_when_no_positions_held() -> None:
+    # User request: Copy JSON / Export CSV data must mirror the page's own
+    # picks-vs-candidates branch (_buyable_sorted), highest score first.
+    _write_screen_results(
+        "AAPL,True,90.5,,2500000000000,28.4,0.30\nMSFT,True,80.0,,2000000000000,30.0,0.25\n"
+        "XYZ,False,10.0,graham_pe,,,\n"
+    )
+    results = report._load_screen_results()
+
+    rows = report._export_rows(picks=[], results=results)
+
+    assert [r["symbol"] for r in rows] == ["AAPL", "MSFT"]
+    assert all(r["status"] == "buyable candidate" for r in rows)
+    assert rows[0]["reason"] is None
+    assert rows[0]["market_cap"] == 2500000000000.0
+
+
+def test_export_rows_for_held_picks_include_reason_and_notional() -> None:
+    _write_screen_results("AAPL,True,90.5,,2500000000000,28.4,0.30\n")
+    results = report._load_screen_results()
+    picks = [
+        {
+            "symbol": "AAPL",
+            "reason": "NEW_POSITION score=90.5",
+            "timestamp": "2026-07-26T00:00:00",
+            "notional": 1000.0,
+        }
+    ]
+
+    rows = report._export_rows(picks, results)
+
+    assert rows == [
+        {
+            "symbol": "AAPL",
+            "status": "held",
+            "score": 90.5,
+            "reason": "NEW_POSITION score=90.5",
+            "bought_at": "2026-07-26T00:00:00",
+            "notional": 1000.0,
+            "market_cap": 2500000000000.0,
+            "trailing_pe": 28.4,
+            "price_to_book": None,
+            "current_ratio": None,
+            "debt_to_equity": None,
+            "return_on_equity": 0.30,
+            "gross_margin": None,
+            "operating_margin": None,
+            "free_cash_flow": None,
+            "dividend_yield": None,
+            "consecutive_positive_earnings_years": None,
+        }
+    ]
+
+
+def test_render_export_controls_escapes_script_closing_tag() -> None:
+    # Real bug (caught by test_generate_report_escapes_html_in_reason_
+    # strings failing against the first draft): a reason string containing
+    # "</script>" would close the embedded <script type="application/json">
+    # early, letting arbitrary markup after it render as real HTML.
+    rows = [{"symbol": "AAPL", "reason": "</script><script>alert(1)</script>"}]
+
+    html_out = report._render_export_controls(rows)
+
+    assert "</script><script>alert(1)</script>" not in html_out
+    assert "\\u003c/script>" in html_out
+    assert "Copy JSON" in html_out
+    assert "Export CSV" in html_out
+
+
+def test_render_export_controls_empty_when_no_rows() -> None:
+    assert report._render_export_controls([]) == ""
+
+
+def test_index_page_includes_export_controls_and_feed_link_tags() -> None:
+    report.generate_report()
+
+    index_html = (config.REPORT_DIR / "index.html").read_text()
+    assert 'id="picks-data"' not in index_html  # no rows: nothing embedded
+    assert '<link rel="alternate" type="application/feed+json"' in index_html
+    assert '<link rel="alternate" type="application/rss+xml"' in index_html
+
+
+def test_recent_daily_feed_entries_reads_buyable_symbols_newest_first() -> None:
+    _write_archive("2026-07-01", "AAPL,True,90.0,\nMSFT,False,10.0,graham_pe\n")
+    _write_archive("2026-07-02", "AAPL,True,50.0,\nGOOG,True,95.0,\n")
+
+    entries = report._recent_daily_feed_entries()
+
+    assert [day.isoformat() for day, _ in entries] == ["2026-07-02", "2026-07-01"]
+    # GOOG (95.0) ranks above AAPL (50.0) on the 07-02 day.
+    assert entries[0][1] == ["GOOG", "AAPL"]
+    assert entries[1][1] == ["AAPL"]
+
+
+def test_recent_daily_feed_entries_respects_max_items_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "FEED_MAX_ITEMS", 1)
+    _write_archive("2026-07-01", "AAPL,True,90.0,\n")
+    _write_archive("2026-07-02", "AAPL,True,90.0,\n")
+
+    entries = report._recent_daily_feed_entries()
+
+    assert len(entries) == 1
+    assert entries[0][0].isoformat() == "2026-07-02"
+
+
+def test_recent_daily_feed_entries_skips_a_day_missing_the_score_column() -> None:
+    # Real bug (staff-engineer-reviewer): a day whose archive can't be
+    # re-read with the score column (legacy schema, deleted, corrupted)
+    # must be skipped, not silently rendered as "0 buyable candidates" --
+    # that would be indistinguishable from a real, valid empty-screen day.
+    config.SCREEN_RESULTS_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    (config.SCREEN_RESULTS_ARCHIVE_DIR / "screen_results_2026-07-01.csv").write_text(
+        "symbol,buyable\nAAPL,True\n"  # no score column
+    )
+    _write_archive("2026-07-02", "AAPL,True,90.0,\n")
+
+    entries = report._recent_daily_feed_entries()
+
+    assert [day.isoformat() for day, _ in entries] == ["2026-07-02"]
+
+
+def test_feed_base_url_defaults_to_relative_dot_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "REPORT_BASE_URL", "")
+    assert report._feed_base_url() == "."
+
+
+def test_feed_base_url_strips_trailing_slash(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "REPORT_BASE_URL", "https://gramunger.com/")
+    assert report._feed_base_url() == "https://gramunger.com"
+
+
+def test_render_feed_json_produces_valid_json_feed_with_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "REPORT_BASE_URL", "https://gramunger.com")
+    _write_archive("2026-07-26", "AAPL,True,91.2,\nMSFT,True,88.0,\n")
+
+    feed = json.loads(report._render_feed_json())
+
+    assert feed["version"] == "https://jsonfeed.org/version/1.1"
+    assert feed["home_page_url"] == "https://gramunger.com/index.html"
+    assert len(feed["items"]) == 1
+    item = feed["items"][0]
+    assert item["id"] == "munger-daily-2026-07-26"
+    assert "AAPL" in item["content_text"] and "MSFT" in item["content_text"]
+
+
+def test_render_feed_rss_produces_valid_xml_with_items() -> None:
+    _write_archive("2026-07-26", "AAPL,True,91.2,\n")
+
+    rss = report._render_feed_rss()
+    # Real bug (staff-engineer-reviewer): an earlier draft used the HTML5
+    # named entity &mdash;, which isn't valid in bare XML (no DOCTYPE
+    # declares it) and made a strict parser reject the whole document.
+    # Parsing (not just substring-checking) the output is what actually
+    # proves this is well-formed XML.
+    root = ET.fromstring(rss)
+
+    assert root.tag == "rss"
+    assert "<rss version=\"2.0\">" in rss
+    assert "munger-daily-2026-07-26" in rss
+    assert "AAPL" in rss
+
+
+def test_generate_report_writes_feed_json_and_rss_xml() -> None:
+    _write_archive("2026-07-26", "AAPL,True,91.2,\n")
+
+    report.generate_report()
+
+    assert (config.REPORT_DIR / "feed.json").exists()
+    assert (config.REPORT_DIR / "rss.xml").exists()
+    feed = json.loads((config.REPORT_DIR / "feed.json").read_text())
+    assert feed["items"][0]["id"] == "munger-daily-2026-07-26"
 
 
 def test_is_buyable_handles_real_bools_and_pandas_object_dtype_strings() -> None:

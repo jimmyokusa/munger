@@ -149,6 +149,24 @@ REPORT_DIR: Path = DATA_DIR / "report"
 # index.html/tickers.html also serves this live-updating file -- no
 # separate copy step needed for the report's progress-bar JS to poll it.
 PROGRESS_FILE_PATH: Path = REPORT_DIR / "progress.json"
+
+# Absolute origin used to build absolute links/ids in feed.json/rss.xml
+# (JSON Feed / RSS both expect absolute URLs, unlike the relative links
+# elsewhere in the static site). Empty by default -- unchanged local/k3s
+# behavior, where there's no stable public URL to point a feed reader at
+# (the k3s report is LAN-only). Set MUNGER_REPORT_BASE_URL on any
+# deployment with a real public URL (e.g. https://gramunger.com on Cloud
+# Run) -- report.py falls back to a relative "." base rather than
+# fabricating a domain if this is unset.
+REPORT_BASE_URL = os.environ.get("MUNGER_REPORT_BASE_URL", "")
+
+# Cap on how many past days' archives feed.json/rss.xml include. Archives
+# grow unbounded (TASKS.md's known retention TODO) -- without a cap the
+# feed would too, costing an ever-growing per-generation read of every
+# archived CSV (report._render_feed_items reads one to list that day's
+# buyable tickers) for items subscribers past this window will never see
+# anyway (feed readers only care about recent items).
+FEED_MAX_ITEMS = 60
 # DESIGN.md's PM-recommendations narrative illustrates this as "> 24
 # hours," written before the quarterly cadence was settled (M1) -- a
 # literal 24-hour threshold would fire on every single healthy quarterly

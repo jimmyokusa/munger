@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import datetime
 import html
+import json
 import logging
 import math
 import shutil
+import urllib.parse
 from pathlib import Path
 from typing import TypeGuard
 
@@ -173,6 +175,21 @@ table.metrics td:first-child { opacity: 0.65; cursor: help; }
 
 .empty { opacity: 0.7; font-style: italic; padding: 1.5rem; text-align: center; }
 .generated { opacity: 0.55; font-size: 0.8rem; margin-bottom: 1rem; }
+
+/* Outbound research links + export controls (user request). */
+.research-links { margin-top: 0.6rem; font-size: 0.82rem; opacity: 0.75; }
+.research-links a { color: inherit; }
+.export-controls { margin-bottom: 1rem; display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.export-controls button {
+  font: inherit; font-size: 0.82rem; font-weight: 600; cursor: pointer;
+  padding: 0.4rem 0.85rem; border-radius: 10px; color: inherit;
+  border: 1px solid light-dark(rgba(0, 0, 0, 0.15), rgba(255, 255, 255, 0.15));
+  background: light-dark(rgba(255, 255, 255, 0.6), rgba(30, 27, 55, 0.5));
+}
+.export-controls button:hover { opacity: 0.85; }
+.export-controls .export-status {
+  font-size: 0.8rem; opacity: 0.65; align-self: center;
+}
 
 .progress-banner { display: none; padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
 .progress-banner.active { display: block; }
@@ -411,6 +428,29 @@ def _render_methodology_drawer() -> str:
 </details>"""
 
 
+def _render_research_links(symbol: str) -> str:
+    """Outbound research links for a ticker (user request).
+
+    SEC EDGAR's company-search page isn't parameterizable by a documented
+    query string (unlike Finviz's quote page), so it links to the generic
+    search entry point rather than guessing at undocumented URL params --
+    the user still has to type the ticker there. urllib.parse.quote guards
+    the symbol in the Finviz URL even though real tickers are always
+    plain uppercase letters/dots/dashes (data.py normalizes them) --
+    cheap insurance against a malformed symbol ever reaching this far.
+    """
+    esc_symbol = html.escape(symbol)
+    finviz_url = f"https://finviz.com/quote.ashx?t={urllib.parse.quote(symbol)}"
+    return (
+        '<p class="research-links">'
+        '<a href="https://www.sec.gov/edgar/searchedgar/companysearch" '
+        f'target="_blank" rel="noopener noreferrer">SEC EDGAR &#8599;</a> &middot; '
+        f'<a href="{html.escape(finviz_url)}" target="_blank" '
+        f'rel="noopener noreferrer">Finviz ({esc_symbol}) &#8599;</a>'
+        "</p>"
+    )
+
+
 def _render_pick(symbol: str, journal_row: dict[str, object] | None, results: pd.DataFrame) -> str:
     esc_symbol = html.escape(symbol)
     matches = results[results["symbol"] == symbol]
@@ -436,6 +476,7 @@ def _render_pick(symbol: str, journal_row: dict[str, object] | None, results: pd
     <p><strong>Reason:</strong> {reason}</p>
     <p><strong>Bought:</strong> {timestamp} &middot; <strong>Notional:</strong> {notional_str}</p>
     {metrics_html}
+    {_render_research_links(symbol)}
   </div>
 </details>"""
 
@@ -517,7 +558,8 @@ def _render_candidate(metrics_row: pd.Series) -> str:
     it deliberately does not render "Reason/Bought/Notional", which would
     imply a position the screen-only path never took.
     """
-    symbol = html.escape(str(metrics_row["symbol"]))
+    raw_symbol = str(metrics_row["symbol"])
+    symbol = html.escape(raw_symbol)
     score_str = (
         f"{float(metrics_row['score']):.1f}" if _is_numeric(metrics_row.get("score")) else "—"
     )
@@ -530,8 +572,24 @@ def _render_candidate(metrics_row: pd.Series) -> str:
     {f'<div class="badges">{badges_html}</div>' if badges_html else ""}
     <p><strong>Status:</strong> buyable in the latest screen &mdash; not a held position</p>
     {metrics_html}
+    {_render_research_links(raw_symbol)}
   </div>
 </details>"""
+
+
+def _buyable_sorted(results: pd.DataFrame) -> pd.DataFrame:
+    """Buyable rows from a screen result, ranked by score (highest first).
+
+    Shared by `_render_candidates_or_empty` and the export-button data
+    (`_export_rows`) so "what's shown on the page" and "what a Copy
+    JSON/Export CSV click produces" can never silently diverge.
+    """
+    if len(results) == 0 or "buyable" not in results.columns:
+        return pd.DataFrame()
+    buyable = results[results["buyable"].apply(_is_buyable)]
+    if "score" in buyable.columns:
+        buyable = buyable.sort_values("score", ascending=False)
+    return buyable
 
 
 def _render_candidates_or_empty(results: pd.DataFrame) -> str:
@@ -547,11 +605,7 @@ def _render_candidates_or_empty(results: pd.DataFrame) -> str:
     a full liquidation and the next buy (which does have a journal, just no
     currently open position) -- the candidate label is accurate either way.
     """
-    buyable = pd.DataFrame()
-    if len(results) > 0 and "buyable" in results.columns:
-        buyable = results[results["buyable"].apply(_is_buyable)]
-        if "score" in buyable.columns:
-            buyable = buyable.sort_values("score", ascending=False)
+    buyable = _buyable_sorted(results)
     if len(buyable) == 0:
         return '<div class="glass"><p class="empty">No current picks yet.</p></div>'
     intro = (
@@ -565,13 +619,137 @@ def _render_candidates_or_empty(results: pd.DataFrame) -> str:
     return f"{intro}\n{cards}"
 
 
+def _json_safe_metric(value: object) -> float | None:
+    """A metric value coerced to a plain float for JSON, or None.
+
+    Mirrors `_is_numeric`'s definition of "real data" (excludes NaN) so
+    the exported JSON/CSV agrees with what the page itself renders as
+    "—"/missing -- raw numpy float64 isn't JSON-serializable as-is,
+    so this can't just be `metrics_row.get(key)`.
+    """
+    return float(value) if _is_numeric(value) else None
+
+
+def _export_rows(picks: list[dict[str, object]], results: pd.DataFrame) -> list[dict[str, object]]:
+    """The data behind the Copy JSON / Export CSV buttons (user request).
+
+    Deliberately mirrors _render_index's own picks-vs-candidates branch
+    (same `if picks: ... else: _buyable_sorted(...)` split) so an export
+    can never show something different from what's actually on the page
+    at the moment it's clicked.
+    """
+    rows: list[dict[str, object]] = []
+    if picks:
+        for p in picks:
+            symbol = str(p["symbol"])
+            matches = results[results["symbol"] == symbol]
+            metrics_row = matches.iloc[0] if len(matches) > 0 else None
+            score = _json_safe_metric(metrics_row["score"]) if metrics_row is not None else None
+            row: dict[str, object] = {
+                "symbol": symbol,
+                "status": "held",
+                "score": score,
+                "reason": str(p["reason"]) if p.get("reason") is not None else None,
+                "bought_at": str(p["timestamp"]) if p.get("timestamp") is not None else None,
+                "notional": _json_safe_metric(p.get("notional")),
+            }
+            for key in _METRIC_LABELS:
+                metric_value = metrics_row.get(key) if metrics_row is not None else None
+                row[key] = _json_safe_metric(metric_value)
+            rows.append(row)
+        return rows
+    for _, metrics_row in _buyable_sorted(results).iterrows():
+        row = {
+            "symbol": str(metrics_row["symbol"]),
+            "status": "buyable candidate",
+            "score": _json_safe_metric(metrics_row.get("score")),
+            "reason": None,
+            "bought_at": None,
+            "notional": None,
+        }
+        for key in _METRIC_LABELS:
+            row[key] = _json_safe_metric(metrics_row.get(key))
+        rows.append(row)
+    return rows
+
+
+def _render_export_controls(rows: list[dict[str, object]]) -> str:
+    """Copy-JSON / Export-CSV buttons near the picks header (user request).
+
+    The row data is embedded as a `<script type="application/json">` --
+    inert to the HTML/JS parser (unlike a plain `<script>` block, this
+    type never executes), so no escaping beyond what `json.dumps` already
+    does is needed to make it safe to embed. Both buttons then just read
+    that same embedded data client-side; nothing is re-fetched or
+    re-derived, so the export can never disagree with what's on the page.
+    """
+    if not rows:
+        return ""
+    # A reason string (bot-generated today, but not something this
+    # rendering layer should trust) could contain "</script>" -- the HTML
+    # parser closes the tag right there regardless of type="application/
+    # json" not executing as script, which can inject real markup after
+    # it. Escaping "<" as its JSON unicode form is the standard fix (valid
+    # JSON either way; JSON.parse reads < back as "<") -- confirmed
+    # by this module's own test_generate_report_escapes_html_in_reason_
+    # strings, which failed against the unescaped version.
+    data_json = json.dumps(rows).replace("<", "\\u003c")
+    return f"""<div class="export-controls">
+  <script type="application/json" id="picks-data">{data_json}</script>
+  <button type="button" id="copy-json-btn">Copy JSON</button>
+  <button type="button" id="export-csv-btn">Export CSV</button>
+  <span class="export-status" id="export-status" aria-live="polite"></span>
+</div>
+<script>
+(function() {{
+  const rows = JSON.parse(document.getElementById('picks-data').textContent);
+  const status = document.getElementById('export-status');
+  function flash(msg) {{
+    status.textContent = msg;
+    setTimeout(() => {{ status.textContent = ''; }}, 2500);
+  }}
+  document.getElementById('copy-json-btn').addEventListener('click', async () => {{
+    try {{
+      await navigator.clipboard.writeText(JSON.stringify(rows, null, 2));
+      flash('Copied ' + rows.length + ' row(s) to clipboard.');
+    }} catch (e) {{
+      flash('Copy failed -- clipboard access was denied.');
+    }}
+  }});
+  document.getElementById('export-csv-btn').addEventListener('click', () => {{
+    const cols = Object.keys(rows[0]);
+    const escape = (v) => {{
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      return /[",\\r\\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }};
+    const lines = [cols.join(',')].concat(
+      rows.map((r) => cols.map((c) => escape(r[c])).join(','))
+    );
+    const blob = new Blob([lines.join('\\n')], {{type: 'text/csv'}});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'munger_picks.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }});
+}})();
+</script>"""
+
+
 def _render_index(picks: list[dict[str, object]], results: pd.DataFrame) -> str:
     if picks:
         body = "\n".join(_render_pick(str(p["symbol"]), p, results) for p in picks)
     else:
         body = _render_candidates_or_empty(results)
+    export_controls = _render_export_controls(_export_rows(picks, results))
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Munger bot &mdash; current picks</title>
+<link rel="alternate" type="application/feed+json" title="Munger daily candidates" href="feed.json">
+<link rel="alternate" type="application/rss+xml" title="Munger daily candidates" href="rss.xml">
 <style>{_CSS}</style></head>
 <body>
 <h1>Current picks</h1>
@@ -584,6 +762,7 @@ def _render_index(picks: list[dict[str, object]], results: pd.DataFrame) -> str:
   <div class="progress-detail" id="progress-detail"></div>
 </div>
 {_generated_at()}
+{export_controls}
 {body}
 {_progress_polling_script()}
 </body></html>
@@ -775,8 +954,20 @@ def _render_month(year: int, month: int, summaries: dict[datetime.date, dict[str
 </div>"""
 
 
-def _render_calendar() -> str:
-    summaries = _load_daily_summaries()
+def _render_calendar(
+    summaries: dict[datetime.date, dict[str, int]] | None = None,
+) -> str:
+    """Renders calendar.html.
+
+    Pass `summaries` to reuse an already-loaded dict (generate_report()
+    loads it once and shares it with the feed renderers) rather than
+    re-globbing/re-reading every archive CSV per caller --
+    staff-engineer-reviewer finding on the first draft, which had
+    calendar.html, feed.json, and rss.xml each independently re-scanning
+    the whole (unbounded-growth) archive directory.
+    """
+    if summaries is None:
+        summaries = _load_daily_summaries()
     today = datetime.date.today()
     months_html = []
     year, month = today.year, today.month
@@ -854,6 +1045,147 @@ def _copy_archives_into_report() -> None:
         tmp_dest.replace(dest)
 
 
+def _recent_daily_feed_entries(
+    summaries: dict[datetime.date, dict[str, int]] | None = None,
+) -> list[tuple[datetime.date, list[str]]]:
+    """Up to config.FEED_MAX_ITEMS most recent archived days, newest first.
+
+    One (day, buyable_symbols) pair per day -- a subscriber wants to see
+    *which* names newly qualified, not just the count
+    `_load_daily_summaries` returns. Pass `summaries` to reuse an
+    already-loaded dict (see `_render_calendar`'s docstring) instead of
+    re-scanning the whole archive directory; reads each day's archive CSV
+    with the same narrow `usecols` as `_load_daily_summaries` for the same
+    reason: this can scale to a year+ of history without loading full
+    metric columns for days that will be immediately discarded by the
+    FEED_MAX_ITEMS cap.
+    """
+    if summaries is None:
+        summaries = _load_daily_summaries()
+    recent_days = sorted(summaries, reverse=True)[: config.FEED_MAX_ITEMS]
+    entries: list[tuple[datetime.date, list[str]]] = []
+    for day in recent_days:
+        archive_path = config.SCREEN_RESULTS_ARCHIVE_DIR / f"screen_results_{day.isoformat()}.csv"
+        try:
+            frame = pd.read_csv(archive_path, usecols=["symbol", "buyable", "score"])
+        except (OSError, ValueError, KeyError):
+            # _load_daily_summaries already read this same file successfully
+            # (with a 2-column subset) to know `day` belongs in `summaries`
+            # at all -- a failure here means something changed since (the
+            # file lost its `score` column, was deleted, or a concurrent
+            # write raced this read). Skip the day rather than fabricate a
+            # "0 buyable" entry indistinguishable from a real empty-but-
+            # valid screen day -- staff-engineer-reviewer finding: silently
+            # coercing "unreadable" to "empty" would conflate the two for
+            # every feed subscriber, with no way to tell them apart.
+            continue
+        symbols: list[str] = []
+        if len(frame) > 0:
+            buyable = frame[frame["buyable"].apply(_is_buyable)].sort_values(
+                "score", ascending=False
+            )
+            symbols = [str(s) for s in buyable["symbol"]]
+        entries.append((day, symbols))
+    return entries
+
+
+def _feed_base_url() -> str:
+    """Absolute origin for feed links, or "." if none is configured.
+
+    "." (not "") so a relative href built as f"{base}/x.html" still forms
+    a valid relative reference ("./x.html") instead of an absolute-looking
+    "/x.html" that would resolve against the domain root rather than
+    wherever the feed itself happens to be served from.
+    """
+    return config.REPORT_BASE_URL.rstrip("/") if config.REPORT_BASE_URL else "."
+
+
+def _render_feed_json(entries: list[tuple[datetime.date, list[str]]] | None = None) -> str:
+    """feed.json in JSON Feed 1.1 format (https://jsonfeed.org/version/1.1).
+
+    One item per recently-archived day (see _recent_daily_feed_entries),
+    so subscribing surfaces new candidate drops as they're archived --
+    not a snapshot of today's picks alone, which a feed reader would only
+    ever show once and then never update meaningfully. Pass `entries` to
+    reuse an already-computed list (generate_report() computes it once
+    and shares it with _render_feed_rss) instead of each format
+    independently re-reading the same archive CSVs.
+    """
+    if entries is None:
+        entries = _recent_daily_feed_entries()
+    base = _feed_base_url()
+    items = []
+    for day, symbols in entries:
+        summary = (
+            f"{len(symbols)} buyable candidate(s): {', '.join(symbols)}"
+            if symbols
+            else "No buyable candidates this run."
+        )
+        items.append(
+            {
+                "id": f"munger-daily-{day.isoformat()}",
+                "url": f"{base}/calendar.html",
+                "title": f"{day.isoformat()}: {len(symbols)} buyable candidate(s)",
+                "content_text": summary,
+                "date_published": f"{day.isoformat()}T00:00:00Z",
+            }
+        )
+    feed = {
+        "version": "https://jsonfeed.org/version/1.1",
+        "title": "Munger bot — daily candidates",
+        "home_page_url": f"{base}/index.html",
+        "feed_url": f"{base}/feed.json",
+        "description": "New buyable candidates from each archived daily screen.",
+        "items": items,
+    }
+    return json.dumps(feed, indent=2)
+
+
+def _render_feed_rss(entries: list[tuple[datetime.date, list[str]]] | None = None) -> str:
+    """rss.xml, the same items as feed.json in RSS 2.0 format.
+
+    Two formats rather than one because feed readers split roughly evenly
+    on which they support -- both are generated from the same
+    _recent_daily_feed_entries() so they can't drift apart in content.
+    Pass `entries` for the same reuse reason as `_render_feed_json`.
+    """
+    if entries is None:
+        entries = _recent_daily_feed_entries()
+    base = _feed_base_url()
+    items_xml = []
+    for day, symbols in entries:
+        summary = (
+            f"{len(symbols)} buyable candidate(s): {html.escape(', '.join(symbols))}"
+            if symbols
+            else "No buyable candidates this run."
+        )
+        pub_date = datetime.datetime.combine(
+            day, datetime.time.min, tzinfo=datetime.UTC
+        ).strftime("%a, %d %b %Y %H:%M:%S %z")
+        items_xml.append(
+            f"<item><title>{html.escape(day.isoformat())}: {len(symbols)} buyable "
+            f"candidate(s)</title><link>{html.escape(base)}/calendar.html</link>"
+            f"<guid isPermaLink=\"false\">munger-daily-{day.isoformat()}</guid>"
+            f"<pubDate>{pub_date}</pubDate><description>{summary}</description></item>"
+        )
+    # &mdash; (an HTML5 named entity) is NOT valid in bare XML -- only
+    # &amp;/&lt;/&gt;/&quot;/&apos; and numeric entities are, and this
+    # document has no DOCTYPE to declare it. A strict XML parser (many
+    # feed readers, xml.etree.ElementTree) rejects the whole file on an
+    # undefined-entity error. &#8212; is the numeric (always-valid) form
+    # of the same em dash character -- real bug, staff-engineer-reviewer
+    # finding, caught because the existing test only substring-checked
+    # the output instead of parsing it as XML.
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+<title>Munger bot &#8212; daily candidates</title>
+<link>{html.escape(base)}/index.html</link>
+<description>New buyable candidates from each archived daily screen.</description>
+{"".join(items_xml)}
+</channel></rss>
+"""
+
+
 def _write_text_atomically(path: Path, text: str) -> None:
     """Write via temp-file + rename, matching StateTracker's pattern.
 
@@ -890,7 +1222,20 @@ def generate_report() -> None:
         _write_text_atomically(
             config.REPORT_DIR / "tickers.html", _render_tickers(results, held_symbols)
         )
-        _write_text_atomically(config.REPORT_DIR / "calendar.html", _render_calendar())
+        # Loaded once and shared across calendar.html/feed.json/rss.xml --
+        # each independently re-globbing and re-reading every archive CSV
+        # (an unbounded, ever-growing directory) on every single
+        # generate_report() call was a real, avoidable scaling cost
+        # (staff-engineer-reviewer finding).
+        daily_summaries = _load_daily_summaries()
+        feed_entries = _recent_daily_feed_entries(daily_summaries)
+        _write_text_atomically(
+            config.REPORT_DIR / "calendar.html", _render_calendar(daily_summaries)
+        )
+        _write_text_atomically(
+            config.REPORT_DIR / "feed.json", _render_feed_json(feed_entries)
+        )
+        _write_text_atomically(config.REPORT_DIR / "rss.xml", _render_feed_rss(feed_entries))
         _copy_archives_into_report()
     except Exception:
         logger.exception("report.py failed to generate the report")
