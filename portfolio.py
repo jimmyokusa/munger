@@ -130,7 +130,19 @@ def generate_buy_queue(
     the score-ranked buyable list until the target position count is
     reached or cash runs out. Never sells to buy -- this function only
     ever returns buy orders. $50 (config.MIN_ORDER_NOTIONAL) dust filter
-    on every order, top-up or new.
+    on every order, top-up or new; a top-up additionally only fires past
+    config.REBALANCE_DRIFT_BAND_PCT below target (daily-cadence tolerance
+    band -- see its definition).
+
+    Self-limits total notional to config.GLOBAL_NOTIONAL_BUDGET_PCT of
+    portfolio value, same as the run-level budget bot.py enforces as a
+    backstop. Without this, a cold start (many buyable candidates, zero
+    current holdings) would build a queue bot.py's budget check rejects
+    wholesale -- capping deployable_cash here instead means a cold start
+    fills as much of the target portfolio as fits this run's budget and
+    ramps the rest in over subsequent runs, rather than deadlocking (the
+    same buy queue, and the same rejection, every run, forever, since
+    nothing ever gets bought).
 
     Caller contract: this function has no visibility into what
     process_sells decided to liquidate this run. If a ticker is in this
@@ -141,9 +153,12 @@ def generate_buy_queue(
     portfolio_value = available_cash + sum(current_holdings.values())
     buffer = portfolio_value * config.CASH_BUFFER_PCT
     deployable_cash = max(0.0, available_cash - buffer)
+    run_notional_budget = portfolio_value * config.GLOBAL_NOTIONAL_BUDGET_PCT
+    deployable_cash = min(deployable_cash, run_notional_budget)
     target_value = portfolio_value / config.TARGET_POSITION_COUNT
     max_value = portfolio_value * config.MAX_SINGLE_POSITION_WEIGHT
     per_position_cap = min(target_value, max_value)
+    drift_threshold = per_position_cap * config.REBALANCE_DRIFT_BAND_PCT
 
     orders: list[tuple[str, float]] = []
 
@@ -151,6 +166,8 @@ def generate_buy_queue(
         if deployable_cash < config.MIN_ORDER_NOTIONAL:
             break
         gap = per_position_cap - current_holdings[ticker]
+        if gap < drift_threshold:
+            continue  # within the daily-noise tolerance band, not real drift
         order_amount = min(gap, deployable_cash)
         if order_amount >= config.MIN_ORDER_NOTIONAL:
             orders.append((ticker, order_amount))

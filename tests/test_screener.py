@@ -341,7 +341,9 @@ def test_run_screen_scores_a_ticker_that_fails_a_gate(
     # problem when it was really this gating.
     monkeypatch.setattr(config, "SCREEN_RESULTS_CSV_PATH", tmp_path / "screen_results.csv")
     failing_gate_metrics = _passing_metrics(symbol="SMALLCAP", market_cap=1_000_000_000.0)
-    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols: {"SMALLCAP": failing_gate_metrics})
+    monkeypatch.setattr(
+        data, "fetch_all_metrics", lambda symbols: {"SMALLCAP": failing_gate_metrics}
+    )
 
     results = screener.run_screen(["SMALLCAP"])
 

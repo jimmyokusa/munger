@@ -4,29 +4,36 @@ name: Scheduler heartbeat
 # reviewer/pm-reviewer, M11):
 #
 # 1. GitHub auto-disables a scheduled workflow after 60 days with no
-#    repository activity. This project's quarterly-run cadence is ~91
-#    days -- longer than that window -- so without something else
-#    touching the repo periodically, quarterly-run.yml's schedule could
-#    silently deactivate between cycles. GitHub's own docs only state
-#    the 60-day threshold and don't specify what counts as "activity"
-#    (a scheduled workflow merely executing, vs. an actual push) --
-#    confirmed ambiguous/unspecified via GitHub's docs and community
-#    discussions, the same kind of "sources don't agree" situation as
-#    M8's notional-on-limit-order question. Rather than gamble on an
-#    unverified reading, the "Keep repo active" step below pushes an
-#    actual commit every month -- unambiguously "activity" under any
-#    reading of the policy.
+#    repository activity. Originally written when this project's trading
+#    workflow ran quarterly (~91 days -- longer than that window), so
+#    without something else touching the repo periodically, its schedule
+#    could silently deactivate between cycles. Now that daily-trade.yml
+#    (2026-07-26: renamed from quarterly-run.yml, cadence changed to
+#    daily -- DESIGN.md section 4) fires every day, its own execution
+#    almost certainly counts as "activity" on its own -- but GitHub's
+#    docs still don't specify what counts (a scheduled workflow merely
+#    executing, vs. an actual push), the same unresolved ambiguity noted
+#    at M11, so this step is kept as a harmless, unambiguous safety net
+#    rather than removed on an unverified reading.
 # 2. A true dead-man's-switch: bot.py's own _check_data_freshness() can
 #    only notice a missed run once bot.py actually runs again -- if the
 #    scheduler stops firing entirely (disabled, GitHub outage, quota
 #    exhaustion), nothing inside bot.py can ever observe that. This
-#    workflow checks quarterly-run.yml's own run history independently
+#    workflow checks daily-trade.yml's own run history independently
 #    via the GitHub API, so a total scheduling failure gets its own
 #    alert (a failed run here, same GH-failure-email channel as
 #    everywhere else) instead of silence.
 on:
   schedule:
-    - cron: "0 12 1 * *"
+    # 2026-07-26: was monthly (`0 12 1 * *`), matching the quarterly
+    # trading cadence this existed to watch. Checking monthly against a
+    # 3-day dead-man's-switch threshold (below) would only ever actually
+    # notice a stalled scheduler on this job's own next monthly fire --
+    # up to ~30 days late, defeating the point of a tight threshold. Now
+    # daily, offset from both daily-trade.yml (14:00 UTC) and
+    # daily-screen.yml (13:00 UTC) so this doesn't add to their shared
+    # yfinance/Wikipedia load window.
+    - cron: "0 15 * * *"
   workflow_dispatch: {}
 
 jobs:
@@ -57,17 +64,17 @@ jobs:
           git -C /tmp/heartbeat-wt-parent/heartbeat-wt commit -q -m "Heartbeat: keep repo active for scheduled-workflow retention"
           git -C /tmp/heartbeat-wt-parent/heartbeat-wt push --force origin HEAD:heartbeat
 
-      - name: Check quarterly-run's last execution age
+      - name: Check daily-trade's last execution age
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
           last_run_json=$(gh run list --repo "${{ github.repository }}" \
-            --workflow=quarterly-run.yml --limit 1 --json createdAt,conclusion,status)
+            --workflow=daily-trade.yml --limit 1 --json createdAt,conclusion,status)
           echo "$last_run_json"
           count=$(echo "$last_run_json" | python3 -c "import json, sys; print(len(json.load(sys.stdin)))")
           if [ "$count" -eq 0 ]; then
-            echo "quarterly-run.yml has never executed yet -- nothing to check (expected before its first scheduled fire)."
+            echo "daily-trade.yml has never executed yet -- nothing to check (expected before its first scheduled fire)."
             exit 0
           fi
           created_at=$(echo "$last_run_json" | python3 -c "import json, sys; print(json.load(sys.stdin)[0]['createdAt'])")
@@ -77,8 +84,12 @@ jobs:
           now = datetime.datetime.now(datetime.timezone.utc)
           print((now - created).days)
           ")
-          echo "Last quarterly-run execution was $age_days days ago."
-          if [ "$age_days" -gt 130 ]; then
-            echo "::error::quarterly-run.yml has not executed in $age_days days (expected ~91-day cadence + buffer) -- the schedule may be disabled, failing to trigger, or the repo may have hit GitHub's 60-day scheduled-workflow auto-disable."
+          echo "Last daily-trade execution was $age_days days ago."
+          # 2026-07-26: threshold shrunk from 130 (quarterly cadence: ~91
+          # days + buffer) to 3 (daily cadence: 1 day + a couple of
+          # retries' worth of slack) -- a daily job going 130 days
+          # unnoticed would defeat the entire point of a dead-man's-switch.
+          if [ "$age_days" -gt 3 ]; then
+            echo "::error::daily-trade.yml has not executed in $age_days days (expected ~daily cadence + buffer) -- the schedule may be disabled, failing to trigger, or the repo may have hit GitHub's 60-day scheduled-workflow auto-disable."
             exit 1
           fi

@@ -7,8 +7,9 @@ Munger's quality-first philosophy. It screens the S&P Composite 1500
 are both cheap (Graham) and high-quality (Munger), holds a concentrated
 ~15-position portfolio, and sells only on a deliberate two-strike
 deterioration in fundamentals — never on price movement alone. It runs
-quarterly against Alpaca (paper trading first), and most runs are expected
-to place zero sell orders.
+daily against Alpaca (paper trading first; see DESIGN.md §4/§1) with a
+rebalancing tolerance band so trading stays low-frequency in practice, and
+most runs are expected to place zero sell orders.
 
 Full specification: [DESIGN.md](DESIGN.md).
 
@@ -97,25 +98,29 @@ inspectable on its own before moving to the next.
       the notional cap bounds mistake *size*, the order-count cap only
       bounds mistake *count*; universe-fetch-fraction sanity abort.
 - [x] **M11 — Scheduling & observability.** Cron/GitHub Action wiring
-      (`.github/workflows/quarterly-run.yml`) for quarterly cadence, plus a
-      monthly `heartbeat.yml` watchdog; same-day idempotency via
-      `client_order_id` + `has_already_submitted`; alerting on run failure,
-      an empty universe fetch, per-index universe fallback, any liquidation
-      event (the rarest/highest-signal thing this system does), or a
-      state/broker reconciliation mismatch; a data-freshness dead-man's-
-      switch. **Code-complete but not yet verified against real GitHub
-      Actions** — the state-persistence and heartbeat mechanisms need the
-      user to add `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` as GitHub repo
-      secrets and manually run `workflow_dispatch` at least once; see
-      `TASKS.md` M11 for the exact sequence.
-- [ ] **M12 — Paper trading validation.** Run at least one full quarter
-      cycle on Alpaca paper; audit the journal for near-zero sells, buys
+      (`.github/workflows/daily-trade.yml`, renamed 2026-07-26 from
+      `quarterly-run.yml` when the cadence changed to daily) plus a daily
+      `heartbeat.yml` watchdog; same-day idempotency via `client_order_id`
+      + `has_already_submitted`; alerting on run failure, an empty universe
+      fetch, per-index universe fallback, any liquidation event (the
+      rarest/highest-signal thing this system does), or a state/broker
+      reconciliation mismatch; a data-freshness dead-man's-switch. Secrets
+      (`ALPACA_API_KEY`/`ALPACA_SECRET_KEY`) are added as GitHub repo
+      secrets and the workflow has been run manually multiple times; see
+      `TASKS.md` M11/M12 for the run history.
+- [ ] **M12 — Paper trading validation.** Daily cadence (2026-07-26,
+      superseding the original "run a full quarter cycle" bar — see
+      DESIGN.md §4/§6): observe an initial ~1-week convergence window from
+      cold start, then a ≥1-month steady state where most days should
+      place zero orders; audit the journal for near-zero sells, buys
       concentrated at the top of the score ranking, and weights landing
-      near target. One live attempt so far aborted safely at the
-      universe-fetch-fraction check (heavy yfinance rate limiting that day)
-      before any trading decision — doesn't count toward the quarter-cycle
-      requirement; genuinely blocked on ~3 months of real elapsed time once
-      M11's scheduling is verified and running.
+      near target. Two live attempts so far: the first aborted safely at
+      the universe-fetch-fraction check (heavy yfinance rate limiting that
+      day); the second reached the buy queue and safely aborted the whole
+      run at the notional-budget check (a real cold-start deadlock, since
+      fixed — see `TASKS.md` M12). Neither placed an order yet; the fix
+      needs one real manual `workflow_dispatch` run before the daily cron
+      is trusted unattended.
 - [x] **M13 — HTML report** *(added after v1's original build order; user
       request).* Static site (`report.py`, no server) showing current picks
       with an expandable reason/metrics panel per ticker, a sortable/
@@ -127,7 +132,8 @@ inspectable on its own before moving to the next.
       universe, screens it, archives the result, and regenerates the report
       — deliberately never importing `execution.py`, so it is
       architecturally incapable of placing an order (trading stays on
-      `bot.py`'s quarterly cadence). `report.py` gains a calendar view
+      `bot.py`'s own daily cadence via `daily-trade.yml`, a separate
+      GitHub Actions workflow). `report.py` gains a calendar view
       (`calendar.html`) linking each day to its archived results, and copies
       archives under `report/` so the site is self-contained wherever it's
       served. Runs both via `.github/workflows/daily-screen.yml` and as a

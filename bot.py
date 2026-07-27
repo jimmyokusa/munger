@@ -130,6 +130,63 @@ def _alert(alerts: list[str], message: str) -> None:
     print(f"::error::{message}")
 
 
+def _cap_buy_orders_to_budget(
+    buy_orders: list[tuple[str, float]], liquidation_count: int, portfolio_value: float
+) -> tuple[list[tuple[str, float]], list[str], list[str]]:
+    """Truncate the buy queue to this run's order-count and notional budgets.
+
+    Preserves priority order, deferring the remainder to a later run
+    instead of aborting the whole run.
+
+    Previously, exceeding either budget aborted the entire run -- correct
+    for a single one-off overage, but a deadlock under daily rebalancing
+    from a cold start: zero orders means holdings stay at zero, so the
+    next run builds the identical over-budget queue and aborts again,
+    forever. generate_buy_queue already self-limits notional to
+    config.GLOBAL_NOTIONAL_BUDGET_PCT (see its docstring), so in practice
+    only the order-count budget should ever truncate here; the notional
+    check is kept as a defense-in-depth backstop, not the active
+    constraint. Liquidations are never truncated -- they're the
+    two-strike quality discipline (risk-reducing), not discretionary.
+
+    Takes a strict prefix of buy_orders at each budget in turn (order
+    count, then notional), rather than skipping an order that doesn't fit
+    while continuing to try later, smaller ones -- staff-engineer-reviewer
+    finding: an earlier version used "skip and continue" for the notional
+    check, which could defer a high-priority top-up that didn't fit while
+    still buying a lower-priority new position after it, silently
+    breaking the priority order this function's own docstring promises.
+
+    Also returns which budget(s) actually bound (empty if nothing was
+    deferred) -- staff-engineer-reviewer finding: the order-count budget
+    binding is rare and alarming (it only happens with 6+ same-run
+    liquidations, since TARGET_POSITION_COUNT=15 < GLOBAL_ORDER_BUDGET=20
+    at today's config), while the notional budget binding is expected and
+    routine during a cold start (DESIGN.md 6) -- collapsing both into one
+    generic "order/notional budget" message made every deferral read the
+    same regardless of which, much rarer, case actually occurred.
+    """
+    max_buy_orders = max(0, config.GLOBAL_ORDER_BUDGET - liquidation_count)
+    notional_budget = portfolio_value * config.GLOBAL_NOTIONAL_BUDGET_PCT
+
+    count_capped = buy_orders[:max_buy_orders]
+    capped: list[tuple[str, float]] = []
+    running_notional = 0.0
+    for symbol, notional in count_capped:
+        if running_notional + notional > notional_budget:
+            break
+        capped.append((symbol, notional))
+        running_notional += notional
+    deferred = [symbol for symbol, _ in buy_orders[len(capped) :]]
+
+    bound_budgets: list[str] = []
+    if len(count_capped) < len(buy_orders):
+        bound_budgets.append("order-count")
+    if len(capped) < len(count_capped):
+        bound_budgets.append("notional")
+    return capped, deferred, bound_budgets
+
+
 def _finish(alerts: list[str]) -> int:
     """Return the process exit code for this run (0 clean, 1 alert-worthy).
 
@@ -221,24 +278,15 @@ def run(run_date: str | None = None) -> int:
     # check's denominator larger than the one that actually constrained
     # buy-order sizing, silently more permissive than intended.
     portfolio_value = available_cash + sum(remaining_holdings.values())
-    planned_order_count = len(to_liquidate) + len(buy_orders)
-    planned_buy_notional = sum(notional for _, notional in buy_orders)
-
-    if planned_order_count > config.GLOBAL_ORDER_BUDGET:
+    buy_orders, deferred_symbols, bound_budgets = _cap_buy_orders_to_budget(
+        buy_orders, len(to_liquidate), portfolio_value
+    )
+    if deferred_symbols:
         _alert(
             alerts,
-            f"Aborting: planned {planned_order_count} orders exceeds "
-            f"GLOBAL_ORDER_BUDGET={config.GLOBAL_ORDER_BUDGET}",
+            f"Deferred {len(deferred_symbols)} buy order(s) to a later run "
+            f"({' and '.join(bound_budgets)} budget): {', '.join(deferred_symbols)}",
         )
-        return _finish(alerts)
-    notional_budget = portfolio_value * config.GLOBAL_NOTIONAL_BUDGET_PCT
-    if planned_buy_notional > notional_budget:
-        _alert(
-            alerts,
-            f"Aborting: planned buy notional ${planned_buy_notional:.2f} exceeds "
-            f"{config.GLOBAL_NOTIONAL_BUDGET_PCT:.0%} of equity (${notional_budget:.2f})",
-        )
-        return _finish(alerts)
 
     for symbol in to_liquidate:
         order = exec_module.liquidate(symbol)

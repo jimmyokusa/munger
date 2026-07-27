@@ -27,16 +27,21 @@ and a heavy bias toward inaction — "the big money is not in the buying and
 selling, but in the waiting." Turnover is treated as a tax on compounding.
 
 The resulting system is therefore not a trading bot in the conventional
-sense. It is a screener plus an executor plus a very reluctant seller. It
-runs infrequently (quarterly by default), and most runs should place zero
-sell orders.
+sense. It is a screener plus an executor plus a very reluctant seller. The
+orchestration itself now runs daily (§4) so the portfolio checks its
+current results against fresh data every day, but a rebalancing tolerance
+band (§3.4) means the *decision to trade* stays rare in practice: Graham's
+gates and Munger's floors are anchored to quarterly-cadence fundamentals
+(10-Qs), not daily price action, so a holding's target weight barely moves
+day to day, and most runs should still place zero orders of either kind —
+checking daily does not mean trading daily.
 
 ## 2. High-Level Architecture
 
 ```
 ┌────────────────────────────────────────────────────────────┐
 │                        SCHEDULER                            │
-│         (cron / GitHub Actions — quarterly cadence)         │
+│         (cron / GitHub Actions — daily cadence)             │
 └───────────────────────────┬──────────────────────────────────┘
                             ▼
 ┌────────────────────────────────────────────────────────────┐
@@ -292,12 +297,24 @@ thesis is broken and the position is liquidated. Any clean check resets the
 streak. A ticker missing from the screen (delisting, data failure) counts
 as a strike, conservatively.
 
-**Buy queue.** After sells settle, deployable cash = cash − buffer.
-Priority order: first top up existing holdings that sit below target
-weight (gap ≥ minimum order size), then open new positions from the top of
-the score-ranked buyable list until the position count reaches target or
-cash runs out. Orders below $50 notional are skipped as dust. The engine
-never sells one holding to buy a higher-scoring one — no churn, ever.
+**Buy queue.** After sells settle, deployable cash = cash − buffer, further
+capped at this run's global notional budget (see §5) so a cold start
+(zero holdings, many buyable candidates) fills as much of the target
+portfolio as the run's budget allows instead of building a queue too large
+for any single run to execute — the rest rides in on later runs rather
+than the whole run being rejected. Priority order: first top up existing
+holdings that sit below target weight, then open new positions from the
+top of the score-ranked buyable list until the position count reaches
+target or cash runs out. A top-up only fires once a holding has drifted
+more than a tolerance band (`REBALANCE_DRIFT_BAND_PCT`, default 10%) below
+its own target dollar value — with daily runs, a holding's value moves
+with its price every day, and without this band ordinary price noise
+alone would trigger a top-up trade most days even though nothing about
+the position's standing actually changed. Orders below $50 notional are
+skipped as dust regardless. A position that's rallied past target is
+never trimmed to rebalance down — the engine never sells one holding to
+buy another, and a rally is success, not a sell signal (§1) — the drift
+band and the dust filter both apply to buys only.
 
 ### 3.5 Execution Module
 
@@ -377,15 +394,32 @@ haven't changed.
 
 ## 4. Scheduling and Operations
 
-Default cadence is quarterly, aligned to run ~2–3 weeks after quarter-end
-so fresh 10-Q data has propagated into the data provider. Monthly is the
-aggressive ceiling; anything faster contradicts the philosophy. Implement
-as a cron job or a scheduled GitHub Action that runs `python bot.py`. The
-run must be idempotent within a day (re-running after a crash must not
+**Cadence is daily** (2026-07-26 decision, superseding the original
+quarterly-only default): the orchestration runs `python bot.py` once a
+day via a scheduled GitHub Action. The original rationale for a slow
+cadence — Graham/Munger gates are anchored to quarterly fundamentals
+(10-Qs), and "anything faster contradicts the philosophy" — is preserved
+not by running rarely, but by the rebalancing tolerance band (§3.4): the
+*check* runs daily, but the target weights it checks against barely move
+between quarters, so actual order activity stays low-frequency in
+practice even though the process itself fires every day. A daily cadence
+also converges a cold start (e.g. this system's own first paper-trading
+run) to its target allocation over roughly a week, rather than needing to
+wait a full quarter for the run-level notional budget (§5) to allow it.
+The run must be idempotent within a day (re-running after a crash must not
 double-buy) — enforced primarily by the deterministic `client_order_id` on
 every order (§3.5), with a secondary pre-check against today's open orders,
 filled orders, and current positions; if that broker query itself fails,
 the run aborts rather than proceeding blind.
+
+**Rollback:** if daily rebalancing doesn't behave as this section assumes
+— e.g. the drift band fails to damp trading and orders keep firing past
+the initial convergence window (§6), not just during it — the fallback is
+either the `KILL_SWITCH` (immediate, screen-only, no code change, no
+un-schedule needed) for a full stop, or reverting `daily-trade.yml`'s cron
+back toward a slower cadence for a partial one. Both are operational
+changes, not data migrations — no rollback of `state.json`/`journal.db`
+is needed, since neither's schema changed.
 
 Secrets (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`) come from environment
 variables, never from code or the repo. At startup, assert that the
@@ -411,10 +445,33 @@ not their size — a bug in the target-weight or notional calculation (e.g.
 using gross buying power instead of net liquidation value) could still
 deploy a large fraction of the account in well under 20 orders. A second,
 independent cap limits **total notional deployed in a single run** (e.g.,
-no more than a configured percentage of equity moved per run), aborting if
-the generated plan would exceed it. Combined with the per-order limit-price
-band (§3.5), this bounds both how many things can go wrong and how badly
-any one of them can.
+no more than a configured percentage of equity moved per run). Combined
+with the per-order limit-price band (§3.5), this bounds both how many
+things can go wrong and how badly any one of them can.
+
+**2026-07-26 revision:** either budget being exceeded used to abort the
+*entire* run — correct for a one-off overage, but under a daily cadence
+(§4) it's a deadlock from a cold start: an aborted run buys nothing, so
+holdings stay at zero, so the next run builds the identical over-budget
+queue and aborts again, forever. The buy queue now self-limits its own
+notional to the run budget as it's built (§3.4) and, as a backstop, the
+orchestration truncates any excess (preserving priority order) and defers
+it to a later run rather than rejecting the whole run — an operator still
+sees an alert naming exactly which symbols were deferred and which
+budget(s) actually bound (the order-count budget binding is rare and
+alarming — it only happens with 6+ same-run liquidations at today's
+config — while the notional budget binding is expected and routine during
+a cold start, so collapsing both into one generic message would have
+made every deferral read the same regardless of which, much rarer, case
+occurred). The truncation takes a strict prefix at each budget in turn
+(order-count, then notional) rather than skipping an order that doesn't
+fit while still trying smaller ones after it — a large higher-priority
+order must defer itself and everything behind it, never let a smaller
+lower-priority order execute ahead of one that didn't fit. Liquidations are
+never truncated or deferred by either budget — the two-strike quality
+discipline is risk-reducing, not discretionary, and always executes in
+full; only the order-count budget's *remaining* room (after reserving a
+slot per liquidation) applies to the buy side.
 
 ## 6. Testing and Validation Plan
 
@@ -424,10 +481,21 @@ plus the strike/reset state machine of the sell discipline. Second, a
 screen-only mode run repeatedly against live data to eyeball whether the
 names it surfaces are sane (the top of the list should look like
 high-quality compounders at reasonable multiples, not data-error
-artifacts). Third, paper trading for at least one full quarter cycle —
-ideally two — verifying that the journal shows the intended behavior:
-near-zero sells, buys concentrated at the top of the score ranking, weights
-near target.
+artifacts). Third, paper trading, observed closely at two distinct stages
+given the daily cadence (§4): an initial convergence window of roughly a
+week from a cold start, where deferred-order alerts on most runs are
+*expected* (the run-level notional budget spreading a cold start's full
+target allocation across several days, §5) and not themselves a signal
+something's wrong; then an ongoing steady state, verified over at least a
+full month, where the journal should show the originally-intended
+behavior: near-zero sells, buys concentrated at the top of the score
+ranking, weights near target, and — this is the falsifiable check for
+whether the drift band (§3.4) is actually damping daily-noise trades as
+intended, not just during the cold start — most days placing zero orders
+of either kind once converged. The same symbol being deferred on many
+consecutive days *after* that initial window would indicate the budget
+genuinely isn't converging (a config or sizing bug), not healthy ramp-up,
+and is the concrete signal to investigate rather than assume benign.
 
 A historical backtest is optional and explicitly a v2 concern: point-in-time
 fundamental data (avoiding survivorship and look-ahead bias) requires a
@@ -472,12 +540,20 @@ munger/               # this repo's root
    logic.
 4. `execution.py` + `bot.py` against Alpaca paper, with the kill switch and
    order budget in place.
-5. Schedule it, let it run a quarter, read the journal, adjust.
+5. Schedule it (daily as of the 2026-07-26 cadence revision, §4), read the
+   journal through the initial convergence window and then on an ongoing
+   basis, adjust (§6).
 
 ## 9. Known Limitations and v2 Directions
 
 yfinance data is best-effort and occasionally wrong — the single most
-valuable v2 upgrade is a paid fundamentals API with point-in-time data. The
+valuable v2 upgrade is a paid fundamentals API with point-in-time data.
+The 2026-07-26 cadence revision (§4) means `daily-trade.yml` now runs its
+own full-universe screen (via `bot.py` -> `screener.run_screen`) every
+day, on top of the pre-existing separate daily screen for the public
+report (`daily-screen.yml`, a different deployment entirely) -- an
+accepted, not yet addressed, doubling of daily load against the same
+already-best-effort/rate-limit-fragile yfinance/Wikipedia sources. The
 earnings-stability window (4 years) is far short of Graham's 10 and should
 lengthen with better data. Sector-relative thresholds (financials and REITs
 fail current-ratio and margin tests structurally, so they're effectively

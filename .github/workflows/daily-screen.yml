@@ -1,23 +1,27 @@
 name: Daily screen-only snapshot
 
 # M14 (user request): a daily, read-only screen purely to populate the
-# HTML report's calendar view with richer history than the quarterly
-# trading cadence alone produces. Deliberately does NOT receive
+# public gramunger.com report's calendar view. Originally written to give
+# richer history than the (then-quarterly) trading cadence alone would
+# produce; trading is now also daily (daily-trade.yml, formerly
+# quarterly-run.yml, DESIGN.md section 4 2026-07-26 revision) and already
+# archives its own screen result each run, but this workflow stays --
+# it's a wholly separate deployment (k3s/Cloud Run, public site) from
+# daily-trade.yml (GitHub Actions, private Alpaca trading), not a
+# duplicate of it. Deliberately does NOT receive
 # ALPACA_API_KEY/ALPACA_SECRET_KEY at all -- daily_screen.py never
 # imports execution.py, so it's architecturally incapable of placing an
 # order, not just configured not to; omitting the secrets here is
-# defense in depth on top of that. Trading decisions stay on
-# quarterly-run.yml's own cadence (DESIGN.md 4) -- this workflow never
-# submits anything to Alpaca.
+# defense in depth on top of that.
 on:
   schedule:
     - cron: "0 13 * * *"
   workflow_dispatch: {}
 
-# Separate branch from quarterly-run.yml's bot-state (which holds
+# Separate branch from daily-trade.yml's bot-state (which holds
 # state.json/journal.db -- irrelevant here) so the two workflows can
-# never race on the same persisted branch even if their schedules
-# happen to coincide.
+# never race on the same persisted branch even though their schedules
+# now both fire daily.
 concurrency:
   group: daily-screen
   cancel-in-progress: false

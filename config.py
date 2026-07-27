@@ -128,6 +128,14 @@ TARGET_POSITION_COUNT = 15
 MAX_SINGLE_POSITION_WEIGHT = 0.12
 CASH_BUFFER_PCT = 0.02
 MIN_ORDER_NOTIONAL = 50.0  # orders below this are skipped as dust
+# Under daily rebalancing, a holding's dollar value drifts with price
+# every single run -- without a tolerance band, any drift past
+# MIN_ORDER_NOTIONAL alone would trigger a top-up trade most days on
+# noise, not real signal. Only top up a holding once it's fallen this
+# fraction below its own target dollar value; a stock that ran up past
+# target is never trimmed to rebalance down (DESIGN.md 3.4: this module
+# never sells to buy, and a rally is success, not a sell signal).
+REBALANCE_DRIFT_BAND_PCT = 0.10
 STRIKES_TO_LIQUIDATE = 2
 
 # --- Execution module (DESIGN.md 3.5) ---
@@ -169,12 +177,14 @@ REPORT_BASE_URL = os.environ.get("MUNGER_REPORT_BASE_URL", "")
 FEED_MAX_ITEMS = 60
 # DESIGN.md's PM-recommendations narrative illustrates this as "> 24
 # hours," written before the quarterly cadence was settled (M1) -- a
-# literal 24-hour threshold would fire on every single healthy quarterly
-# gap. Set instead as a dead-man's-switch tolerance around the actual
-# cadence: quarterly (~91 days) plus the "2-3 weeks after quarter-end"
-# scheduling offset (DESIGN.md 4), plus buffer, so it only fires if a
-# scheduled run was actually missed, not on ordinary cadence drift.
-DATA_FRESHNESS_MAX_HOURS = 130 * 24
+# literal 24-hour threshold would have fired on every single healthy
+# quarterly gap back then. 2026-07-26: cadence is now daily (DESIGN.md
+# 4), so shrunk from 130*24 (quarterly: ~91 days + scheduling offset +
+# buffer) down to a tolerance around the actual daily cadence -- one
+# missed/delayed run's worth of slack, not 130 days of it, or this
+# dead-man's-switch would no longer fire within any useful window of an
+# actual missed run.
+DATA_FRESHNESS_MAX_HOURS = 48
 
 # --- Risk controls (DESIGN.md 5) ---
 KILL_SWITCH = False

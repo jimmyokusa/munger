@@ -1,11 +1,17 @@
-name: Quarterly screen and trade run
+name: Daily screen and trade run
 
-# DESIGN.md section 4: quarterly cadence, ~2-3 weeks after quarter-end so
-# fresh 10-Q data has propagated into the data provider. 13:00 UTC on the
-# 15th of Jan/Apr/Jul/Oct.
+# DESIGN.md section 4 (2026-07-26 revision): daily cadence, superseding
+# the original quarterly-only default. 14:00 UTC -- one hour after
+# daily-screen.yml's own 13:00 UTC run, so the two don't hit the same
+# yfinance/Wikipedia rate limits simultaneously (this workflow runs its
+# own independent screen via bot.py -> screener.run_screen, not a shared
+# fetch with daily-screen.yml's report-only run). The rebalancing drift
+# band (config.REBALANCE_DRIFT_BAND_PCT, portfolio.py) is what keeps
+# actual daily order volume low despite the daily trigger -- see
+# DESIGN.md section 1/4 for why running daily doesn't mean trading daily.
 on:
   schedule:
-    - cron: "0 13 15 1,4,7,10 *"
+    - cron: "0 14 * * *"
   workflow_dispatch:
     inputs:
       screen_only:
@@ -21,7 +27,7 @@ on:
 # `cancel-in-progress: false` queues a second trigger rather than killing
 # an in-flight run partway through order submission.
 concurrency:
-  group: quarterly-run
+  group: daily-trade
   cancel-in-progress: false
 
 jobs:
@@ -49,8 +55,11 @@ jobs:
       # every run would silently reset the two-strike sell discipline and
       # make every real holding look like an unexpected reconciliation
       # mismatch. Persisted here via a dedicated `bot-state` branch (git
-      # itself as the durable store) rather than actions/cache, which
-      # evicts after 7 days of inactivity -- shorter than one quarter.
+      # itself as the durable store) rather than actions/cache -- daily
+      # runs now fit inside actions/cache's 7-day eviction window, but a
+      # git branch has no eviction window at all (a missed weekend/outage
+      # of any length can't silently lose state) and the mechanism was
+      # already built, so there's no reason to switch.
       - name: Prepare persisted bot-state branch
         run: |
           set -e

@@ -12,6 +12,7 @@ reexport check happy, the same pattern used in data.py's own tests.
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -74,6 +75,99 @@ def test_kill_switch_active_via_flag_file(tmp_path: Path, monkeypatch: pytest.Mo
     flag_path.touch()
     monkeypatch.setattr(config, "KILL_SWITCH_FLAG_FILE_PATH", flag_path)
     assert bot._kill_switch_active() is True
+
+
+# --- _cap_buy_orders_to_budget ---
+
+
+def test_cap_buy_orders_to_budget_passes_through_when_under_budget() -> None:
+    orders = [("A", 100.0), ("B", 200.0)]
+    capped, deferred, bound_budgets = bot._cap_buy_orders_to_budget(
+        orders, liquidation_count=0, portfolio_value=10_000.0
+    )
+    assert capped == orders
+    assert deferred == []
+    assert bound_budgets == []
+
+
+def test_cap_buy_orders_to_budget_defers_past_the_order_count_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "GLOBAL_ORDER_BUDGET", 2)
+    orders = [("A", 100.0), ("B", 100.0), ("C", 100.0)]
+    # 1 liquidation reserves a slot, leaving room for exactly 1 buy order.
+    capped, deferred, bound_budgets = bot._cap_buy_orders_to_budget(
+        orders, liquidation_count=1, portfolio_value=10_000.0
+    )
+    assert capped == [("A", 100.0)]
+    assert deferred == ["B", "C"]
+    assert bound_budgets == ["order-count"]
+
+
+def test_cap_buy_orders_to_budget_defers_past_the_notional_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "GLOBAL_NOTIONAL_BUDGET_PCT", 0.25)
+    orders = [("A", 2_000.0), ("B", 2_000.0)]
+    # Budget is 25% of $10,000 = $2,500: A fits, A+B ($4,000) doesn't.
+    capped, deferred, bound_budgets = bot._cap_buy_orders_to_budget(
+        orders, liquidation_count=0, portfolio_value=10_000.0
+    )
+    assert capped == [("A", 2_000.0)]
+    assert deferred == ["B"]
+    assert bound_budgets == ["notional"]
+
+
+def test_cap_buy_orders_to_budget_never_truncates_liquidations() -> None:
+    # Liquidations aren't passed through this function at all -- it only
+    # ever sees/returns buy orders -- confirmed here via a liquidation
+    # count large enough to consume the entire order budget on its own,
+    # every buy order still comes back deferred, not silently dropped.
+    orders = [("A", 100.0)]
+    capped, deferred, bound_budgets = bot._cap_buy_orders_to_budget(
+        orders, liquidation_count=config.GLOBAL_ORDER_BUDGET, portfolio_value=10_000.0
+    )
+    assert capped == []
+    assert deferred == ["A"]
+    assert bound_budgets == ["order-count"]
+
+
+def test_cap_buy_orders_to_budget_preserves_priority_order_past_the_notional_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Staff-engineer-reviewer finding: an earlier version used "skip and
+    # continue" when an order didn't fit the notional budget, so a large
+    # higher-priority order could get deferred while a smaller
+    # lower-priority order after it still got bought -- silently
+    # reordering execution relative to the queue's own priority (top-ups
+    # before new positions, then score rank). A big order that doesn't
+    # fit must defer itself *and* everything after it, not let a smaller
+    # later order jump ahead of it.
+    # Budget is 21% of $10,000 = $2,100: TOPUP_HIGH_PRIORITY ($2,000) fits
+    # alone, but TOPUP_HIGH_PRIORITY + NEW_LOW_PRIORITY ($2,400) does not.
+    monkeypatch.setattr(config, "GLOBAL_NOTIONAL_BUDGET_PCT", 0.21)
+    orders = [("TOPUP_HIGH_PRIORITY", 2_000.0), ("NEW_LOW_PRIORITY", 400.0)]
+    capped, deferred, bound_budgets = bot._cap_buy_orders_to_budget(
+        orders, liquidation_count=0, portfolio_value=10_000.0
+    )
+    assert capped == [("TOPUP_HIGH_PRIORITY", 2_000.0)]
+    assert deferred == ["NEW_LOW_PRIORITY"]
+    assert bound_budgets == ["notional"]
+
+
+def test_cap_buy_orders_to_budget_reports_both_bound_budgets() -> None:
+    orders = [("A", 100.0), ("B", 100.0), ("C", 10_000.0)]
+    # liquidation_count reserves all but 2 buy slots -> order-count budget
+    # excludes C before notional is even considered. Of what's left (A,
+    # B), a $150 notional budget (25% of $600) admits A but not A+B ($200)
+    # -> notional budget also binds, independently, on B. Both should be
+    # reported.
+    capped, deferred, bound_budgets = bot._cap_buy_orders_to_budget(
+        orders, liquidation_count=config.GLOBAL_ORDER_BUDGET - 2, portfolio_value=600.0
+    )
+    assert capped == [("A", 100.0)]
+    assert deferred == ["B", "C"]
+    assert set(bound_budgets) == {"order-count", "notional"}
 
 
 def test_kill_switch_inactive_by_default() -> None:
@@ -219,9 +313,16 @@ def test_run_full_happy_path_places_liquidations_and_buys(monkeypatch: pytest.Mo
     assert exit_code == 1  # a liquidation occurred this run -- always alert-worthy
 
 
-def test_run_aborts_before_any_orders_when_order_budget_exceeded(
+def test_run_defers_buy_orders_but_still_liquidates_when_order_budget_exceeded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # User request: exceeding the order budget used to abort the entire
+    # run -- correct for a one-off overage, but a deadlock under daily
+    # rebalancing from a cold start (nothing bought -> next run builds
+    # the identical over-budget queue -> aborts again, forever). Now the
+    # buy queue is truncated (deferred to a later run) instead, while
+    # liquidations -- the two-strike quality discipline, not
+    # discretionary -- always still execute.
     monkeypatch.setattr(config, "GLOBAL_ORDER_BUDGET", 1)
     monkeypatch.setattr(
         universe,
@@ -247,14 +348,14 @@ def test_run_aborts_before_any_orders_when_order_budget_exceeded(
 
     exit_code = bot.run(run_date="2026-07-21")
 
-    # 1 liquidation + 1 buy = 2 planned orders > budget of 1 -- neither
-    # should actually be submitted.
-    fake_exec.liquidate.assert_not_called()
+    # 1 liquidation + 1 buy = 2 planned orders > budget of 1: the
+    # liquidation still executes; the buy is deferred, not submitted.
+    fake_exec.liquidate.assert_called_once_with("A")
     fake_exec.market_buy.assert_not_called()
     assert exit_code == 1
 
 
-def test_run_aborts_before_any_orders_when_notional_budget_exceeded(
+def test_run_defers_buy_order_when_notional_budget_exceeded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(config, "GLOBAL_NOTIONAL_BUDGET_PCT", 0.01)
@@ -281,7 +382,9 @@ def test_run_aborts_before_any_orders_when_notional_budget_exceeded(
 
     exit_code = bot.run(run_date="2026-07-21")
 
-    # $50k planned buy notional vs. 1% of $100k equity ($1k budget).
+    # $50k planned buy notional vs. 1% of $100k equity ($1k budget) --
+    # deferred to a later run, not submitted; the run still alerts (exit 1)
+    # so a human sees it was deferred rather than silently dropped.
     fake_exec.market_buy.assert_not_called()
     assert exit_code == 1
 
@@ -424,9 +527,14 @@ def test_check_data_freshness_none_when_no_archive_exists() -> None:
 def test_check_data_freshness_none_when_archive_is_recent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # A hardcoded past date would break as soon as DATA_FRESHNESS_MAX_HOURS
+    # (daily-cadence tolerance, 48h) is smaller than the gap between that
+    # date and whenever this test actually runs -- date it off "today"
+    # instead so the test stays valid regardless of when it's run.
+    recent_date = datetime.date.today() - datetime.timedelta(days=1)
     archive_dir = tmp_path / "archive"
     archive_dir.mkdir()
-    (archive_dir / "screen_results_2026-07-20.csv").write_text("symbol\n")
+    (archive_dir / f"screen_results_{recent_date.isoformat()}.csv").write_text("symbol\n")
     monkeypatch.setattr(config, "SCREEN_RESULTS_ARCHIVE_DIR", archive_dir)
     assert bot._check_data_freshness() is None
 

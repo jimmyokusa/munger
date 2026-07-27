@@ -262,3 +262,60 @@ def test_generate_buy_queue_respects_max_single_position_weight(
     assert len(orders) == 1
     assert orders[0][0] == "A"
     assert orders[0][1] == pytest.approx(max_value)
+
+
+def test_generate_buy_queue_ignores_a_top_up_gap_within_the_drift_band() -> None:
+    # User request: daily rebalancing needs a tolerance band, or a
+    # holding's dollar value drifting with ordinary daily price noise
+    # would trigger a top-up trade most days even with nothing wrong.
+    available_cash = 10_000.0
+    holding_value = 650.0
+    portfolio_value = available_cash + holding_value  # 10,650
+    target = portfolio_value / config.TARGET_POSITION_COUNT  # 710.0
+    gap = target - holding_value  # 60.0
+    assert gap < target * config.REBALANCE_DRIFT_BAND_PCT  # 60 < 71: inside the band
+    orders = portfolio.generate_buy_queue(
+        {"AAPL": holding_value}, _screen_results([]), available_cash
+    )
+    assert orders == []
+
+
+def test_generate_buy_queue_still_tops_up_past_the_drift_band() -> None:
+    available_cash = 10_000.0
+    holding_value = 500.0
+    portfolio_value = available_cash + holding_value  # 10,500
+    target = portfolio_value / config.TARGET_POSITION_COUNT  # 700.0
+    gap = target - holding_value  # 200.0
+    assert gap > target * config.REBALANCE_DRIFT_BAND_PCT  # 200 > 70: past the band
+    orders = portfolio.generate_buy_queue(
+        {"AAPL": holding_value}, _screen_results([]), available_cash
+    )
+    assert len(orders) == 1
+    assert orders[0][0] == "AAPL"
+    assert orders[0][1] == pytest.approx(gap)
+
+
+def test_generate_buy_queue_self_limits_to_the_notional_budget_on_a_cold_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real bug found live: starting from zero holdings with several
+    # buyable candidates, the queue used to request far more than
+    # GLOBAL_NOTIONAL_BUDGET_PCT of equity in one run (e.g. 7 candidates
+    # x ~$6,667 target each = ~$46,667 vs. a 25%-of-$100k ~$25,000
+    # budget) -- bot.py then aborted the *entire* run, and since nothing
+    # was ever bought, the next run built the identical over-budget
+    # queue and aborted again, forever. generate_buy_queue must now cap
+    # its own total notional to the run budget so a cold start fills as
+    # much as fits and lets later runs ramp in the rest.
+    monkeypatch.setattr(config, "GLOBAL_NOTIONAL_BUDGET_PCT", 0.25)
+    screen_results = _screen_results(
+        [{"symbol": f"T{i}", "buyable": True, "score": 100.0 - i} for i in range(7)]
+    )
+    available_cash = 100_000.0
+    orders = portfolio.generate_buy_queue({}, screen_results, available_cash)
+    total_notional = sum(notional for _, notional in orders)
+    assert total_notional <= available_cash * config.GLOBAL_NOTIONAL_BUDGET_PCT + 1e-3
+    # Confirms the cap actually bound (not merely happened to be under
+    # it) -- the unrestricted 1/15th-of-equity target per position would
+    # otherwise have wanted every one of the 7 candidates.
+    assert len(orders) < 7
