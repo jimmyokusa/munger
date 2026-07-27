@@ -392,6 +392,95 @@ own run — generating a report is a display concern, not a trading
 decision, and re-running it costs nothing if the underlying CSV/journal
 haven't changed.
 
+### 3.8 P&L Tracking (2026-07-27, user request)
+
+"Track profit and loss... for the moment just the paper trading, but
+extensible for real money in the future." A new module, `pnl.py`,
+read-only against the broker (never places or modifies an order) — fetches
+one point-in-time snapshot (account equity/cash, every open position's
+unrealized P&L, a portfolio-value history) directly from Alpaca's own
+account API rather than computing P&L from `journal.db`, since the journal
+records order *notional* (what was requested), not fill price or current
+market value — Alpaca's own numbers are the source of truth here, not a
+derived approximation. "Extensible to real money" falls out for free:
+`pnl.py` reads whichever account `config.PAPER_TRADING`/`ALPACA_API_KEY`
+actually point at and labels the snapshot `"paper"` or `"live"`
+accordingly — the same account-agnostic pattern `execution.py` already
+uses, nothing paper-specific baked in.
+
+**The cross-system bridge this needs, and why:** `report.py`'s own
+deployment (Cloud Run/k3s) deliberately never has Alpaca credentials
+(§3.5, M14's screen-only boundary) — that's an intentional security
+property, not an oversight, so P&L data can't be fetched from where the
+public report is generated. `pnl.py` instead runs in `daily-trade.yml`
+(GitHub Actions, where the Alpaca keys already live) immediately after
+`bot.py`, writes its snapshot to `config.PNL_DATA_PATH`, then a dedicated
+GCP service account (`munger-pnl-writer`, `roles/storage.objectCreator`
+scoped to only the `munger-503515-data` bucket, not project-wide) uploads
+it to that same bucket — the one Cloud Run's `report-web`/`daily-screen`
+already mount at `DATA_DIR`. `objectCreator`, not the broader
+`objectAdmin` (staff-engineer-reviewer finding on an earlier
+provisioning pass): this service account only ever needs to create/
+overwrite one object, `pnl.json`; `objectAdmin` would also grant delete
+on every object in that bucket — `state.json`, `journal.db`,
+`screen_results*.csv`, the whole `report/` tree — so a leaked
+`GCP_PNL_WRITER_KEY` under the broader role could have destroyed the
+production data store, not just the P&L snapshot. `report.py` (running
+later, in `daily-screen`,
+which still never touches Alpaca) reads the snapshot from that mount and
+renders `pnl.html`: account equity/cash, today's P&L, total unrealized
+P&L, and a per-position table, with gains/losses colored distinctly. A
+missing or malformed snapshot renders an explicit empty state, not an
+error — this is a display concern with the same non-critical posture
+`report.py` already has for its other pages.
+
+**Scoped to Cloud Run/`gramunger.com` only, not the k3s dev report** (user
+decision): GitHub Actions can't reach the home LAN the k3s cluster runs
+on without new tunnel infrastructure — the same reachability gap already
+named in `DESIGN_CD_PIPELINE.md` — so wiring P&L into the k3s report is
+deferred, not solved here.
+
+**Raises the stakes of an existing open decision (pm-reviewer finding):**
+`TASKS.md` already carries a `done`-but-conditional row (M13's public-
+exposure question) stating the public report "must stay screen-only,
+paper-account data" and must be revisited "before any paper→live go/no-go
+... since the same report would then show real position sizes." This
+milestone adds account-level equity, cash, and aggregate unrealized P&L to
+that same unauthenticated page — a materially fuller financial picture
+than the per-order notional the report already showed. `pnl.py`'s
+account-agnostic design (reports whichever mode is configured) means that
+if `config.PAPER_TRADING` is ever flipped to live with no further changes,
+this exact pipeline starts pushing real account balances to an
+unauthenticated public site with zero additional gating. **That flip must
+not happen without first re-deciding this**, the same precondition M13
+already named for the report generally, now concretely bound to what M16
+actually renders.
+
+**Staleness and failure visibility:** `pnl.html` flags itself as stale (a
+visible warning banner, `config.PNL_STALENESS_MAX_HOURS`, default 48) if
+its own `generated_at` is older than that tolerance or missing/
+unparseable — otherwise an old snapshot from a silently broken bridge
+looks identical to a fresh one. `pnl.py`'s `__main__` deliberately does
+not catch its own exceptions (pm-reviewer finding, reversing an earlier
+draft that did): a broken bridge (a rotated key, a changed SDK response
+shape, a GCS outage) must fail its GitHub Actions step visibly, which
+fails the job, which triggers the same GH-failure-email channel every
+other alert in this system already uses — not disappear into a caught-
+and-logged no-op that only `munger.log` (which nobody is watching for
+this specific pipeline) would ever show.
+
+**Rollback:** read-only against the broker. Mostly additive against
+`report.py`'s output — a new page (`pnl.html`), plus a new nav link to it
+on each of `index.html`/`tickers.html`/`calendar.html`, which is the one
+change to existing pages this milestone makes; nothing else about their
+content or behavior changed. To disable, stop running the "Generate/
+Upload P&L snapshot" steps in `daily-trade.yml`; `report.py` already
+renders an explicit empty state when `pnl.json` doesn't exist, so no data
+migration or cleanup is needed on either side. Stopping the upload steps
+alone leaves the dead nav link pointing at that empty state rather than
+removing it — acceptable for a quick rollback, but reverting `report.py`
+itself is a second step if the link should disappear too.
+
 ## 4. Scheduling and Operations
 
 **Cadence is daily** (2026-07-26 decision, superseding the original

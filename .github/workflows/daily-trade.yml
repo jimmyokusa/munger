@@ -132,3 +132,40 @@ jobs:
             screen_results.csv
           if-no-files-found: ignore
           retention-days: 400
+
+      # New milestone (user request): track P&L, paper for now, extensible
+      # to real money later. report.py's own deployment (Cloud Run/k3s)
+      # deliberately never has Alpaca credentials (DESIGN.md 3.5/M14's
+      # screen-only boundary), so pnl.py runs here -- where the keys
+      # already live -- and the two steps below bridge the result to the
+      # same GCS bucket report.py's deployment reads from. `if: always()`
+      # on both: a P&L snapshot is a display concern (pnl.py's own module
+      # docstring), independent of whether "Run bot" above succeeded,
+      # placed any orders, or ran in screen-only mode -- the account and
+      # its positions exist regardless.
+      - name: Generate P&L snapshot
+        if: always()
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python pnl.py
+
+      - name: Upload P&L snapshot to GCS
+        if: always()
+        env:
+          # Passed as an env var, not templated directly into the shell
+          # script -- the key is multi-line JSON, and bash preserves an
+          # env var's exact content through "$VAR" where a raw template
+          # substitution into the YAML body would risk quoting/newline
+          # issues. Matches how ALPACA_API_KEY is already passed above.
+          GCP_PNL_WRITER_KEY: ${{ secrets.GCP_PNL_WRITER_KEY }}
+        run: |
+          if [ ! -f pnl.json ]; then
+            echo "No pnl.json produced this run (see 'Generate P&L snapshot' step) -- skipping upload."
+            exit 0
+          fi
+          key_file="$(mktemp)"
+          printf '%s' "$GCP_PNL_WRITER_KEY" > "$key_file"
+          gcloud auth activate-service-account --key-file="$key_file"
+          gcloud storage cp pnl.json gs://munger-503515-data/pnl.json
+          rm -f "$key_file"

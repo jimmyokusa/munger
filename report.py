@@ -232,6 +232,29 @@ table.metrics td:first-child { opacity: 0.65; cursor: help; }
   background: light-dark(rgba(113, 113, 122, 0.15), rgba(161, 161, 170, 0.2));
 }
 
+/* P&L page (user request): gain/loss color convention, reusing .badge-
+   green's exact color for gains rather than inventing a second green. */
+.pnl-gain { color: light-dark(#166534, #86efac); }
+.pnl-loss { color: light-dark(#991b1b, #fca5a5); }
+.pnl-flat { opacity: 0.7; }
+.stat-tiles {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem; margin-bottom: 1.25rem;
+}
+.stat-tile { padding: 0.9rem 1.1rem; }
+.stat-tile .stat-label {
+  font-size: 0.75rem; opacity: 0.65; text-transform: uppercase; letter-spacing: 0.03em;
+}
+.stat-tile .stat-value { font-size: 1.4rem; font-weight: 700; margin-top: 0.15rem; }
+.stat-tile .stat-subvalue { font-size: 0.85rem; margin-top: 0.1rem; }
+.mode-badge {
+  display: inline-block; font-size: 0.75rem; font-weight: 600;
+  padding: 0.15rem 0.6rem; border-radius: 999px; margin-left: 0.5rem;
+  vertical-align: middle;
+  color: light-dark(#92400e, #fcd34d);
+  background: light-dark(rgba(245, 158, 11, 0.15), rgba(245, 158, 11, 0.2));
+}
+
 /* Methodology drawer: same <details>/glass pattern as .pick, so it costs
    no new CSS beyond spacing -- just needs to read as a document, not a
    card. */
@@ -323,6 +346,28 @@ def _load_screen_results() -> pd.DataFrame:
     if not config.SCREEN_RESULTS_CSV_PATH.exists():
         return pd.DataFrame(columns=["symbol", "buyable", "score", "fail_reasons"])
     return pd.read_csv(config.SCREEN_RESULTS_CSV_PATH)
+
+
+def _load_pnl_snapshot() -> dict[str, object] | None:
+    """The latest P&L snapshot pnl.py wrote, or None if it doesn't exist yet.
+
+    pnl.py runs where the Alpaca keys live (daily-trade.yml, GitHub
+    Actions) and pushes its output into the same GCS bucket this
+    deployment mounts at config.DATA_DIR -- report.py itself never talks
+    to Alpaca (DESIGN.md 3.5/M14's screen-only boundary). A missing or
+    malformed file is a normal, expected state (first run before the
+    bridge has fired even once, or a transient upload gap), not a report-
+    generation failure -- returns None rather than raising, so one bad
+    P&L file can't take down index.html/tickers.html too.
+    """
+    if not config.PNL_DATA_PATH.exists():
+        return None
+    try:
+        data = json.loads(config.PNL_DATA_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        logger.error("%s unreadable/corrupt; omitting the P&L page", config.PNL_DATA_PATH)
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _format_metric(name: str, value: object) -> str:
@@ -825,7 +870,8 @@ def _render_index(picks: list[dict[str, object]], results: pd.DataFrame) -> str:
 <body>
 <h1>Current picks</h1>
 <nav><a href="tickers.html">See all screened tickers &rarr;</a>
-<a href="calendar.html">Daily calendar &rarr;</a></nav>
+<a href="calendar.html">Daily calendar &rarr;</a>
+<a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
 {_render_methodology_drawer()}
 <div class="progress-banner glass" id="progress-banner">
   <div class="phase" id="progress-phase"></div>
@@ -954,7 +1000,8 @@ for (const th of table.tHead.rows[0].cells) {
 <body>
 <h1>All screened tickers</h1>
 <nav><a href="index.html">&larr; Back to current picks</a>
-<a href="calendar.html">Daily calendar &rarr;</a></nav>
+<a href="calendar.html">Daily calendar &rarr;</a>
+<a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
 {_generated_at()}
 {score_buyable_note}
 {fetch_failed_note}
@@ -1046,6 +1093,227 @@ def _render_month(year: int, month: int, summaries: dict[datetime.date, dict[str
 </div>"""
 
 
+def _pnl_class(value: float | None) -> str:
+    if value is None or math.isnan(value):
+        return ""
+    if value > 0:
+        return "pnl-gain"
+    if value < 0:
+        return "pnl-loss"
+    return "pnl-flat"
+
+
+def _format_dollars(value: object) -> str:
+    """Exact dollar figure with a sign (e.g. "+$1,234.56", "-$50.00").
+
+    Deliberately not _format_metric's B/M-scaled style -- that's tuned
+    for screening metrics like market cap, not an account/position
+    dollar figure where the exact number is the point.
+    """
+    if not _is_numeric(value):
+        return "—"
+    numeric = float(value)
+    sign = "-" if numeric < 0 else "+" if numeric > 0 else ""
+    return f"{sign}${abs(numeric):,.2f}"
+
+
+def _format_pct_signed(value: object) -> str:
+    if not _is_numeric(value):
+        return "—"
+    numeric = float(value) * 100
+    sign = "-" if numeric < 0 else "+" if numeric > 0 else ""
+    return f"{sign}{abs(numeric):.2f}%"
+
+
+def _render_pnl_positions_table(positions: list[dict[str, object]]) -> str:
+    if not positions:
+        return '<p style="opacity: 0.7;">No open positions.</p>'
+    header_cols = [
+        "Symbol",
+        "Qty",
+        "Avg Entry",
+        "Current Price",
+        "Market Value",
+        "Unrealized P&amp;L",
+        "Unrealized %",
+    ]
+    header_html = "".join(f"<th>{c}</th>" for c in header_cols)
+    rows_html = []
+    for p in sorted(positions, key=lambda p: str(p.get("symbol") or "")):
+        unrealized_pl = p.get("unrealized_pl")
+        unrealized_plpc = p.get("unrealized_plpc")
+        qty = p.get("qty")
+        pl_value = float(unrealized_pl) if _is_numeric(unrealized_pl) else None
+        qty_cell = f"<td>{qty:,.4f}</td>" if _is_numeric(qty) else "<td>—</td>"
+        pl_pct_cell = (
+            f'<td class="{_pnl_class(pl_value)}">{_format_pct_signed(unrealized_plpc)}</td>'
+        )
+        cells = [
+            f"<td>{html.escape(str(p.get('symbol') or '—'))}</td>",
+            qty_cell,
+            f"<td>{_format_dollars(p.get('avg_entry_price')).lstrip('+')}</td>",
+            f"<td>{_format_dollars(p.get('current_price')).lstrip('+')}</td>",
+            f"<td>{_format_dollars(p.get('market_value')).lstrip('+')}</td>",
+            f'<td class="{_pnl_class(pl_value)}">{_format_dollars(unrealized_pl)}</td>',
+            pl_pct_cell,
+        ]
+        rows_html.append(f"<tr>{''.join(cells)}</tr>")
+    return f"""<div class="glass table-wrap">
+<table class="tickers">
+<thead><tr>{header_html}</tr></thead>
+<tbody>{"".join(rows_html)}</tbody>
+</table>
+</div>"""
+
+
+def _pnl_staleness_note(generated_at: object) -> str:
+    """A warning banner if the P&L snapshot is too old to trust.
+
+    Also covers a missing/unparseable timestamp -- pm-reviewer finding on
+    an earlier draft: that case must warn too, not silently pass, or a
+    snapshot from a partial/buggy write (no valid generated_at at all)
+    looks identical to a normal fresh one -- worse than a merely-old
+    snapshot, since there's no age to even judge it by.
+    """
+    banner_body: str
+    if not isinstance(generated_at, str):
+        banner_body = "has no valid timestamp"
+    else:
+        try:
+            generated = datetime.datetime.fromisoformat(generated_at)
+            # staff-engineer-reviewer finding: fromisoformat happily
+            # parses a string with no UTC offset into a *naive*
+            # datetime without raising -- subtracting a naive value
+            # from datetime.now(UTC) (aware) then raises TypeError,
+            # uncaught here, which would crash the *entire* report
+            # generation (not just this page) over one bad field in a
+            # bridged-across-two-systems file. A missing offset is
+            # exactly the same "can't confirm freshness" case as an
+            # unparseable string, not a crash.
+            if generated.tzinfo is None:
+                raise ValueError("naive timestamp, no UTC offset")
+        except ValueError:
+            banner_body = "has an unparseable timestamp"
+        else:
+            age_hours = (datetime.datetime.now(datetime.UTC) - generated).total_seconds() / 3600
+            if age_hours <= config.PNL_STALENESS_MAX_HOURS:
+                return ""
+            banner_body = (
+                f"is {age_hours:.0f} hours old (expected within "
+                f"{config.PNL_STALENESS_MAX_HOURS}h)"
+            )
+    return (
+        '<div class="glass" style="padding: 0.75rem 1rem; margin-bottom: 1rem; '
+        'font-size: 0.85rem;">'
+        f"&#9432; This snapshot {banner_body} &mdash; the daily bridge from the "
+        "trading job to this site may have stopped running or be misconfigured. "
+        "Numbers below may not reflect the current account."
+        "</div>"
+    )
+
+
+def _render_pnl(snapshot: dict[str, object] | None) -> str:
+    """Renders pnl.html (new milestone, user request: track P&L).
+
+    Reads a snapshot pnl.py already computed and wrote to disk -- this
+    function never talks to Alpaca itself (see _load_pnl_snapshot).
+    """
+    mode_badge = ""
+    body: str
+    if snapshot is None:
+        body = (
+            '<div class="glass" style="padding: 1.25rem;">'
+            "No P&amp;L snapshot yet. This page is populated by "
+            "<code>pnl.py</code>, which runs alongside the daily trading "
+            "job and needs at least one completed run before there's "
+            "anything to show here."
+            "</div>"
+        )
+    else:
+        mode = str(snapshot.get("mode") or "paper")
+        mode_badge = f'<span class="mode-badge">{html.escape(mode.upper())}</span>'
+        account = snapshot.get("account")
+        account = account if isinstance(account, dict) else {}
+        equity = account.get("equity")
+        last_equity = account.get("last_equity")
+        cash = account.get("cash")
+        today_pl = (
+            float(equity) - float(last_equity)
+            if _is_numeric(equity) and _is_numeric(last_equity)
+            else None
+        )
+        today_pl_pct = (
+            today_pl / float(last_equity)
+            if today_pl is not None and _is_numeric(last_equity) and float(last_equity) != 0
+            else None
+        )
+        positions_raw = snapshot.get("positions")
+        positions = [p for p in positions_raw if isinstance(p, dict)] if isinstance(
+            positions_raw, list
+        ) else []
+        total_unrealized = sum(
+            float(p["unrealized_pl"])
+            for p in positions
+            if _is_numeric(p.get("unrealized_pl"))
+        )
+
+        tiles = f"""<div class="stat-tiles">
+<div class="glass stat-tile">
+  <div class="stat-label">Equity</div>
+  <div class="stat-value">{_format_dollars(equity).lstrip('+')}</div>
+</div>
+<div class="glass stat-tile">
+  <div class="stat-label">Cash</div>
+  <div class="stat-value">{_format_dollars(cash).lstrip('+')}</div>
+</div>
+<div class="glass stat-tile">
+  <div class="stat-label">Today&rsquo;s P&amp;L</div>
+  <div class="stat-value {_pnl_class(today_pl)}">{_format_dollars(today_pl)}</div>
+  <div class="stat-subvalue {_pnl_class(today_pl)}">{_format_pct_signed(today_pl_pct)}</div>
+</div>
+<div class="glass stat-tile">
+  <div class="stat-label">Unrealized P&amp;L</div>
+  <div class="stat-value {_pnl_class(total_unrealized)}">{_format_dollars(total_unrealized)}</div>
+</div>
+</div>"""
+
+        generated_at = snapshot.get("generated_at")
+        generated_note = (
+            f'<p style="font-size: 0.8rem; opacity: 0.65;">Snapshot generated '
+            f"{html.escape(str(generated_at))}</p>"
+            if generated_at
+            else ""
+        )
+        staleness_note = _pnl_staleness_note(generated_at)
+
+        body = (
+            staleness_note
+            + tiles
+            + generated_note
+            + "<h2>Open positions</h2>"
+            + _render_pnl_positions_table(positions)
+        )
+
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Munger Screener &mdash; P&amp;L</title>
+{_FAVICON_LINK}
+<style>{_CSS}</style></head>
+<body>
+<h1>Paper trading P&amp;L{mode_badge}</h1>
+<nav><a href="index.html">&larr; Back to current picks</a>
+<a href="tickers.html">See all screened tickers &rarr;</a>
+<a href="calendar.html">Daily calendar &rarr;</a></nav>
+<p style="font-size: 0.85rem; opacity: 0.7;">
+  This account trades on the same daily cadence and rules as the
+  screener above (DESIGN.md section 4) &mdash; paper money only, not
+  investment advice.
+</p>
+{body}
+{_generated_at()}
+</body></html>
+"""
+
+
 def _render_calendar(
     summaries: dict[datetime.date, dict[str, int]] | None = None,
 ) -> str:
@@ -1086,7 +1354,8 @@ def _render_calendar(
 <body>
 <h1>Daily screen calendar</h1>
 <nav><a href="index.html">&larr; Back to current picks</a>
-<a href="tickers.html">See all screened tickers &rarr;</a></nav>
+<a href="tickers.html">See all screened tickers &rarr;</a>
+<a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
 {_generated_at()}
 <p style="font-size: 0.85rem; opacity: 0.75; margin-bottom: 1rem;">
   Each day's screen is informational only &mdash; daily_screen.py never places orders;
@@ -1329,6 +1598,7 @@ def generate_report() -> None:
             config.REPORT_DIR / "feed.json", _render_feed_json(feed_entries)
         )
         _write_text_atomically(config.REPORT_DIR / "rss.xml", _render_feed_rss(feed_entries))
+        _write_text_atomically(config.REPORT_DIR / "pnl.html", _render_pnl(_load_pnl_snapshot()))
         _copy_archives_into_report()
     except Exception:
         logger.exception("report.py failed to generate the report")

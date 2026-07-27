@@ -149,6 +149,18 @@ LIMIT_PRICE_BAND_PCT = 0.02  # +/-2% of last trade, applied to every order
 # from a fresh, empty strike history.
 STATE_FILE_PATH: Path = DATA_DIR / "state.json"
 JOURNAL_DB_PATH: Path = DATA_DIR / "journal.db"
+# Written by pnl.py (which runs where ALPACA_API_KEY lives -- daily-trade.yml,
+# GitHub Actions) directly to the same GCS bucket report-web/daily-screen
+# mount at DATA_DIR, since report.py's own deployment (Cloud Run/k3s)
+# deliberately never has Alpaca credentials (DESIGN.md 3.5/M14's screen-
+# only boundary) and so can never fetch this data itself.
+PNL_DATA_PATH: Path = DATA_DIR / "pnl.json"
+# pm-reviewer finding: without a defined threshold, an old snapshot (the
+# GCS bridge silently broke, or daily-trade.yml stopped firing) just
+# looks like a normal snapshot to a viewer -- report.py flags pnl.html as
+# stale past this age instead. Matches DATA_FRESHNESS_MAX_HOURS's
+# daily-cadence-appropriate tolerance (one missed run's worth of slack).
+PNL_STALENESS_MAX_HOURS = 48
 SCREEN_RESULTS_CSV_PATH: Path = DATA_DIR / "screen_results.csv"
 SCREEN_RESULTS_ARCHIVE_DIR: Path = DATA_DIR / "screen_results_archive"
 LOG_FILE_PATH: Path = DATA_DIR / "munger.log"

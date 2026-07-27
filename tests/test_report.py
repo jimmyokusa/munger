@@ -22,6 +22,7 @@ def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
     monkeypatch.setattr(config, "REPORT_DIR", tmp_path / "report")
     monkeypatch.setattr(config, "SCREEN_RESULTS_ARCHIVE_DIR", tmp_path / "archive")
+    monkeypatch.setattr(config, "PNL_DATA_PATH", tmp_path / "pnl.json")
 
 
 def _write_screen_results(rows: str) -> None:
@@ -34,8 +35,10 @@ def test_generate_report_with_no_data_writes_empty_pages() -> None:
 
     index_html = (config.REPORT_DIR / "index.html").read_text()
     tickers_html = (config.REPORT_DIR / "tickers.html").read_text()
+    pnl_html = (config.REPORT_DIR / "pnl.html").read_text()
     assert "No current picks yet." in index_html
     assert "<table" in tickers_html
+    assert "No P&amp;L snapshot yet." in pnl_html
 
 
 def test_index_shows_buyable_candidates_when_no_positions_are_journaled() -> None:
@@ -665,3 +668,168 @@ def test_copy_archives_into_report_recopies_a_changed_same_day_file() -> None:
 
     dest = config.REPORT_DIR / "screen_results_archive" / "screen_results_2026-07-01.csv"
     assert "MSFT" in dest.read_text()
+
+
+# --- P&L page (new milestone, user request) ---
+
+
+def _write_pnl_snapshot(data: dict[str, object]) -> None:
+    config.PNL_DATA_PATH.write_text(json.dumps(data))
+
+
+def test_load_pnl_snapshot_returns_none_when_file_is_missing() -> None:
+    assert report._load_pnl_snapshot() is None
+
+
+def test_load_pnl_snapshot_returns_none_and_logs_when_file_is_corrupt() -> None:
+    config.PNL_DATA_PATH.write_text("not valid json{{{")
+    assert report._load_pnl_snapshot() is None
+
+
+def test_load_pnl_snapshot_returns_the_parsed_dict() -> None:
+    _write_pnl_snapshot({"mode": "paper", "account": {"equity": 100_000.0}})
+    assert report._load_pnl_snapshot() == {"mode": "paper", "account": {"equity": 100_000.0}}
+
+
+def test_render_pnl_shows_empty_state_when_no_snapshot() -> None:
+    html_out = report._render_pnl(None)
+    assert "No P&amp;L snapshot yet." in html_out
+    assert "<title>Munger Screener &mdash; P&amp;L</title>" in html_out
+
+
+def test_render_pnl_shows_mode_badge_and_stat_tiles() -> None:
+    snapshot: dict[str, object] = {
+        "mode": "paper",
+        "generated_at": "2026-07-27T01:27:38+00:00",
+        "account": {
+            "equity": 100_400.0,
+            "cash": 25_000.0,
+            "last_equity": 99_500.0,
+            "portfolio_value": 100_400.0,
+        },
+        "positions": [
+            {
+                "symbol": "TROW",
+                "qty": 41.6667,
+                "avg_entry_price": 160.0,
+                "current_price": 162.0,
+                "market_value": 6_750.0,
+                "cost_basis": 6_666.67,
+                "unrealized_pl": 83.33,
+                "unrealized_plpc": 0.0125,
+            }
+        ],
+        "history": {"timestamp": [], "equity": [], "profit_loss": [], "profit_loss_pct": []},
+    }
+
+    html_out = report._render_pnl(snapshot)
+
+    assert '<span class="mode-badge">PAPER</span>' in html_out
+    assert "$100,400.00" in html_out  # equity tile
+    assert "$25,000.00" in html_out  # cash tile
+    assert "+$900.00" in html_out  # today's P&L: 100,400 - 99,500
+    assert "TROW" in html_out
+    assert "pnl-gain" in html_out  # positive P&L gets the gain class
+
+
+def test_render_pnl_colors_a_loss_distinctly_from_a_gain() -> None:
+    snapshot: dict[str, object] = {
+        "mode": "paper",
+        "account": {"equity": 99_000.0, "cash": 25_000.0, "last_equity": 99_500.0},
+        "positions": [
+            {
+                "symbol": "HIG",
+                "qty": 10.0,
+                "avg_entry_price": 100.0,
+                "current_price": 90.0,
+                "market_value": 900.0,
+                "cost_basis": 1_000.0,
+                "unrealized_pl": -100.0,
+                "unrealized_plpc": -0.10,
+            }
+        ],
+    }
+
+    html_out = report._render_pnl(snapshot)
+
+    assert "pnl-loss" in html_out
+    assert "-$500.00" in html_out  # today's P&L: 99,000 - 99,500
+    assert "-$100.00" in html_out  # position's unrealized P&L
+
+
+def test_render_pnl_handles_no_open_positions() -> None:
+    snapshot: dict[str, object] = {
+        "mode": "paper",
+        "account": {"equity": 100_000.0},
+        "positions": [],
+    }
+    html_out = report._render_pnl(snapshot)
+    assert "No open positions." in html_out
+
+
+def test_render_pnl_shows_no_staleness_warning_for_a_fresh_snapshot() -> None:
+    fresh = (
+        datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)
+    ).isoformat()
+    snapshot: dict[str, object] = {
+        "mode": "paper",
+        "generated_at": fresh,
+        "account": {"equity": 100_000.0},
+        "positions": [],
+    }
+    html_out = report._render_pnl(snapshot)
+    assert "bridge from the trading job" not in html_out
+
+
+def test_render_pnl_warns_when_snapshot_is_stale() -> None:
+    # pm-reviewer finding: without a staleness check, a broken bridge (a
+    # rotated key, a stopped workflow) just leaves gramunger.com showing
+    # an old snapshot that looks identical to a fresh one.
+    stale = (
+        datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=100)
+    ).isoformat()
+    snapshot: dict[str, object] = {
+        "mode": "paper",
+        "generated_at": stale,
+        "account": {"equity": 100_000.0},
+        "positions": [],
+    }
+    html_out = report._render_pnl(snapshot)
+    assert "bridge from the trading job" in html_out
+
+
+def test_render_pnl_warns_when_generated_at_is_missing_or_unparseable() -> None:
+    # A missing/unparseable timestamp is worse than a merely-old snapshot
+    # (there's no age to even judge it by) -- must warn, not silently
+    # pass, or a partial/buggy write looks identical to a fresh one.
+    assert "unparseable timestamp" in report._pnl_staleness_note("not-a-real-timestamp")
+    assert "no valid timestamp" in report._pnl_staleness_note(None)
+
+    snapshot: dict[str, object] = {
+        "mode": "paper",
+        "generated_at": "not-a-real-timestamp",
+        "account": {"equity": 100_000.0},
+        "positions": [],
+    }
+    html_out = report._render_pnl(snapshot)
+    assert "unparseable timestamp" in html_out
+
+
+def test_render_pnl_treats_a_timezone_naive_generated_at_as_unparseable() -> None:
+    # Real bug found in review: datetime.fromisoformat happily parses a
+    # string with no UTC offset into a *naive* datetime without raising,
+    # but subtracting it from datetime.now(UTC) (aware) raises TypeError
+    # -- which was uncaught and would have crashed the *entire* report
+    # generation (not just this page) over one bad field.
+    naive_timestamp = "2026-07-27T01:27:38"  # no +00:00/Z offset
+    assert "unparseable timestamp" in report._pnl_staleness_note(naive_timestamp)
+
+    snapshot: dict[str, object] = {"mode": "paper", "generated_at": naive_timestamp}
+    report._render_pnl(snapshot)  # must not raise
+
+
+def test_generate_report_writes_pnl_html_from_a_real_snapshot() -> None:
+    _write_pnl_snapshot({"mode": "live", "account": {"equity": 5_000.0}, "positions": []})
+    report.generate_report()
+    pnl_html = (config.REPORT_DIR / "pnl.html").read_text()
+    assert '<span class="mode-badge">LIVE</span>' in pnl_html
