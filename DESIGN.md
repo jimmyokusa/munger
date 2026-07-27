@@ -415,18 +415,24 @@ property, not an oversight, so P&L data can't be fetched from where the
 public report is generated. `pnl.py` instead runs in `daily-trade.yml`
 (GitHub Actions, where the Alpaca keys already live) immediately after
 `bot.py`, writes its snapshot to `config.PNL_DATA_PATH`, then a dedicated
-GCP service account (`munger-pnl-writer`, `roles/storage.objectCreator`
-scoped to only the `munger-503515-data` bucket, not project-wide) uploads
-it to that same bucket — the one Cloud Run's `report-web`/`daily-screen`
-already mount at `DATA_DIR`. `objectCreator`, not the broader
-`objectAdmin` (staff-engineer-reviewer finding on an earlier
-provisioning pass): this service account only ever needs to create/
-overwrite one object, `pnl.json`; `objectAdmin` would also grant delete
-on every object in that bucket — `state.json`, `journal.db`,
-`screen_results*.csv`, the whole `report/` tree — so a leaked
-`GCP_PNL_WRITER_KEY` under the broader role could have destroyed the
-production data store, not just the P&L snapshot. `report.py` (running
-later, in `daily-screen`,
+GCP service account (`munger-pnl-writer`) uploads it to that same
+bucket — the one Cloud Run's `report-web`/`daily-screen` already mount
+at `DATA_DIR`. Scoping this took two attempts, both grounded in what was
+actually tested live, not assumed: `roles/storage.objectCreator` alone
+(bucket-scoped, no delete) looked sufficient on paper but a real run
+proved otherwise — `gcloud storage cp` overwriting an *existing* object
+needs `storage.objects.delete` too (confirmed by the exact 403 in a real
+failed GitHub Actions run), not just create. Granting bucket-wide
+`objectAdmin` would satisfy that but reintroduces the original blast-
+radius problem (delete on `state.json`, `journal.db`,
+`screen_results*.csv`, the whole `report/` tree). The actual fix: a
+single **IAM Condition** — `roles/storage.objectAdmin`, but only where
+`resource.name == ".../objects/pnl.json"` — grants the create+get+delete
+this account genuinely needs, confined to that one object. Verified live
+by impersonating the service account directly: an overwrite of
+`pnl.json` succeeds; a write attempt to any other object name in the
+same bucket is denied with the same permission error as before. `report.py`
+(running later, in `daily-screen`,
 which still never touches Alpaca) reads the snapshot from that mount and
 renders `pnl.html`: account equity/cash, today's P&L, total unrealized
 P&L, and a per-position table, with gains/losses colored distinctly. A
