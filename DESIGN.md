@@ -425,13 +425,22 @@ needs `storage.objects.delete` too (confirmed by the exact 403 in a real
 failed GitHub Actions run), not just create. Granting bucket-wide
 `objectAdmin` would satisfy that but reintroduces the original blast-
 radius problem (delete on `state.json`, `journal.db`,
-`screen_results*.csv`, the whole `report/` tree). The actual fix: a
-single **IAM Condition** — `roles/storage.objectAdmin`, but only where
+`screen_results*.csv`, the whole `report/` tree). The fix: an **IAM
+Condition** — `roles/storage.objectAdmin`, but only where
 `resource.name == ".../objects/pnl.json"` — grants the create+get+delete
-this account genuinely needs, confined to that one object. Verified live
-by impersonating the service account directly: an overwrite of
-`pnl.json` succeeds; a write attempt to any other object name in the
-same bucket is denied with the same permission error as before. `report.py`
+this account needs, confined to that one object. A third real failure
+then surfaced `storage.objects.list` on the *bucket* as also required
+(`gcloud storage cp` checks whether the destination path is directory-
+like before writing, which is a bucket-level list operation an object-
+scoped condition structurally cannot grant) — added as a second,
+unconditional `roles/storage.objectViewer` binding (bucket-wide list+get,
+read-only, no write/delete outside `pnl.json`). Final shape: bucket-wide
+read-only visibility (object names/metadata only, not contents) plus
+write/delete scoped to exactly one object. Verified live by impersonating
+the service account directly through the full real sequence (create,
+then overwrite, matching the actual daily pattern): both succeed; a write
+attempt to any *other* object name in the same bucket is still denied.
+`report.py`
 (running later, in `daily-screen`,
 which still never touches Alpaca) reads the snapshot from that mount and
 renders `pnl.html`: account equity/cash, today's P&L, total unrealized
