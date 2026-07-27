@@ -1,0 +1,23 @@
+{
+  "version": "https://jsonfeed.org/version/1.1",
+  "title": "Munger Screener \u2014 daily candidates",
+  "home_page_url": "./index.html",
+  "feed_url": "./feed.json",
+  "description": "New buyable candidates from each archived daily screen.",
+  "items": [
+    {
+      "id": "munger-daily-2026-07-27",
+      "url": "./calendar.html",
+      "title": "2026-07-27: 8 buyable candidate(s)",
+      "content_text": "8 buyable candidate(s): NMIH, LULU, HIG, INSW, G, FOX, SIG, GRBK",
+      "date_published": "2026-07-27T00:00:00Z"
+    },
+    {
+      "id": "munger-daily-2026-07-26",
+      "url": "./calendar.html",
+      "title": "2026-07-26: 6 buyable candidate(s)",
+      "content_text": "6 buyable candidate(s): TROW, HIG, INSW, FOX, SIG, ASO",
+      "date_published": "2026-07-26T00:00:00Z"
+    }
+  ]
+}
