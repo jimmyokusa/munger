@@ -6,6 +6,13 @@
   "description": "New buyable candidates from each archived daily screen.",
   "items": [
     {
+      "id": "munger-daily-2026-07-29",
+      "url": "./calendar.html",
+      "title": "2026-07-29: 10 buyable candidate(s)",
+      "content_text": "10 buyable candidate(s): NMIH, PRDO, LULU, HIG, INSW, G, FOX, SIG, GRBK, ASO",
+      "date_published": "2026-07-29T00:00:00Z"
+    },
+    {
       "id": "munger-daily-2026-07-28",
       "url": "./calendar.html",
       "title": "2026-07-28: 10 buyable candidate(s)",
