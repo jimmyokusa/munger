@@ -1,0 +1,299 @@
+# M17 (DESIGN_DASHBOARDS.md 2.3): dev Grafana, provisioned-stateless.
+#
+# READS, NEVER MOUNTS THE PVC. The munger-data PVC is ReadWriteOnce and
+# lives on pi1; Grafana is deliberately pinned OFF pi1 (pi1 is the PVC host
+# and is memory-tight -- 30-daily-screen-cronjob.yaml's own comment). So
+# Grafana does not mount the PVC at all: it reads the bridged P&L files over
+# HTTP from the in-cluster nginx report Service (munger-report), which the
+# GCS->PVC bridge (40-gcs-reader-cronjob.yaml) publishes into /data/report.
+#
+# STATELESS. No persistent volume: dashboards + the Infinity datasource are
+# provisioned from ConfigMaps at startup, and Grafana's own DB is an
+# emptyDir (nothing to lose -- everything is re-provisioned on restart). To
+# change a dashboard, edit the ConfigMap and re-apply; do not edit in the UI.
+#
+# LOCKED DOWN (DESIGN_DASHBOARDS.md 2.3, staff-eng 9.B-8). Anonymous
+# Viewer-only, login form + basic auth disabled, sign-up disabled, Explore
+# disabled, viewers can't edit. Embedding allowed so report.py's
+# dashboards.html <iframe> can host it.
+#
+# INFINITY PLUGIN. Installed at startup via GF_INSTALL_PLUGINS, which needs
+# outbound internet on the scheduling node the first time (like the
+# cloud-sdk image). If the node is offline, bake a custom image with the
+# plugin instead.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: munger-grafana-datasources
+  namespace: munger
+  labels:
+    app.kubernetes.io/name: munger-grafana
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Munger P&L (Infinity)
+        uid: infinity-munger
+        type: yesoreyeric-infinity-datasource
+        access: proxy
+        isDefault: true
+        editable: false
+        jsonData:
+          # Server-side (proxy) fetches avoid browser CORS; the URL is the
+          # in-cluster nginx Service that serves the bridged /data/report.
+          global_queries: []
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: munger-grafana-dashboard-provider
+  namespace: munger
+  labels:
+    app.kubernetes.io/name: munger-grafana
+data:
+  provider.yaml: |
+    apiVersion: 1
+    providers:
+      - name: munger
+        orgId: 1
+        type: file
+        disableDeletion: true
+        editable: false
+        allowUiUpdates: false
+        options:
+          path: /var/lib/grafana/dashboards
+          foldersFromFilesStructure: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: munger-grafana-dashboard-account-pnl
+  namespace: munger
+  labels:
+    app.kubernetes.io/name: munger-grafana
+data:
+  # Graph 1 (DESIGN_DASHBOARDS.md 2.2): account equity + daily P&L over time,
+  # read from the durable pnl_history series via the Infinity datasource. The
+  # bridge publishes a JSON-array rendition (pnl_history.json) because Infinity
+  # parses JSON, not NDJSON. Raw provisioned-dashboard model (not the API
+  # {"dashboard":...} envelope).
+  account-pnl.json: |
+    {
+      "uid": "munger-account-pnl",
+      "title": "Account P&L over time",
+      "tags": ["munger"],
+      "timezone": "utc",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": false,
+      "refresh": "",
+      "time": {"from": "now-1y", "to": "now"},
+      "templating": {"list": []},
+      "annotations": {"list": []},
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Account equity over time",
+          "description": "Daily account equity from the durable pnl_history series.",
+          "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+          "datasource": {"type": "yesoreyeric-infinity-datasource", "uid": "infinity-munger"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "auto", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {"mode": "single", "sort": "none"},
+            "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {"type": "yesoreyeric-infinity-datasource", "uid": "infinity-munger"},
+              "type": "json",
+              "source": "url",
+              "format": "table",
+              "url": "http://munger-report.munger.svc.cluster.local/pnl_history.json",
+              "url_options": {"method": "GET", "data": ""},
+              "root_selector": "",
+              "columns": [
+                {"selector": "date", "text": "Date", "type": "timestamp"},
+                {"selector": "equity", "text": "Equity", "type": "number"}
+              ],
+              "filters": []
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Daily profit / loss",
+          "description": "Daily profit_loss from the durable pnl_history series.",
+          "gridPos": {"h": 9, "w": 24, "x": 0, "y": 10},
+          "datasource": {"type": "yesoreyeric-infinity-datasource", "uid": "infinity-munger"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "custom": {"drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "spanNulls": false},
+              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0}]},
+              "color": {"mode": "thresholds"}
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {"mode": "single", "sort": "none"},
+            "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {"type": "yesoreyeric-infinity-datasource", "uid": "infinity-munger"},
+              "type": "json",
+              "source": "url",
+              "format": "table",
+              "url": "http://munger-report.munger.svc.cluster.local/pnl_history.json",
+              "url_options": {"method": "GET", "data": ""},
+              "root_selector": "",
+              "columns": [
+                {"selector": "date", "text": "Date", "type": "timestamp"},
+                {"selector": "profit_loss", "text": "Profit / loss", "type": "number"}
+              ],
+              "filters": []
+            }
+          ]
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: munger-grafana
+  namespace: munger
+  labels:
+    app.kubernetes.io/name: munger-grafana
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: munger-grafana
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: munger-grafana
+    spec:
+      # Pinned OFF pi1 (the PVC/report host, memory-tight). Grafana only needs
+      # HTTP to the in-cluster report Service, not the PVC, so it can run on
+      # any other node.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values: ["pi1"]
+      securityContext:
+        runAsUser: 472
+        runAsGroup: 472
+        fsGroup: 472
+      containers:
+        - name: grafana
+          # Pin a tag the cluster can pull (arm64 multi-arch). Confirm/bump
+          # as needed; keep it a fixed tag, not :latest.
+          image: grafana/grafana:11.3.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_INSTALL_PLUGINS
+              value: "yesoreyeric-infinity-datasource"
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: "Viewer"
+            - name: GF_AUTH_DISABLE_LOGIN_FORM
+              value: "true"
+            - name: GF_AUTH_BASIC_ENABLED
+              value: "false"
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+            - name: GF_USERS_VIEWERS_CAN_EDIT
+              value: "false"
+            - name: GF_EXPLORE_ENABLED
+              value: "false"
+            - name: GF_NEWS_NEWS_FEED_ENABLED
+              value: "false"
+            - name: GF_ANALYTICS_REPORTING_ENABLED
+              value: "false"
+            - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+              value: "false"
+            # Let report.py's dashboards.html <iframe> embed the panels.
+            - name: GF_SECURITY_ALLOW_EMBEDDING
+              value: "true"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 384Mi
+          volumeMounts:
+            - name: grafana-data
+              mountPath: /var/lib/grafana
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+            - name: dashboard-account-pnl
+              mountPath: /var/lib/grafana/dashboards
+              readOnly: true
+      volumes:
+        - name: grafana-data
+          emptyDir: {}
+        - name: datasources
+          configMap:
+            name: munger-grafana-datasources
+        - name: dashboard-provider
+          configMap:
+            name: munger-grafana-dashboard-provider
+        - name: dashboard-account-pnl
+          configMap:
+            name: munger-grafana-dashboard-account-pnl
+---
+# NodePort 30030 so the dashboards are reachable on the LAN and the report's
+# dashboards.html <iframe> can point at them: set MUNGER_GRAFANA_URL to e.g.
+# http://<node-ip>:30030/d/munger-account-pnl/account-p-l?kiosk on the
+# daily-screen Job (report.py bakes it into the HTML at generation time).
+apiVersion: v1
+kind: Service
+metadata:
+  name: munger-grafana
+  namespace: munger
+  labels:
+    app.kubernetes.io/name: munger-grafana
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: munger-grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30030

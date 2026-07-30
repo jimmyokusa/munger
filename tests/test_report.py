@@ -156,12 +156,6 @@ def test_all_pages_have_a_favicon_link_and_no_generic_bot_title() -> None:
         assert "Munger bot" not in html_out
         assert "<title>Munger Screener" in html_out
 
-    feed_json = json.loads((config.REPORT_DIR / "feed.json").read_text())
-    assert feed_json["title"].startswith("Munger Screener")
-    rss_xml = (config.REPORT_DIR / "rss.xml").read_text()
-    assert "Munger bot" not in rss_xml
-    assert "<title>Munger Screener" in rss_xml
-
 
 def test_generate_report_shows_a_pick_with_its_reason_and_metrics() -> None:
     _write_screen_results("AAPL,True,90.5,,2500000000000,28.4,1.5\n")
@@ -397,110 +391,11 @@ def test_render_export_controls_empty_when_no_rows() -> None:
     assert report._render_export_controls([]) == ""
 
 
-def test_index_page_includes_export_controls_and_feed_link_tags() -> None:
+def test_index_page_includes_export_controls() -> None:
     report.generate_report()
 
     index_html = (config.REPORT_DIR / "index.html").read_text()
     assert 'id="picks-data"' not in index_html  # no rows: nothing embedded
-    assert '<link rel="alternate" type="application/feed+json"' in index_html
-    assert '<link rel="alternate" type="application/rss+xml"' in index_html
-
-
-def test_recent_daily_feed_entries_reads_buyable_symbols_newest_first() -> None:
-    _write_archive("2026-07-01", "AAPL,True,90.0,\nMSFT,False,10.0,graham_pe\n")
-    _write_archive("2026-07-02", "AAPL,True,50.0,\nGOOG,True,95.0,\n")
-
-    entries = report._recent_daily_feed_entries()
-
-    assert [day.isoformat() for day, _ in entries] == ["2026-07-02", "2026-07-01"]
-    # GOOG (95.0) ranks above AAPL (50.0) on the 07-02 day.
-    assert entries[0][1] == ["GOOG", "AAPL"]
-    assert entries[1][1] == ["AAPL"]
-
-
-def test_recent_daily_feed_entries_respects_max_items_cap(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(config, "FEED_MAX_ITEMS", 1)
-    _write_archive("2026-07-01", "AAPL,True,90.0,\n")
-    _write_archive("2026-07-02", "AAPL,True,90.0,\n")
-
-    entries = report._recent_daily_feed_entries()
-
-    assert len(entries) == 1
-    assert entries[0][0].isoformat() == "2026-07-02"
-
-
-def test_recent_daily_feed_entries_skips_a_day_missing_the_score_column() -> None:
-    # Real bug (staff-engineer-reviewer): a day whose archive can't be
-    # re-read with the score column (legacy schema, deleted, corrupted)
-    # must be skipped, not silently rendered as "0 buyable candidates" --
-    # that would be indistinguishable from a real, valid empty-screen day.
-    config.SCREEN_RESULTS_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-    (config.SCREEN_RESULTS_ARCHIVE_DIR / "screen_results_2026-07-01.csv").write_text(
-        "symbol,buyable\nAAPL,True\n"  # no score column
-    )
-    _write_archive("2026-07-02", "AAPL,True,90.0,\n")
-
-    entries = report._recent_daily_feed_entries()
-
-    assert [day.isoformat() for day, _ in entries] == ["2026-07-02"]
-
-
-def test_feed_base_url_defaults_to_relative_dot_when_unset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(config, "REPORT_BASE_URL", "")
-    assert report._feed_base_url() == "."
-
-
-def test_feed_base_url_strips_trailing_slash(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "REPORT_BASE_URL", "https://gramunger.com/")
-    assert report._feed_base_url() == "https://gramunger.com"
-
-
-def test_render_feed_json_produces_valid_json_feed_with_items(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(config, "REPORT_BASE_URL", "https://gramunger.com")
-    _write_archive("2026-07-26", "AAPL,True,91.2,\nMSFT,True,88.0,\n")
-
-    feed = json.loads(report._render_feed_json())
-
-    assert feed["version"] == "https://jsonfeed.org/version/1.1"
-    assert feed["home_page_url"] == "https://gramunger.com/index.html"
-    assert len(feed["items"]) == 1
-    item = feed["items"][0]
-    assert item["id"] == "munger-daily-2026-07-26"
-    assert "AAPL" in item["content_text"] and "MSFT" in item["content_text"]
-
-
-def test_render_feed_rss_produces_valid_xml_with_items() -> None:
-    _write_archive("2026-07-26", "AAPL,True,91.2,\n")
-
-    rss = report._render_feed_rss()
-    # Real bug (staff-engineer-reviewer): an earlier draft used the HTML5
-    # named entity &mdash;, which isn't valid in bare XML (no DOCTYPE
-    # declares it) and made a strict parser reject the whole document.
-    # Parsing (not just substring-checking) the output is what actually
-    # proves this is well-formed XML.
-    root = ET.fromstring(rss)
-
-    assert root.tag == "rss"
-    assert "<rss version=\"2.0\">" in rss
-    assert "munger-daily-2026-07-26" in rss
-    assert "AAPL" in rss
-
-
-def test_generate_report_writes_feed_json_and_rss_xml() -> None:
-    _write_archive("2026-07-26", "AAPL,True,91.2,\n")
-
-    report.generate_report()
-
-    assert (config.REPORT_DIR / "feed.json").exists()
-    assert (config.REPORT_DIR / "rss.xml").exists()
-    feed = json.loads((config.REPORT_DIR / "feed.json").read_text())
-    assert feed["items"][0]["id"] == "munger-daily-2026-07-26"
 
 
 def test_is_buyable_handles_real_bools_and_pandas_object_dtype_strings() -> None:
@@ -614,9 +509,10 @@ def test_copy_archives_into_report_copies_files_and_leaves_no_tmp_artifact() -> 
 
     report._copy_archives_into_report()
 
-    dest = config.REPORT_DIR / "screen_results_archive" / "screen_results_2026-07-01.csv"
+    archive_name = "screen_results_2026-07-01.csv"
+    dest = config.REPORT_DIR / "screen_results_archive" / archive_name
     assert dest.exists()
-    assert dest.read_text() == (config.SCREEN_RESULTS_ARCHIVE_DIR / "screen_results_2026-07-01.csv").read_text()
+    assert dest.read_text() == (config.SCREEN_RESULTS_ARCHIVE_DIR / archive_name).read_text()
     assert not dest.with_suffix(dest.suffix + ".tmp").exists()
 
 
@@ -833,3 +729,113 @@ def test_generate_report_writes_pnl_html_from_a_real_snapshot() -> None:
     report.generate_report()
     pnl_html = (config.REPORT_DIR / "pnl.html").read_text()
     assert '<span class="mode-badge">LIVE</span>' in pnl_html
+
+
+# --- M18: SEO meta, robots.txt, sitemap.xml, analytics -----------------------
+
+_HTML_PAGES = ("index.html", "tickers.html", "pnl.html", "calendar.html")
+
+
+def test_every_page_has_viewport_lang_and_a_description() -> None:
+    # Baseline SEO/mobile hygiene: before M18 no page had a viewport meta,
+    # a lang attribute, or a description -- the biggest single gap.
+    report.generate_report()
+    for filename in _HTML_PAGES:
+        html_out = (config.REPORT_DIR / filename).read_text()
+        assert '<html lang="en">' in html_out
+        assert 'name="viewport"' in html_out
+        assert '<meta name="description" content="' in html_out
+
+
+def test_pages_are_noindex_with_no_canonical_when_site_url_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "SITE_BASE_URL", "")
+    report.generate_report()
+    for filename in _HTML_PAGES:
+        html_out = (config.REPORT_DIR / filename).read_text()
+        assert 'content="noindex,nofollow"' in html_out
+        assert "rel=\"canonical\"" not in html_out
+        assert "og:title" not in html_out
+
+
+def test_pages_carry_canonical_and_open_graph_when_site_url_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "SITE_BASE_URL", "https://gramunger.com")
+    report.generate_report()
+    index_html = (config.REPORT_DIR / "index.html").read_text()
+    assert 'content="index,follow"' in index_html
+    assert '<link rel="canonical" href="https://gramunger.com/index.html">' in index_html
+    assert 'property="og:url" content="https://gramunger.com/index.html"' in index_html
+    assert 'property="og:site_name" content="Munger Screener"' in index_html
+    assert "noindex" not in index_html
+
+
+def test_site_url_trailing_slash_does_not_double_up_in_canonical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # config.SITE_BASE_URL is .rstrip("/")-ed at load; guard the join anyway.
+    monkeypatch.setattr(config, "SITE_BASE_URL", "https://gramunger.com")
+    head = report._seo_head("T", "D", "pnl.html")
+    assert "https://gramunger.com/pnl.html" in head
+    assert "gramunger.com//pnl.html" not in head
+
+
+def test_robots_txt_disallows_everything_on_dev(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "SITE_BASE_URL", "")
+    report.generate_report()
+    robots = (config.REPORT_DIR / "robots.txt").read_text()
+    assert "Disallow: /" in robots
+    assert "Sitemap:" not in robots
+    assert not (config.REPORT_DIR / "sitemap.xml").exists()
+
+
+def test_robots_txt_allows_pages_and_advertises_sitemap_on_prod(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "SITE_BASE_URL", "https://gramunger.com")
+    report.generate_report()
+    robots = (config.REPORT_DIR / "robots.txt").read_text()
+    assert "Allow: /" in robots
+    assert "Disallow: /progress.json" in robots
+    assert "Sitemap: https://gramunger.com/sitemap.xml" in robots
+
+
+def test_sitemap_lists_calendar_when_grafana_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "SITE_BASE_URL", "https://gramunger.com")
+    monkeypatch.setattr(config, "GRAFANA_BASE_URL", "")
+    report.generate_report()
+    sitemap = (config.REPORT_DIR / "sitemap.xml").read_text()
+    root = ET.fromstring(sitemap)  # must be well-formed XML
+    ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
+    locs = {el.text for el in root.iter(f"{ns}loc")}
+    assert "https://gramunger.com/index.html" in locs
+    assert "https://gramunger.com/calendar.html" in locs
+    assert "https://gramunger.com/dashboards.html" not in locs
+
+
+def test_sitemap_lists_dashboards_when_grafana_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "SITE_BASE_URL", "https://gramunger.com")
+    monkeypatch.setattr(config, "GRAFANA_BASE_URL", "https://grafana.gramunger.com/d/x")
+    report.generate_report()
+    sitemap = (config.REPORT_DIR / "sitemap.xml").read_text()
+    locs = {el.text for el in ET.fromstring(sitemap).iter()}
+    assert "https://gramunger.com/dashboards.html" in locs
+    assert "https://gramunger.com/calendar.html" not in locs
+
+
+def test_analytics_snippet_present_only_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "ANALYTICS_URL", "")
+    assert report._analytics_snippet() == ""
+    report.generate_report()
+    assert "goatcounter" not in (config.REPORT_DIR / "index.html").read_text()
+
+    monkeypatch.setattr(config, "ANALYTICS_URL", "https://stats.gramunger.com/count")
+    snippet = report._analytics_snippet()
+    assert 'data-goatcounter="https://stats.gramunger.com/count"' in snippet
+    assert 'src="//stats.gramunger.com/count.js"' in snippet
+    report.generate_report()
+    assert snippet in (config.REPORT_DIR / "index.html").read_text()

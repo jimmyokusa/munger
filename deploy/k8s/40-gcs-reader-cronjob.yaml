@@ -1,0 +1,175 @@
+# M17 (DESIGN_DASHBOARDS.md 2.3): read-only GCS -> PVC bridge.
+#
+# WHY THIS EXISTS
+#   pnl.py runs only in GitHub Actions (that's where the Alpaca credentials
+#   live -- M14 screen-only boundary) and writes pnl.json + the durable
+#   pnl_history.jsonl append-series into gs://munger-503515-data. The k3s
+#   report deployment deliberately has no Alpaca keys and today has no
+#   pnl.json on its PVC at all -- which is exactly why k3s pnl.html renders
+#   an empty P&L page (M16 row 552). This CronJob PULLS the already-produced
+#   artifacts from GCS into the shared PVC so (a) report.py's pnl.html gets
+#   real data (closes M16 row 552) and (b) Grafana can chart the durable
+#   history.
+#
+# WHY A STANDALONE CRONJOB (not an init step on daily-screen)
+#   daily-screen runs 13:00 UTC; daily-trade (which produces the P&L) runs
+#   14:00 UTC. Bolting this onto daily-screen would pull *yesterday's*
+#   snapshot, and daily-screen's manifest is deliberately secret-free
+#   (defense in depth) -- keep it that way. This job runs at 15:00 UTC,
+#   after daily-trade has had a full hour (its own timeout is 45m) to place
+#   trades, snapshot P&L, and upload to GCS.
+#
+# CREDENTIALS (read-only; NOT Alpaca)
+#   Uses a dedicated GCP service account `munger-gcs-reader` with
+#   roles/storage.objectViewer on the bucket. `gcloud storage cp` needs
+#   bucket-level list, so this key is bucket-wide *read-only* (broader than
+#   two files, per M16 row 548 / DESIGN_DASHBOARDS.md 2.3 blast-radius note)
+#   -- but it is read-only and is not Alpaca creds, so the trading boundary
+#   holds. Its JSON key is mounted from the Secret `munger-gcs-reader-key`,
+#   which must be created out-of-band (never commit the key):
+#
+#     gcloud iam service-accounts create munger-gcs-reader \
+#       --project=munger-503515
+#     gcloud storage buckets add-iam-policy-binding gs://munger-503515-data \
+#       --member=serviceAccount:munger-gcs-reader@munger-503515.iam.gserviceaccount.com \
+#       --role=roles/storage.objectViewer
+#     gcloud iam service-accounts keys create /tmp/gcs-reader.json \
+#       --iam-account=munger-gcs-reader@munger-503515.iam.gserviceaccount.com
+#     sudo kubectl -n munger create secret generic munger-gcs-reader-key \
+#       --from-file=key.json=/tmp/gcs-reader.json
+#     rm -f /tmp/gcs-reader.json
+#
+# ATOMICITY
+#   Every file is downloaded to a temp path on the *same filesystem* (the
+#   PVC) and then `mv`-renamed into place, so nginx/report.py/Grafana never
+#   observe a torn or half-written file (the codebase's established
+#   temp+rename pattern).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: munger-gcs-reader
+  namespace: munger
+  labels:
+    app.kubernetes.io/name: munger-gcs-reader
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: munger-gcs-reader
+  namespace: munger
+  labels:
+    app.kubernetes.io/name: munger-gcs-reader
+spec:
+  # 15:00 UTC daily -- one hour after daily-trade.yml's 14:00 run (whose own
+  # timeout is 45m), so the P&L it uploads to GCS is this run's to pull.
+  schedule: "0 15 * * *"
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 600
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: munger-gcs-reader
+        spec:
+          serviceAccountName: munger-gcs-reader
+          restartPolicy: Never
+          # Pinned to pi1: the PVC is ReadWriteOnce and lives on pi1 (see
+          # 10-pvc.yaml), so anything that WRITES to it must run there.
+          # (Grafana, which only READS the bridged files over HTTP via the
+          # nginx Service, is pinned OFF pi1 in 50-grafana.yaml.)
+          nodeSelector:
+            kubernetes.io/hostname: pi1
+          # Match the PVC's group-writable-by-uid-1000 convention
+          # (30-daily-screen-cronjob.yaml uses the same fsGroup).
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+          containers:
+            - name: gcs-reader
+              # google/cloud-sdk provides `gcloud storage` and python3 (used
+              # for the JSONL->JSON-array transform below). Multi-arch (arm64).
+              # Pulled from Docker Hub -- the Pis need outbound internet the
+              # first time (unlike the side-loaded munger image). Pin the tag
+              # when confirmed against what the cluster can pull.
+              image: google/cloud-sdk:slim
+              imagePullPolicy: IfNotPresent
+              env:
+                # gcloud needs a writable HOME/config dir; the pod runs as a
+                # non-root uid with no home, so point it at the writable tmp.
+                - name: HOME
+                  value: /tmp
+                - name: CLOUDSDK_CONFIG
+                  value: /tmp/gcloud
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  BUCKET="gs://munger-503515-data"
+                  DATA_DIR="/data"
+                  REPORT_DIR="/data/report"
+
+                  gcloud auth activate-service-account \
+                    --key-file=/var/secrets/gcs/key.json
+                  mkdir -p "$REPORT_DIR"
+
+                  # 1) pnl.json -> /data/pnl.json (report.py pnl.html; closes
+                  #    M16 row 552). Atomic temp+rename on the PVC filesystem.
+                  gcloud storage cp "$BUCKET/pnl.json" "$DATA_DIR/.pnl.json.tmp"
+                  mv -f "$DATA_DIR/.pnl.json.tmp" "$DATA_DIR/pnl.json"
+                  echo "Bridged pnl.json."
+
+                  # 2) pnl_history.jsonl -> /data/report/ (served by nginx so
+                  #    Grafana, off-node, can read it over HTTP). A missing
+                  #    object is the expected pre-first-daily-trade state --
+                  #    tolerate it rather than failing the whole bridge.
+                  if gcloud storage cp "$BUCKET/pnl_history.jsonl" \
+                       "$REPORT_DIR/.pnl_history.jsonl.tmp"; then
+                    mv -f "$REPORT_DIR/.pnl_history.jsonl.tmp" \
+                      "$REPORT_DIR/pnl_history.jsonl"
+                    # Grafana's Infinity datasource parses JSON, not NDJSON, so
+                    # publish an array rendition alongside the canonical .jsonl.
+                    python3 - "$REPORT_DIR/pnl_history.jsonl" \
+                      "$REPORT_DIR/.pnl_history.json.tmp" <<'PY'
+                  import json, sys
+                  src, dst = sys.argv[1], sys.argv[2]
+                  with open(src) as f:
+                      rows = [json.loads(line) for line in f if line.strip()]
+                  with open(dst, "w") as f:
+                      json.dump(rows, f)
+                  PY
+                    mv -f "$REPORT_DIR/.pnl_history.json.tmp" \
+                      "$REPORT_DIR/pnl_history.json"
+                    echo "Bridged pnl_history.jsonl (+ .json array for Grafana)."
+                  else
+                    echo "No pnl_history.jsonl in GCS yet -- skipping (first run)."
+                  fi
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: gcs-key
+                  mountPath: /var/secrets/gcs
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 192Mi
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: munger-data
+            - name: gcs-key
+              secret:
+                secretName: munger-gcs-reader-key
+            - name: tmp
+              emptyDir: {}

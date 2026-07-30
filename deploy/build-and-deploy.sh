@@ -49,13 +49,23 @@ if ! ssh "$CONTROL_NODE" "sudo kubectl -n $NAMESPACE wait --for=condition=comple
 fi
 echo "   CI passed."
 
-echo "==> [4/4] CD: applying report web + daily-screen CronJob"
+echo "==> [4/4] CD: applying report web + daily-screen CronJob + P&L bridge + Grafana"
 # Apply each manifest separately: piping several files into one
 # `kubectl apply -f -` concatenates them WITHOUT a `---` between files, so
 # the last doc of one file and the first of the next merge into a single,
 # key-clobbered document (this silently dropped the Service once already).
+#
+# 40-gcs-reader-cronjob.yaml (M17) needs the read-only GCS key Secret to
+# exist first (see that file's header for the create commands):
+#   sudo kubectl -n munger create secret generic munger-gcs-reader-key \
+#     --from-file=key.json=/path/to/gcs-reader.json
+# It's applied regardless -- a missing Secret only makes the scheduled Job
+# fail, it doesn't block the rest of the deploy. 50-grafana.yaml installs the
+# Infinity plugin at pod startup, so its node needs outbound internet once.
 for f in deploy/k8s/10-pvc.yaml deploy/k8s/20-report-web.yaml \
-         deploy/k8s/30-daily-screen-cronjob.yaml; do
+         deploy/k8s/30-daily-screen-cronjob.yaml \
+         deploy/k8s/40-gcs-reader-cronjob.yaml \
+         deploy/k8s/50-grafana.yaml; do
   apply < "$f"
 done
 

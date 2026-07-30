@@ -342,6 +342,130 @@ a.cal-cell:hover { filter: brightness(0.95); }
 """
 
 
+def _analytics_snippet() -> str:
+    """The GoatCounter count.js <script>, or "" when analytics is unconfigured.
+
+    Read from config live (not a module constant) so tests can monkeypatch
+    config.ANALYTICS_URL, matching how GRAFANA_BASE_URL is read per-call. The
+    beacon is cookieless and same-origin (loaded from our own stats subdomain),
+    so no consent banner is required (DESIGN_WEB_ANALYTICS_SEO.md §2.1).
+    """
+    endpoint = config.ANALYTICS_URL
+    if not endpoint:
+        return ""
+    host = urllib.parse.urlsplit(endpoint).netloc
+    return (
+        f'<script data-goatcounter="{html.escape(endpoint, quote=True)}" '
+        f'async src="//{html.escape(host, quote=True)}/count.js"></script>'
+    )
+
+
+def _seo_head(title: str, description: str, path: str) -> str:
+    """Shared <!doctype>..</head> block: title, SEO meta, favicon, analytics, CSS.
+
+    `title` is the full <title> text (kept starting with "Munger Screener" for
+    consistency across pages); `description` is a <=155-char page summary; `path`
+    is the page's filename (e.g. "index.html") for canonical/OG URLs.
+
+    Canonical, Open Graph, and an explicit index,follow are emitted only when
+    config.SITE_BASE_URL is set -- the env-gated pattern shared with
+    GRAFANA_BASE_URL. On dev/local (unset) the page is marked noindex,nofollow
+    and carries no absolute URLs, so a dev deployment is never indexed and never
+    advertises gramunger.com links (DESIGN_WEB_ANALYTICS_SEO.md §1 constraint 3).
+    og:image is intentionally omitted until a real preview asset exists -- an
+    og:image pointing at a 404 is worse than none (§3.3).
+    """
+    # title/description are static, author-controlled page chrome that already
+    # carry intentional HTML entities (e.g. "&mdash;", "P&amp;L") -- the same
+    # pre-escaped strings the inline <head>s embedded before M18. They contain
+    # no raw double-quotes, so they drop straight into content="..." attributes;
+    # re-escaping here would double-encode the entities into visible "&amp;mdash;".
+    social: list[str] = []
+    if config.SITE_BASE_URL:
+        canonical = f"{config.SITE_BASE_URL}/{path}"
+        esc_url = html.escape(canonical, quote=True)
+        social = [
+            '<meta name="robots" content="index,follow">',
+            f'<link rel="canonical" href="{esc_url}">',
+            '<meta property="og:type" content="website">',
+            '<meta property="og:site_name" content="Munger Screener">',
+            f'<meta property="og:title" content="{title}">',
+            f'<meta property="og:description" content="{description}">',
+            f'<meta property="og:url" content="{esc_url}">',
+            '<meta name="twitter:card" content="summary">',
+            f'<meta name="twitter:title" content="{title}">',
+            f'<meta name="twitter:description" content="{description}">',
+        ]
+    else:
+        social = ['<meta name="robots" content="noindex,nofollow">']
+    head_lines = [
+        "<!doctype html>",
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"<title>{title}</title>",
+        f'<meta name="description" content="{description}">',
+        *social,
+        _FAVICON_LINK,
+        _analytics_snippet(),
+        f"<style>{_CSS}</style></head>",
+    ]
+    # Drop the analytics line when unconfigured so no stray blank line appears.
+    return "\n".join(line for line in head_lines if line)
+
+
+# Public pages that belong in robots.txt / sitemap.xml. Operational artifacts
+# (progress.json, the archive CSVs) are deliberately excluded -- they are not
+# content and shouldn't be indexed. Which history page exists depends on the
+# GRAFANA_BASE_URL fork (dashboards.html vs calendar.html); resolved at
+# generation time in _sitemap_pages() rather than hard-coded here.
+_ALWAYS_INDEXED_PAGES = ("index.html", "tickers.html", "pnl.html")
+
+
+def _sitemap_pages() -> tuple[str, ...]:
+    history_page = "dashboards.html" if config.GRAFANA_BASE_URL else "calendar.html"
+    return (*_ALWAYS_INDEXED_PAGES, history_page)
+
+
+def _render_robots_txt() -> str:
+    """robots.txt written into REPORT_DIR (must be at the served web root).
+
+    Prod (SITE_BASE_URL set): allow the real pages, keep operational artifacts
+    out, and advertise the sitemap. Dev (unset): Disallow: / -- belt-and-
+    suspenders so a dev deploy that somehow becomes reachable is never indexed
+    (DESIGN_WEB_ANALYTICS_SEO.md §3.2).
+    """
+    if not config.SITE_BASE_URL:
+        return "User-agent: *\nDisallow: /\n"
+    return (
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Disallow: /progress.json\n"
+        "Disallow: /screen_results_archive/\n"
+        f"Sitemap: {config.SITE_BASE_URL}/sitemap.xml\n"
+    )
+
+
+def _render_sitemap_xml() -> str:
+    """sitemap.xml listing the canonical pages generated this run.
+
+    <lastmod> is today's UTC date -- the site regenerates daily, so every page's
+    last-modified is the generation date. Only called when SITE_BASE_URL is set
+    (a sitemap of relative URLs is meaningless), so callers gate on it.
+    """
+    lastmod = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    urls = "".join(
+        f"  <url><loc>{html.escape(config.SITE_BASE_URL + '/' + page, quote=True)}</loc>"
+        f"<lastmod>{lastmod}</lastmod></url>\n"
+        for page in _sitemap_pages()
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"{urls}"
+        "</urlset>\n"
+    )
+
+
 def _load_screen_results() -> pd.DataFrame:
     if not config.SCREEN_RESULTS_CSV_PATH.exists():
         return pd.DataFrame(columns=["symbol", "buyable", "score", "fail_reasons"])
@@ -861,16 +985,17 @@ def _render_index(picks: list[dict[str, object]], results: pd.DataFrame) -> str:
     else:
         body = _render_candidates_or_empty(results)
     export_controls = _render_export_controls(_export_rows(picks, results))
-    return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Munger Screener &mdash; current picks</title>
-{_FAVICON_LINK}
-<link rel="alternate" type="application/feed+json" title="Munger daily candidates" href="feed.json">
-<link rel="alternate" type="application/rss+xml" title="Munger daily candidates" href="rss.xml">
-<style>{_CSS}</style></head>
+    head = _seo_head(
+        "Munger Screener &mdash; current picks",
+        "Daily quality-value stock screen: today's candidate picks with the metrics and "
+        "reasoning behind each score. Paper-trading research, not investment advice.",
+        "index.html",
+    )
+    return f"""{head}
 <body>
 <h1>Current picks</h1>
 <nav><a href="tickers.html">See all screened tickers &rarr;</a>
-<a href="calendar.html">Daily calendar &rarr;</a>
+{_history_nav_link()}
 <a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
 {_render_methodology_drawer()}
 <div class="progress-banner glass" id="progress-banner">
@@ -993,14 +1118,17 @@ for (const th of table.tHead.rows[0].cells) {
 </script>
 """
 
-    return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Munger Screener &mdash; all screened tickers</title>
-{_FAVICON_LINK}
-<style>{_CSS}</style></head>
+    head = _seo_head(
+        "Munger Screener &mdash; all screened tickers",
+        "Every ticker the daily quality-value screen evaluated, in a sortable, filterable "
+        "table: see why any stock was or wasn't picked.",
+        "tickers.html",
+    )
+    return f"""{head}
 <body>
 <h1>All screened tickers</h1>
 <nav><a href="index.html">&larr; Back to current picks</a>
-<a href="calendar.html">Daily calendar &rarr;</a>
+{_history_nav_link()}
 <a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
 {_generated_at()}
 {score_buyable_note}
@@ -1294,15 +1422,18 @@ def _render_pnl(snapshot: dict[str, object] | None) -> str:
             + _render_pnl_positions_table(positions)
         )
 
-    return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Munger Screener &mdash; P&amp;L</title>
-{_FAVICON_LINK}
-<style>{_CSS}</style></head>
+    head = _seo_head(
+        "Munger Screener &mdash; P&amp;L",
+        "Paper-trading profit and loss for the daily quality-value screen: account equity "
+        "and open positions. Paper money only, not investment advice.",
+        "pnl.html",
+    )
+    return f"""{head}
 <body>
 <h1>Paper trading P&amp;L{mode_badge}</h1>
 <nav><a href="index.html">&larr; Back to current picks</a>
 <a href="tickers.html">See all screened tickers &rarr;</a>
-<a href="calendar.html">Daily calendar &rarr;</a></nav>
+{_history_nav_link()}</nav>
 <p style="font-size: 0.85rem; opacity: 0.7;">
   This account trades on the same daily cadence and rules as the
   screener above (DESIGN.md section 4) &mdash; paper money only, not
@@ -1317,14 +1448,16 @@ def _render_pnl(snapshot: dict[str, object] | None) -> str:
 def _render_calendar(
     summaries: dict[datetime.date, dict[str, int]] | None = None,
 ) -> str:
-    """Renders calendar.html.
+    """Renders calendar.html, the pre-M17 history view.
 
-    Pass `summaries` to reuse an already-loaded dict (generate_report()
-    loads it once and shares it with the feed renderers) rather than
-    re-globbing/re-reading every archive CSV per caller --
-    staff-engineer-reviewer finding on the first draft, which had
-    calendar.html, feed.json, and rss.xml each independently re-scanning
-    the whole (unbounded-growth) archive directory.
+    Still generated on deployments without Grafana configured -- see
+    generate_report.
+
+    Args:
+      summaries: Reuse an already-loaded dict rather than re-globbing/
+        re-reading every archive CSV -- a caller with the summaries already
+        in hand avoids re-scanning the whole (unbounded-growth) archive
+        directory.
     """
     if summaries is None:
         summaries = _load_daily_summaries()
@@ -1347,10 +1480,13 @@ def _render_calendar(
         "</div>"
     )
 
-    return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Munger Screener &mdash; calendar</title>
-{_FAVICON_LINK}
-<style>{_CSS}</style></head>
+    head = _seo_head(
+        "Munger Screener &mdash; calendar",
+        "A day-by-day calendar of the daily quality-value screen: which days found buyable "
+        "names, and each day's full results.",
+        "calendar.html",
+    )
+    return f"""{head}
 <body>
 <h1>Daily screen calendar</h1>
 <nav><a href="index.html">&larr; Back to current picks</a>
@@ -1407,144 +1543,53 @@ def _copy_archives_into_report() -> None:
         tmp_dest.replace(dest)
 
 
-def _recent_daily_feed_entries(
-    summaries: dict[datetime.date, dict[str, int]] | None = None,
-) -> list[tuple[datetime.date, list[str]]]:
-    """Up to config.FEED_MAX_ITEMS most recent archived days, newest first.
+def _history_nav_link() -> str:
+    """The "history over time" nav entry.
 
-    One (day, buyable_symbols) pair per day -- a subscriber wants to see
-    *which* names newly qualified, not just the count
-    `_load_daily_summaries` returns. Pass `summaries` to reuse an
-    already-loaded dict (see `_render_calendar`'s docstring) instead of
-    re-scanning the whole archive directory; reads each day's archive CSV
-    with the same narrow `usecols` as `_load_daily_summaries` for the same
-    reason: this can scale to a year+ of history without loading full
-    metric columns for days that will be immediately discarded by the
-    FEED_MAX_ITEMS cap.
+    The Grafana "Dashboards" tab where a Grafana URL is configured
+    (config.GRAFANA_BASE_URL), otherwise the legacy "Daily calendar" page.
+    M17 retires the calendar in favor of the embedded dashboards, but the
+    swap is gated per environment so a deployment without Grafana yet keeps a
+    history view rather than none (DESIGN_DASHBOARDS.md 4).
     """
-    if summaries is None:
-        summaries = _load_daily_summaries()
-    recent_days = sorted(summaries, reverse=True)[: config.FEED_MAX_ITEMS]
-    entries: list[tuple[datetime.date, list[str]]] = []
-    for day in recent_days:
-        archive_path = config.SCREEN_RESULTS_ARCHIVE_DIR / f"screen_results_{day.isoformat()}.csv"
-        try:
-            frame = pd.read_csv(archive_path, usecols=["symbol", "buyable", "score"])
-        except (OSError, ValueError, KeyError):
-            # _load_daily_summaries already read this same file successfully
-            # (with a 2-column subset) to know `day` belongs in `summaries`
-            # at all -- a failure here means something changed since (the
-            # file lost its `score` column, was deleted, or a concurrent
-            # write raced this read). Skip the day rather than fabricate a
-            # "0 buyable" entry indistinguishable from a real empty-but-
-            # valid screen day -- staff-engineer-reviewer finding: silently
-            # coercing "unreadable" to "empty" would conflate the two for
-            # every feed subscriber, with no way to tell them apart.
-            continue
-        symbols: list[str] = []
-        if len(frame) > 0:
-            buyable = frame[frame["buyable"].apply(_is_buyable)].sort_values(
-                "score", ascending=False
-            )
-            symbols = [str(s) for s in buyable["symbol"]]
-        entries.append((day, symbols))
-    return entries
+    if config.GRAFANA_BASE_URL:
+        return '<a href="dashboards.html">Dashboards &rarr;</a>'
+    return '<a href="calendar.html">Daily calendar &rarr;</a>'
 
 
-def _feed_base_url() -> str:
-    """Absolute origin for feed links, or "." if none is configured.
+def _render_dashboards() -> str:
+    """Renders dashboards.html -- embeds the Grafana dashboards (M17).
 
-    "." (not "") so a relative href built as f"{base}/x.html" still forms
-    a valid relative reference ("./x.html") instead of an absolute-looking
-    "/x.html" that would resolve against the domain root rather than
-    wherever the feed itself happens to be served from.
+    Generated only when config.GRAFANA_BASE_URL is set (see generate_report);
+    the nav swaps the calendar link for this tab in the same case. The
+    <iframe> shows the live Grafana; the always-visible fallback link lets a
+    visitor open Grafana directly if the embed can't load (e.g. the prod VM
+    is down), degrading to a link rather than a blank frame
+    (DESIGN_DASHBOARDS.md 4, staff-engineer-reviewer finding).
     """
-    return config.REPORT_BASE_URL.rstrip("/") if config.REPORT_BASE_URL else "."
-
-
-def _render_feed_json(entries: list[tuple[datetime.date, list[str]]] | None = None) -> str:
-    """feed.json in JSON Feed 1.1 format (https://jsonfeed.org/version/1.1).
-
-    One item per recently-archived day (see _recent_daily_feed_entries),
-    so subscribing surfaces new candidate drops as they're archived --
-    not a snapshot of today's picks alone, which a feed reader would only
-    ever show once and then never update meaningfully. Pass `entries` to
-    reuse an already-computed list (generate_report() computes it once
-    and shares it with _render_feed_rss) instead of each format
-    independently re-reading the same archive CSVs.
-    """
-    if entries is None:
-        entries = _recent_daily_feed_entries()
-    base = _feed_base_url()
-    items = []
-    for day, symbols in entries:
-        summary = (
-            f"{len(symbols)} buyable candidate(s): {', '.join(symbols)}"
-            if symbols
-            else "No buyable candidates this run."
-        )
-        items.append(
-            {
-                "id": f"munger-daily-{day.isoformat()}",
-                "url": f"{base}/calendar.html",
-                "title": f"{day.isoformat()}: {len(symbols)} buyable candidate(s)",
-                "content_text": summary,
-                "date_published": f"{day.isoformat()}T00:00:00Z",
-            }
-        )
-    feed = {
-        "version": "https://jsonfeed.org/version/1.1",
-        "title": "Munger Screener — daily candidates",
-        "home_page_url": f"{base}/index.html",
-        "feed_url": f"{base}/feed.json",
-        "description": "New buyable candidates from each archived daily screen.",
-        "items": items,
-    }
-    return json.dumps(feed, indent=2)
-
-
-def _render_feed_rss(entries: list[tuple[datetime.date, list[str]]] | None = None) -> str:
-    """rss.xml, the same items as feed.json in RSS 2.0 format.
-
-    Two formats rather than one because feed readers split roughly evenly
-    on which they support -- both are generated from the same
-    _recent_daily_feed_entries() so they can't drift apart in content.
-    Pass `entries` for the same reuse reason as `_render_feed_json`.
-    """
-    if entries is None:
-        entries = _recent_daily_feed_entries()
-    base = _feed_base_url()
-    items_xml = []
-    for day, symbols in entries:
-        summary = (
-            f"{len(symbols)} buyable candidate(s): {html.escape(', '.join(symbols))}"
-            if symbols
-            else "No buyable candidates this run."
-        )
-        pub_date = datetime.datetime.combine(
-            day, datetime.time.min, tzinfo=datetime.UTC
-        ).strftime("%a, %d %b %Y %H:%M:%S %z")
-        items_xml.append(
-            f"<item><title>{html.escape(day.isoformat())}: {len(symbols)} buyable "
-            f"candidate(s)</title><link>{html.escape(base)}/calendar.html</link>"
-            f"<guid isPermaLink=\"false\">munger-daily-{day.isoformat()}</guid>"
-            f"<pubDate>{pub_date}</pubDate><description>{summary}</description></item>"
-        )
-    # &mdash; (an HTML5 named entity) is NOT valid in bare XML -- only
-    # &amp;/&lt;/&gt;/&quot;/&apos; and numeric entities are, and this
-    # document has no DOCTYPE to declare it. A strict XML parser (many
-    # feed readers, xml.etree.ElementTree) rejects the whole file on an
-    # undefined-entity error. &#8212; is the numeric (always-valid) form
-    # of the same em dash character -- real bug, staff-engineer-reviewer
-    # finding, caught because the existing test only substring-checked
-    # the output instead of parsing it as XML.
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0"><channel>
-<title>Munger Screener &#8212; daily candidates</title>
-<link>{html.escape(base)}/index.html</link>
-<description>New buyable candidates from each archived daily screen.</description>
-{"".join(items_xml)}
-</channel></rss>
+    url = html.escape(config.GRAFANA_BASE_URL, quote=True)
+    head = _seo_head(
+        "Munger Screener &mdash; dashboards",
+        "Account P&amp;L over time and daily closing prices for held positions, from the "
+        "daily quality-value screen's paper-trading account.",
+        "dashboards.html",
+    )
+    return f"""{head}
+<body>
+<h1>Dashboards</h1>
+<nav><a href="index.html">&larr; Back to current picks</a>
+<a href="tickers.html">See all screened tickers &rarr;</a>
+<a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
+<p style="font-size: 0.85rem; opacity: 0.75;">
+  Account P&amp;L over time and daily closing prices for held positions.
+  If the charts don't load,
+  <a href="{url}" target="_blank" rel="noopener">open them directly &rarr;</a>.
+</p>
+<iframe src="{url}" title="Munger Grafana dashboards"
+  style="width: 100%; height: 80vh; border: 0;" loading="lazy"
+  referrerpolicy="no-referrer"></iframe>
+{_generated_at()}
+</body></html>
 """
 
 
@@ -1584,21 +1629,26 @@ def generate_report() -> None:
         _write_text_atomically(
             config.REPORT_DIR / "tickers.html", _render_tickers(results, held_symbols)
         )
-        # Loaded once and shared across calendar.html/feed.json/rss.xml --
-        # each independently re-globbing and re-reading every archive CSV
-        # (an unbounded, ever-growing directory) on every single
-        # generate_report() call was a real, avoidable scaling cost
-        # (staff-engineer-reviewer finding).
-        daily_summaries = _load_daily_summaries()
-        feed_entries = _recent_daily_feed_entries(daily_summaries)
-        _write_text_atomically(
-            config.REPORT_DIR / "calendar.html", _render_calendar(daily_summaries)
-        )
-        _write_text_atomically(
-            config.REPORT_DIR / "feed.json", _render_feed_json(feed_entries)
-        )
-        _write_text_atomically(config.REPORT_DIR / "rss.xml", _render_feed_rss(feed_entries))
+        # M17 calendar->dashboards swap, gated on GRAFANA_BASE_URL: where
+        # Grafana is configured, emit the embedded-dashboards tab; otherwise
+        # keep generating the calendar (an environment without Grafana still
+        # needs a history view). The JSON/RSS feed was retired alongside the
+        # calendar (user request, M17) -- feed.json/rss.xml are no longer
+        # written at all.
+        if config.GRAFANA_BASE_URL:
+            _write_text_atomically(
+                config.REPORT_DIR / "dashboards.html", _render_dashboards()
+            )
+        else:
+            _write_text_atomically(config.REPORT_DIR / "calendar.html", _render_calendar())
         _write_text_atomically(config.REPORT_DIR / "pnl.html", _render_pnl(_load_pnl_snapshot()))
+        # SEO artifacts (M18): robots.txt always (dev emits Disallow: / to stay
+        # unindexed); sitemap.xml only on prod, where SITE_BASE_URL makes its
+        # absolute URLs meaningful. Both must live in REPORT_DIR to be served
+        # from the web root, same as the archive CSVs below.
+        _write_text_atomically(config.REPORT_DIR / "robots.txt", _render_robots_txt())
+        if config.SITE_BASE_URL:
+            _write_text_atomically(config.REPORT_DIR / "sitemap.xml", _render_sitemap_xml())
         _copy_archives_into_report()
     except Exception:
         logger.exception("report.py failed to generate the report")

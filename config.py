@@ -155,6 +155,14 @@ JOURNAL_DB_PATH: Path = DATA_DIR / "journal.db"
 # deliberately never has Alpaca credentials (DESIGN.md 3.5/M14's screen-
 # only boundary) and so can never fetch this data itself.
 PNL_DATA_PATH: Path = DATA_DIR / "pnl.json"
+# Durable, append-only daily P&L series (M17) -- the *system of record* for the
+# "account P&L over time" dashboard, maintained by pnl.py in GitHub Actions.
+# pnl.json is a rolling ~1-month snapshot Alpaca overwrites daily; this file
+# instead accretes one row/day forever (seeded once from Alpaca's history, then
+# grown), so the long-term equity curve survives past Alpaca's rolling window.
+# Lives in the same GCS bucket as pnl.json; read (never written) by the report
+# deployment. See DESIGN_DASHBOARDS.md 2.1.
+PNL_HISTORY_PATH: Path = DATA_DIR / "pnl_history.jsonl"
 # pm-reviewer finding: without a defined threshold, an old snapshot (the
 # GCS bridge silently broke, or daily-trade.yml stopped firing) just
 # looks like a normal snapshot to a viewer -- report.py flags pnl.html as
@@ -170,23 +178,32 @@ REPORT_DIR: Path = DATA_DIR / "report"
 # separate copy step needed for the report's progress-bar JS to poll it.
 PROGRESS_FILE_PATH: Path = REPORT_DIR / "progress.json"
 
-# Absolute origin used to build absolute links/ids in feed.json/rss.xml
-# (JSON Feed / RSS both expect absolute URLs, unlike the relative links
-# elsewhere in the static site). Empty by default -- unchanged local/k3s
-# behavior, where there's no stable public URL to point a feed reader at
-# (the k3s report is LAN-only). Set MUNGER_REPORT_BASE_URL on any
-# deployment with a real public URL (e.g. https://gramunger.com on Cloud
-# Run) -- report.py falls back to a relative "." base rather than
-# fabricating a domain if this is unset.
-REPORT_BASE_URL = os.environ.get("MUNGER_REPORT_BASE_URL", "")
+# URL of the embedded Grafana dashboards (M17). When set, report.py renders
+# a "Dashboards" tab (dashboards.html iframing this URL) and drops the legacy
+# "Daily calendar" nav link -- the M17 calendar->dashboards swap, gated per
+# environment so a deployment without Grafana yet keeps the calendar rather
+# than showing no history view at all (DESIGN_DASHBOARDS.md 4). Empty by
+# default (unchanged local/k3s-without-Grafana behavior). Set
+# MUNGER_GRAFANA_URL to the dashboards' embeddable URL on any deployment that
+# has Grafana (k3s dev; grafana.gramunger.com on prod).
+GRAFANA_BASE_URL = os.environ.get("MUNGER_GRAFANA_URL", "")
 
-# Cap on how many past days' archives feed.json/rss.xml include. Archives
-# grow unbounded (TASKS.md's known retention TODO) -- without a cap the
-# feed would too, costing an ever-growing per-generation read of every
-# archived CSV (report._render_feed_items reads one to list that day's
-# buyable tickers) for items subscribers past this window will never see
-# anyway (feed readers only care about recent items).
-FEED_MAX_ITEMS = 60
+# --- Public site metadata + SEO (M18, DESIGN_WEB_ANALYTICS_SEO.md) ---
+# Absolute origin of the public site (e.g. https://gramunger.com). One
+# constant gates every output that needs an absolute URL: <link rel=canonical>,
+# Open Graph tags, sitemap.xml, and the robots.txt "index me" policy. Empty by
+# default -- the same env-gated pattern as GRAFANA_BASE_URL above -- so local
+# and k3s-dev runs emit noindex, no sitemap, and no gramunger.com URLs, and are
+# never pulled into a search index. Set MUNGER_SITE_URL only on the prod
+# daily-screen Job (report.py bakes these into the HTML at generation time, so
+# the env var lives on the Job that runs report.py, not the nginx service).
+SITE_BASE_URL = os.environ.get("MUNGER_SITE_URL", "").rstrip("/")
+# GoatCounter beacon endpoint (e.g. https://stats.gramunger.com/count) for the
+# self-hosted, cookieless visitor analytics (M18 §2). When set, report.py
+# injects the ~3KB async count.js snippet into every page's <head>; empty by
+# default so dev/local traffic is never reported to prod stats. Also set only
+# on the prod daily-screen Job.
+ANALYTICS_URL = os.environ.get("MUNGER_ANALYTICS_URL", "")
 # DESIGN.md's PM-recommendations narrative illustrates this as "> 24
 # hours," written before the quarterly cadence was settled (M1) -- a
 # literal 24-hour threshold would have fired on every single healthy

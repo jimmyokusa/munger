@@ -3,6 +3,7 @@ test_execution.py -- no live credentials available in this environment)."""
 
 from __future__ import annotations
 
+import datetime
 import json
 from pathlib import Path
 from typing import Any
@@ -214,3 +215,271 @@ def test_write_snapshot_uses_config_path_by_default(
 
     assert (tmp_path / "pnl.json").exists()
     assert json.loads((tmp_path / "pnl.json").read_text()) == {"mode": "paper"}
+
+
+def test_write_snapshot_accepts_a_prefetched_snapshot_without_fetching(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # __main__ fetches once and hands the same snapshot to both write_snapshot
+    # and update_history_series -- passing it in must NOT trigger a second
+    # Alpaca read.
+    def _fail() -> dict[str, object]:
+        pytest.fail("write_snapshot fetched instead of using the given snapshot")
+
+    monkeypatch.setattr(pnl, "generate_snapshot", _fail)
+    target = tmp_path / "pnl.json"
+
+    pnl.write_snapshot(path=target, snapshot={"mode": "paper"})
+
+    assert json.loads(target.read_text()) == {"mode": "paper"}
+
+
+# --- Durable P&L append-series (M17, DESIGN_DASHBOARDS.md 2.1) ---
+
+
+def _epoch(date_str: str) -> int:
+    """UTC-midnight epoch seconds for an ISO date, matching Alpaca's history
+    timestamp units."""
+    return int(datetime.datetime.fromisoformat(date_str + "T00:00:00+00:00").timestamp())
+
+
+def _series_snapshot(
+    *,
+    generated_at: str,
+    equity: float,
+    last_equity: float,
+    timestamps: list[int | None],
+    equities: list[float | None],
+    profit_losses: list[float | None],
+    mode: str = "paper",
+) -> dict[str, object]:
+    return {
+        "generated_at": generated_at,
+        "mode": mode,
+        "account": {
+            "equity": equity,
+            "cash": 0.0,
+            "last_equity": last_equity,
+            "portfolio_value": equity,
+        },
+        "positions": [],
+        "history": {
+            "timestamp": timestamps,
+            "equity": equities,
+            "profit_loss": profit_losses,
+            "profit_loss_pct": [],
+        },
+    }
+
+
+def _read_series(path: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def test_update_history_series_seeds_from_history_and_appends_today_sorted(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "pnl_history.jsonl"
+    snap = _series_snapshot(
+        generated_at="2026-07-28T13:00:00+00:00",
+        equity=100_500.0,
+        last_equity=100_000.0,
+        timestamps=[_epoch("2026-07-26"), _epoch("2026-07-27")],
+        equities=[99_500.0, 100_000.0],
+        profit_losses=[-100.0, 500.0],
+    )
+
+    pnl.update_history_series(snap, path)
+
+    rows = _read_series(path)
+    assert [r["date"] for r in rows] == ["2026-07-26", "2026-07-27", "2026-07-28"]
+    assert rows[0] == {
+        "date": "2026-07-26",
+        "equity": 99_500.0,
+        "profit_loss": -100.0,
+        "mode": "paper",
+    }
+    # today's row is derived from the account snapshot (equity, and
+    # profit_loss = equity - last_equity), not from the history array
+    assert rows[-1] == {
+        "date": "2026-07-28",
+        "equity": 100_500.0,
+        "profit_loss": 500.0,
+        "mode": "paper",
+    }
+
+
+def test_update_history_series_is_idempotent_on_rerun(tmp_path: Path) -> None:
+    path = tmp_path / "pnl_history.jsonl"
+    snap = _series_snapshot(
+        generated_at="2026-07-28T13:00:00+00:00",
+        equity=100_000.0,
+        last_equity=99_000.0,
+        timestamps=[_epoch("2026-07-27")],
+        equities=[99_000.0],
+        profit_losses=[0.0],
+    )
+
+    pnl.update_history_series(snap, path)
+    first = path.read_text()
+    pnl.update_history_series(snap, path)
+
+    # re-running the same day upserts by date -- no duplicate rows appended
+    assert path.read_text() == first
+
+
+def test_update_history_series_preserves_days_outside_alpacas_window(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "pnl_history.jsonl"
+    # a day already recorded that Alpaca's rolling 1-month history no longer
+    # returns -- the whole reason this durable file exists
+    old_row = {"date": "2026-01-01", "equity": 90_000.0, "profit_loss": 0.0, "mode": "paper"}
+    path.write_text(json.dumps(old_row) + "\n")
+    snap = _series_snapshot(
+        generated_at="2026-07-28T13:00:00+00:00",
+        equity=100_500.0,
+        last_equity=100_000.0,
+        timestamps=[_epoch("2026-07-27")],
+        equities=[100_000.0],
+        profit_losses=[500.0],
+    )
+
+    pnl.update_history_series(snap, path)
+
+    assert [r["date"] for r in _read_series(path)] == ["2026-01-01", "2026-07-27", "2026-07-28"]
+
+
+def test_update_history_series_todays_row_comes_from_account_not_history(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "pnl_history.jsonl"
+    # history carries a stale/partial same-day point; the fresher account
+    # value must win for today
+    snap = _series_snapshot(
+        generated_at="2026-07-28T20:00:00+00:00",
+        equity=101_000.0,
+        last_equity=100_000.0,
+        timestamps=[_epoch("2026-07-28")],
+        equities=[100_200.0],
+        profit_losses=[200.0],
+    )
+
+    pnl.update_history_series(snap, path)
+
+    rows = {r["date"]: r for r in _read_series(path)}
+    assert rows["2026-07-28"]["equity"] == 101_000.0
+    assert rows["2026-07-28"]["profit_loss"] == 1_000.0
+
+
+def test_update_history_series_skips_history_days_with_no_data(tmp_path: Path) -> None:
+    path = tmp_path / "pnl_history.jsonl"
+    snap = _series_snapshot(
+        generated_at="2026-07-28T13:00:00+00:00",
+        equity=100_000.0,
+        last_equity=100_000.0,
+        timestamps=[_epoch("2026-07-26"), _epoch("2026-07-27")],
+        equities=[None, 100_000.0],
+        profit_losses=[None, 0.0],
+    )
+
+    pnl.update_history_series(snap, path)
+
+    # a None-equity day is skipped, never fabricated as a $0 point
+    assert [r["date"] for r in _read_series(path)] == ["2026-07-27", "2026-07-28"]
+
+
+def test_update_history_series_does_not_relabel_prior_days_after_a_mode_switch(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "pnl_history.jsonl"
+    paper_snap = _series_snapshot(
+        generated_at="2026-07-27T13:00:00+00:00",
+        equity=100_000.0,
+        last_equity=100_000.0,
+        timestamps=[_epoch("2026-07-26")],
+        equities=[99_500.0],
+        profit_losses=[-500.0],
+        mode="paper",
+    )
+    pnl.update_history_series(paper_snap, path)
+
+    # the account flips to live; a later run's snapshot reports "live" as the
+    # *current* mode, but 2026-07-26/27 genuinely happened under paper -- a
+    # re-run must not retroactively relabel them, or the durable history
+    # would show fabricated live-trading returns for days that were paper.
+    live_snap = _series_snapshot(
+        generated_at="2026-07-28T13:00:00+00:00",
+        equity=100_800.0,
+        last_equity=100_000.0,
+        timestamps=[_epoch("2026-07-26"), _epoch("2026-07-27")],
+        equities=[99_500.0, 100_000.0],
+        profit_losses=[-500.0, 0.0],
+        mode="live",
+    )
+    pnl.update_history_series(live_snap, path)
+
+    rows = {r["date"]: r for r in _read_series(path)}
+    assert rows["2026-07-26"]["mode"] == "paper"
+    assert rows["2026-07-27"]["mode"] == "paper"
+    assert rows["2026-07-28"]["mode"] == "live"
+
+
+def test_update_history_series_keeps_a_point_with_a_short_profit_loss_array(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "pnl_history.jsonl"
+    # a degraded Alpaca response one entry short on profit_loss must not drop
+    # the trailing (most recent) timestamp/equity point -- it should keep the
+    # point with profit_loss recorded as null, not lose it outright.
+    snap = _series_snapshot(
+        generated_at="2026-07-28T13:00:00+00:00",
+        equity=100_000.0,
+        last_equity=100_000.0,
+        timestamps=[_epoch("2026-07-26"), _epoch("2026-07-27")],
+        equities=[99_500.0, 100_000.0],
+        profit_losses=[-500.0],
+    )
+
+    pnl.update_history_series(snap, path)
+
+    rows = {r["date"]: r for r in _read_series(path)}
+    assert rows["2026-07-27"]["equity"] == 100_000.0
+    assert rows["2026-07-27"]["profit_loss"] is None
+
+
+def test_update_history_series_writes_atomically_with_no_leftover_tmp_file(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "pnl_history.jsonl"
+    snap = _series_snapshot(
+        generated_at="2026-07-28T13:00:00+00:00",
+        equity=100_000.0,
+        last_equity=100_000.0,
+        timestamps=[],
+        equities=[],
+        profit_losses=[],
+    )
+
+    pnl.update_history_series(snap, path)
+
+    assert path.exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_update_history_series_uses_config_path_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(config, "PNL_HISTORY_PATH", tmp_path / "pnl_history.jsonl")
+    snap = _series_snapshot(
+        generated_at="2026-07-28T13:00:00+00:00",
+        equity=100_000.0,
+        last_equity=100_000.0,
+        timestamps=[],
+        equities=[],
+        profit_losses=[],
+    )
+
+    pnl.update_history_series(snap)
+
+    assert (tmp_path / "pnl_history.jsonl").exists()

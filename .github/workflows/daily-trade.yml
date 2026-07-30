@@ -143,6 +143,47 @@ jobs:
       # docstring), independent of whether "Run bot" above succeeded,
       # placed any orders, or ran in screen-only mode -- the account and
       # its positions exist regardless.
+      # Durable P&L history bridge (M17, DESIGN_DASHBOARDS.md 2.1). pnl.py's
+      # update_history_series() is a read-modify-write upsert against a local
+      # pnl_history.jsonl -- but the GitHub Actions runner is ephemeral, so
+      # unless the prior series is restored *before* pnl.py runs, every run
+      # starts from an empty file and re-seeds only Alpaca's rolling ~1-month
+      # window, losing the older days the durable file exists to preserve.
+      # This step restores it from GCS; the upload step below writes it back.
+      # A missing object is the expected first-run case (pnl.py then seeds
+      # from Alpaca's history array) and is tolerated -- but any OTHER
+      # failure (a transient network blip, an IAM regression, a wrong
+      # bucket path) must abort the job loudly instead. Silently treating
+      # every failure as "first run" would let pnl.py reseed only the ~30-day
+      # rolling window, and the always-run upload step below would then
+      # permanently overwrite the durable GCS history with that truncated
+      # file -- with the job showing green and nothing paging anyone. NOTE:
+      # GCP_PNL_WRITER_KEY's service account must have read
+      # (storage.objects.get) on the bucket, not only create/write, for this
+      # download to work -- confirm its role includes objectViewer/
+      # objectAdmin, not objectCreator-only.
+      - name: Download prior P&L history from GCS
+        id: download-pnl-history
+        if: always()
+        env:
+          GCP_PNL_WRITER_KEY: ${{ secrets.GCP_PNL_WRITER_KEY }}
+        run: |
+          key_file="$(mktemp)"
+          printf '%s' "$GCP_PNL_WRITER_KEY" > "$key_file"
+          gcloud auth activate-service-account --key-file="$key_file"
+          if output=$(gcloud storage cp gs://munger-503515-data/pnl_history.jsonl pnl_history.jsonl 2>&1); then
+            echo "Restored pnl_history.jsonl from GCS ($(wc -l < pnl_history.jsonl) rows)."
+          elif echo "$output" | grep -q "matched no objects"; then
+            echo "No existing pnl_history.jsonl in GCS (first run) -- pnl.py will seed it from Alpaca history."
+          else
+            echo "$output" >&2
+            echo "real_failure=true" >> "$GITHUB_OUTPUT"
+            rm -f "$key_file"
+            echo "::error::gcloud storage cp failed for a reason other than 'object not found' -- marking this run's local pnl_history.jsonl unusable so the upload step below skips it rather than overwriting the durable GCS history with a truncated reseed." >&2
+            exit 1
+          fi
+          rm -f "$key_file"
+
       - name: Generate P&L snapshot
         if: always()
         env:
@@ -150,7 +191,7 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
         run: python pnl.py
 
-      - name: Upload P&L snapshot to GCS
+      - name: Upload P&L snapshot and history to GCS
         if: always()
         env:
           # Passed as an env var, not templated directly into the shell
@@ -160,12 +201,23 @@ jobs:
           # issues. Matches how ALPACA_API_KEY is already passed above.
           GCP_PNL_WRITER_KEY: ${{ secrets.GCP_PNL_WRITER_KEY }}
         run: |
-          if [ ! -f pnl.json ]; then
-            echo "No pnl.json produced this run (see 'Generate P&L snapshot' step) -- skipping upload."
+          if [ ! -f pnl.json ] && [ ! -f pnl_history.jsonl ]; then
+            echo "No pnl.json or pnl_history.jsonl produced this run (see 'Generate P&L snapshot') -- skipping upload."
             exit 0
           fi
           key_file="$(mktemp)"
           printf '%s' "$GCP_PNL_WRITER_KEY" > "$key_file"
           gcloud auth activate-service-account --key-file="$key_file"
-          gcloud storage cp pnl.json gs://munger-503515-data/pnl.json
+          if [ -f pnl.json ]; then
+            gcloud storage cp pnl.json gs://munger-503515-data/pnl.json
+          fi
+          # The durable append-series -- upload after the upsert so the next
+          # run (and the k3s/prod bridges) see today's row. Skipped if the
+          # download step above hit a real (non-"not found") failure: pnl.py
+          # would then have reseeded only Alpaca's ~30-day rolling window
+          # locally, and uploading that now would permanently overwrite the
+          # durable GCS history with a truncated file.
+          if [ -f pnl_history.jsonl ] && [ "${{ steps.download-pnl-history.outputs.real_failure }}" != "true" ]; then
+            gcloud storage cp pnl_history.jsonl gs://munger-503515-data/pnl_history.jsonl
+          fi
           rm -f "$key_file"

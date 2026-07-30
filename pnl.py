@@ -117,17 +117,123 @@ def generate_snapshot() -> dict[str, object]:
     }
 
 
-def write_snapshot(path: Path | None = None) -> None:
-    """Fetch a snapshot and write it atomically (temp file + rename).
+def write_snapshot(
+    path: Path | None = None, snapshot: dict[str, object] | None = None
+) -> None:
+    """Write a snapshot atomically (temp file + rename).
 
     Matches this codebase's existing atomic-write pattern (StateTracker.
     save, screener._write_csv_atomically) -- a crash mid-write must never
     leave a torn/partial file for report.py or a GCS upload step to read.
+
+    Fetches a fresh snapshot if one isn't supplied; __main__ passes the
+    snapshot it already fetched so the append-series (update_history_series)
+    and the JSON snapshot come from the *same* Alpaca read, not two.
     """
     target = path if path is not None else config.PNL_DATA_PATH
-    snapshot = generate_snapshot()
+    if snapshot is None:
+        snapshot = generate_snapshot()
     tmp_path = target.with_suffix(target.suffix + ".tmp")
     tmp_path.write_text(json.dumps(snapshot, indent=2))
+    tmp_path.replace(target)
+
+
+def _snapshot_date(generated_at: str) -> str:
+    """ISO date (UTC) a snapshot belongs to, from its generated_at string.
+
+    A generated_at with no offset is treated as UTC rather than assumed
+    local -- the same "a naive timestamp is not silently reinterpreted"
+    care report.py's _pnl_staleness_note learned the hard way (M16).
+    """
+    dt = datetime.datetime.fromisoformat(generated_at)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.UTC)
+    return dt.astimezone(datetime.UTC).date().isoformat()
+
+
+def _series_rows_from_snapshot(snapshot: dict[str, object]) -> dict[str, dict[str, object]]:
+    """Per-day {date, equity, profit_loss, mode} rows derived from a snapshot.
+
+    Past days come from Alpaca's portfolio history (end-of-day, authoritative);
+    today is overlaid from the account snapshot (the freshest value, which
+    overwrites history's partial same-day point). Keyed by ISO date so the
+    caller can upsert idempotently. Days Alpaca reports with no data (None
+    timestamp or equity) are skipped, not fabricated as a zero point.
+    """
+    mode = snapshot.get("mode")
+    rows: dict[str, dict[str, object]] = {}
+
+    history = snapshot.get("history") or {}
+    assert isinstance(history, dict)
+    timestamps = history.get("timestamp") or []
+    equities = history.get("equity") or []
+    profit_losses = history.get("profit_loss") or []
+    # Indexed, not zip(strict=False): if Alpaca returns parallel arrays of
+    # unequal length (a degraded response), zip's truncation would silently
+    # drop the *trailing* (most recent) timestamp/equity points whenever
+    # profit_loss is the short array, rather than keeping them with a null
+    # profit_loss -- this is a display/history path, not a trade, so a
+    # missing profit_loss shouldn't cost the whole day's point.
+    n = max(len(timestamps), len(equities), len(profit_losses))
+    for i in range(n):
+        ts = timestamps[i] if i < len(timestamps) else None
+        equity = equities[i] if i < len(equities) else None
+        profit_loss = profit_losses[i] if i < len(profit_losses) else None
+        if ts is None or equity is None:
+            continue
+        date = datetime.datetime.fromtimestamp(ts, datetime.UTC).date().isoformat()
+        rows[date] = {"date": date, "equity": equity, "profit_loss": profit_loss, "mode": mode}
+
+    account = snapshot.get("account") or {}
+    assert isinstance(account, dict)
+    equity = account.get("equity")
+    generated_at = snapshot.get("generated_at")
+    if equity is not None and isinstance(generated_at, str):
+        today = _snapshot_date(generated_at)
+        last_equity = account.get("last_equity")
+        profit_loss = None if last_equity is None else equity - last_equity
+        rows[today] = {"date": today, "equity": equity, "profit_loss": profit_loss, "mode": mode}
+
+    return rows
+
+
+def update_history_series(
+    snapshot: dict[str, object], path: Path | None = None
+) -> None:
+    """Upsert a snapshot's daily points into the durable append-series file.
+
+    Read-modify-write (GCS objects can't be appended in place; the file is
+    tiny -- one row/day). Idempotent by date: re-running a day overwrites its
+    row, never appends a duplicate. Seeds the past from the snapshot's Alpaca
+    history on first run, and -- the whole reason this file exists --
+    *preserves* days already recorded that have since scrolled out of Alpaca's
+    rolling history window. Atomic write (temp + rename), like write_snapshot.
+    See DESIGN_DASHBOARDS.md 2.1.
+    """
+    target = path if path is not None else config.PNL_HISTORY_PATH
+
+    existing: dict[str, dict[str, object]] = {}
+    if target.exists():
+        for line in target.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            existing[row["date"]] = row
+
+    # mode is not refreshed on an already-recorded date: it records which
+    # regime (paper/live) was actually in effect *that day*, so once
+    # config.PAPER_TRADING ever flips, a later run must not relabel prior
+    # paper-mode history as live just because the account's *current* mode
+    # changed. Only a genuinely new date takes its mode from this snapshot.
+    for date, row in _series_rows_from_snapshot(snapshot).items():
+        if date in existing:
+            row["mode"] = existing[date]["mode"]
+        existing[date] = row
+    ordered = [existing[date] for date in sorted(existing)]
+
+    tmp_path = target.with_suffix(target.suffix + ".tmp")
+    tmp_path.write_text("".join(json.dumps(row) + "\n" for row in ordered))
     tmp_path.replace(target)
 
 
@@ -145,5 +251,13 @@ if __name__ == "__main__":
     # rotated key, a changed SDK response shape, a GCS outage) fails
     # silently and gramunger.com just shows an increasingly stale
     # snapshot with nothing paging anyone.
-    write_snapshot()
-    logger.info("P&L snapshot written to %s", config.PNL_DATA_PATH)
+    # One Alpaca read feeds both the current-snapshot JSON and the durable
+    # append-series, so the two can never disagree about the same run.
+    snapshot = generate_snapshot()
+    write_snapshot(snapshot=snapshot)
+    update_history_series(snapshot)
+    logger.info(
+        "P&L snapshot written to %s; history series updated at %s",
+        config.PNL_DATA_PATH,
+        config.PNL_HISTORY_PATH,
+    )
