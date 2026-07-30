@@ -15,18 +15,19 @@ question (§7.5), and the user's visual confirmation of a real hit.**
 **Review gates ran retroactively 2026-07-30** (this milestone shipped to prod
 before either gate ran — a process gap, not a repeat pattern; see TASKS.md's
 M18 "Design doc" row). staff-engineer-reviewer's must-fix findings were all
-on the infra side this doc under-specified, not the in-repo code: (1) the
-`count.` DNS-only A record to a home IP with no DDNS/monitoring and no
-segmentation from the rest of the Unraid media-stack (recommends Cloudflare
-Tunnel over port-forwarding); (2) **`caddy reload` no-ops on this box with no
-automated restart wired to cert renewal — the highest-severity finding, since
-a stale wildcard cert would break every `*.gramunger.com` subdomain at once,
-not just this one.** pm-reviewer confirmed §7.3 (Search Console) and §7.5
-(disclaimer) are still genuinely open and were untracked until this pass; all
-five findings now have their own TASKS.md rows under M18 (added 2026-07-30).
-Blast radius of the DNS/infra findings is contained to the analytics side —
-robots.txt/sitemap.xml only ever reference `SITE_BASE_URL`/`gramunger.com`,
-never the analytics host, confirmed by both reviewers.
+on the home-network infra side this doc under-specified, not the in-repo
+code — per user decision (2026-07-30), home-infra hardening (DNS exposure,
+cert-renewal automation, container segmentation) is tracked and fixed in a
+separate `workspace/home-network` project, not here. This project's own
+follow-up is limited to noticing and alerting if the analytics endpoint goes
+unreachable (`heartbeat.yml`), not fixing the underlying infra. pm-reviewer
+separately confirmed §7.3 (Search Console) and §7.5 (disclaimer) are still
+genuinely open decisions — those two do stay tracked in this repo's
+TASKS.md, since they're content/SEO questions about this site, not home
+infra. Blast radius of the analytics-host findings is contained to the
+analytics side regardless — robots.txt/sitemap.xml only ever reference
+`SITE_BASE_URL`/`gramunger.com`, never the analytics host, confirmed by both
+reviewers.
 
 _Origin: user request "design website metrics gathering for example number of
 visitors, add robots.txt and general seo." Metrics tooling decided in the same

@@ -93,3 +93,38 @@ jobs:
             echo "::error::daily-trade.yml has not executed in $age_days days (expected ~daily cadence + buffer) -- the schedule may be disabled, failing to trigger, or the repo may have hit GitHub's 60-day scheduled-workflow auto-disable."
             exit 1
           fi
+
+      - name: Check analytics endpoint reachability
+        # M18's self-hosted GoatCounter (config.ANALYTICS_URL) lives on the
+        # user's home network, not this project's infra -- home-network
+        # hardening (DNS exposure, cert-renewal automation, container
+        # segmentation) is deliberately tracked and fixed in a separate
+        # `workspace/home-network` project, per user decision (2026-07-30),
+        # not here. munger's own scope stops at *noticing and alerting*
+        # through the same GH-failure-email channel as every other check in
+        # this workflow -- it does not attempt any home-infra fix itself.
+        # Gated on the MUNGER_ANALYTICS_URL repo variable (empty/unset ->
+        # skip cleanly), matching the config-gated pattern used everywhere
+        # else (GRAFANA_BASE_URL, SITE_BASE_URL). A 3xx (e.g. GoatCounter's
+        # own "please log in" redirect) is a healthy response -- curl -f
+        # only flags a connection failure or a >=400 status.
+        if: always()
+        env:
+          MUNGER_ANALYTICS_URL: ${{ vars.MUNGER_ANALYTICS_URL }}
+        run: |
+          set -e
+          if [ -z "$MUNGER_ANALYTICS_URL" ]; then
+            echo "MUNGER_ANALYTICS_URL not set -- analytics not configured, nothing to check."
+            exit 0
+          fi
+          origin=$(python3 -c "
+          import os, urllib.parse
+          p = urllib.parse.urlsplit(os.environ['MUNGER_ANALYTICS_URL'])
+          print(f'{p.scheme}://{p.netloc}/')
+          ")
+          echo "Checking $origin"
+          if ! curl -fsS --max-time 10 "$origin" -o /dev/null; then
+            echo "::error::Analytics endpoint ($origin) is unreachable. This is a notification only -- the fix belongs in the workspace/home-network project, not here."
+            exit 1
+          fi
+          echo "Analytics endpoint reachable."
