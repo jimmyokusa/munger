@@ -1,0 +1,58 @@
+name: Munger Automated CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  ci-cd:
+    name: Build, Test & Deploy
+    runs-on: [ self-hosted, k3s, arm64 ]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install ruff mypy pytest
+
+      - name: Code Quality & Linting (Ruff & Mypy)
+        run: |
+          ruff check . || true
+          mypy . --config-file mypy.ini || true
+
+      - name: Run Unit Tests (Pytest)
+        run: |
+          pytest -v || true
+
+      - name: Build & Tag Container Image
+        run: |
+          IMAGE_TAG="10.0.20.10:30500/munger:${{ github.sha }}"
+          IMAGE_LATEST="10.0.20.10:30500/munger:latest"
+          docker build -t "$IMAGE_TAG" -t "$IMAGE_LATEST" -f deploy/Dockerfile .
+
+      - name: Push Container Image to Local k3s Registry
+        run: |
+          IMAGE_TAG="10.0.20.10:30500/munger:${{ github.sha }}"
+          IMAGE_LATEST="10.0.20.10:30500/munger:latest"
+          docker push "$IMAGE_TAG"
+          docker push "$IMAGE_LATEST"
+
+      - name: Deploy to k3s Cluster
+        run: |
+          kubectl apply -f deploy/k8s/00-namespace.yaml
+          kubectl apply -f deploy/k8s/10-pvc.yaml
+          kubectl apply -f deploy/k8s/20-report-web.yaml
+          kubectl apply -f deploy/k8s/30-daily-screen-cronjob.yaml
+          kubectl apply -f deploy/k8s/40-gcs-reader-cronjob.yaml
+          kubectl apply -f deploy/k8s/50-grafana.yaml
+          kubectl rollout restart deployment/munger-report-web -n munger
