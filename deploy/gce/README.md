@@ -13,11 +13,20 @@ VM (Docker preinstalled, no compose plugin dependency, minimal attack
 surface):
 
 - **`caddy`** — the only container with published ports (80/443). Terminates
-  TLS for `grafana.gramunger.com` (automatic Let's Encrypt via HTTP-01),
+  TLS for `34-82-149-71.sslip.io` (automatic Let's Encrypt via HTTP-01),
   reverse-proxies to `grafana:3000`, and injects a `Content-Security-Policy:
   frame-ancestors https://gramunger.com` header (replacing whatever Grafana's
   own embedding setting would otherwise omit) so only `gramunger.com` can
   iframe it — not the open internet.
+  **Public hostname is `sslip.io`, not `grafana.gramunger.com`:** new
+  subdomains on the `gramunger.com` Cloudflare zone don't publish
+  (authoritative NXDOMAIN despite the API/dashboard accepting the record —
+  the same issue that blocked `stats.`/`analytics.`; root cause is
+  account/edge-side and unresolved). `34-82-149-71.sslip.io` resolves to the
+  VM's static IP `34.82.149.71` with zero DNS config, sidestepping Cloudflare
+  while still getting a real LE cert. The report iframes
+  `https://34-82-149-71.sslip.io/d/munger-account-pnl?kiosk`
+  (`MUNGER_GRAFANA_URL` on the Cloud Run `daily-screen` Job).
 - **`grafana`** — anonymous Viewer-only (mirrors `deploy/k8s/50-grafana.yaml`
   exactly: no login form, no sign-up, Explore disabled, embedding allowed).
   Not published to the host; only reachable through `caddy` over the internal
@@ -53,7 +62,7 @@ file, fetched at boot via the metadata server. To rebuild from scratch:
 
 ```bash
 gcloud compute instances create munger-grafana \
-  --project=munger-503515 --zone=us-central1-a \
+  --project=munger-503515 --zone=us-west1-b \
   --machine-type=e2-micro \
   --image-family=cos-stable --image-project=cos-cloud \
   --boot-disk-type=pd-standard --boot-disk-size=20GB \
@@ -66,19 +75,21 @@ gcloud compute instances create munger-grafana \
 
 To pick up an edit to any of these files on an already-running VM without a
 full rebuild: `gcloud compute instances add-metadata munger-grafana
---zone=us-central1-a --metadata-from-file=<key>=<file>`, then re-run
+--zone=us-west1-b --metadata-from-file=<key>=<file>`, then re-run
 `bootstrap.sh` on the VM (`sudo google_metadata_script_runner startup`) or
 just reboot it.
 
-Then point `grafana.gramunger.com`'s DNS A record at the reserved static IP
-(`gcloud compute addresses describe munger-grafana-ip --region=us-central1
---format='value(address)'`) if not already pointed there — Caddy will pick
-up the TLS cert automatically on its next retry once DNS resolves; no
-restart needed. Rebuild total time: VM boot + Docker pulls, a few minutes.
+No DNS step is needed: the public hostname is `34-82-149-71.sslip.io`, which
+derives from the reserved static IP (`gcloud compute addresses describe
+munger-grafana-ip --region=us-west1 --format='value(address)'`) and resolves
+without any record. Caddy issues/renews the LE cert automatically. If the
+static IP ever changes, the sslip.io hostname changes with it — update the
+`Caddyfile` site address and `MUNGER_GRAFANA_URL` accordingly. Rebuild total
+time: VM boot + Docker pulls, a few minutes.
 
 ## Free-tier conditions (TASKS.md row 510)
 
-- Region `us-central1` (free-tier-eligible), `e2-micro` (the only Compute
+- Region `us-west1` (free-tier-eligible), `e2-micro` (the only Compute
   Engine instance anywhere on this billing account — confirmed 2026-07-30).
 - Boot disk is `pd-standard` (not SSD), 20 GB — within the 30 GB-month
   Always Free allowance.

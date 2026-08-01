@@ -1,4 +1,11 @@
-grafana.gramunger.com {
+# Public hostname is sslip.io (resolves 34-82-149-71.sslip.io -> 34.82.149.71
+# with zero DNS config) rather than grafana.gramunger.com: new subdomains on
+# the gramunger.com Cloudflare zone don't publish (authoritative NXDOMAIN
+# despite the API/dashboard accepting them -- same issue that hit
+# stats./analytics.). sslip.io sidesteps Cloudflare entirely; Caddy still gets
+# a real Let's Encrypt cert for it via HTTP-01, and the CSP below still scopes
+# who may iframe the dashboards to gramunger.com.
+34-82-149-71.sslip.io {
 	reverse_proxy grafana:3000
 
 	# Grafana's own GF_SECURITY_ALLOW_EMBEDDING=true just omits

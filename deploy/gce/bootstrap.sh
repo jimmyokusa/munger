@@ -61,9 +61,11 @@ docker run -d --name grafana --restart=always \
   grafana/grafana:11.3.0
 
 # caddy: the only container with published ports. Automatic HTTPS
-# (Let's Encrypt HTTP-01) for grafana.gramunger.com once DNS resolves to
-# this VM's static IP -- if DNS isn't set yet, Caddy just logs and
-# retries in the background, no crash loop. caddy_data is a named volume
+# (Let's Encrypt HTTP-01) for 34-82-149-71.sslip.io -- the sslip.io hostname
+# resolves to this VM's static IP with no DNS record, so the cert issues on
+# first boot (see Caddyfile for why sslip.io and not grafana.gramunger.com).
+# If issuance can't complete yet, Caddy logs and retries in the background,
+# no crash loop. caddy_data is a named volume
 # (not the ephemeral container filesystem) so the issued cert survives a
 # `docker rm -f`/restart, not just a process restart.
 docker volume inspect caddy_data >/dev/null 2>&1 || docker volume create caddy_data
