@@ -1,0 +1,89 @@
+{
+  "uid": "munger-account-pnl",
+  "title": "Account P&L over time",
+  "tags": ["munger"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "",
+  "time": {"from": "now-1y", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Account equity over time",
+      "description": "Daily account equity from the durable pnl_history series.",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity-munger"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "auto", "spanNulls": true}
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {"mode": "single", "sort": "none"},
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity-munger"},
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "url": "http://json-server/pnl_history.json",
+          "url_options": {"method": "GET", "data": ""},
+          "root_selector": "",
+          "columns": [
+            {"selector": "date", "text": "Date", "type": "timestamp"},
+            {"selector": "equity", "text": "Equity", "type": "number"}
+          ],
+          "filters": []
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Daily profit / loss",
+      "description": "Daily profit_loss from the durable pnl_history series.",
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 10},
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity-munger"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {"drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "spanNulls": false},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0}]},
+          "color": {"mode": "thresholds"}
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {"mode": "single", "sort": "none"},
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity-munger"},
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "url": "http://json-server/pnl_history.json",
+          "url_options": {"method": "GET", "data": ""},
+          "root_selector": "",
+          "columns": [
+            {"selector": "date", "text": "Date", "type": "timestamp"},
+            {"selector": "profit_loss", "text": "Profit / loss", "type": "number"}
+          ],
+          "filters": []
+        }
+      ]
+    }
+  ]
+}

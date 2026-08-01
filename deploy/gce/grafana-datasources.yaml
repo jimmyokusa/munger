@@ -1,0 +1,13 @@
+# Identical to deploy/k8s/50-grafana.yaml's datasource ConfigMap -- same
+# Infinity datasource, just reachable at a different internal DNS name
+# (json-server, a Docker container name, instead of a k8s Service).
+apiVersion: 1
+datasources:
+  - name: Munger P&L (Infinity)
+    uid: infinity-munger
+    type: yesoreyeram-infinity-datasource
+    access: proxy
+    isDefault: true
+    editable: false
+    jsonData:
+      global_queries: []

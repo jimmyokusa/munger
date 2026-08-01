@@ -1,0 +1,13 @@
+grafana.gramunger.com {
+	reverse_proxy grafana:3000
+
+	# Grafana's own GF_SECURITY_ALLOW_EMBEDDING=true just omits
+	# X-Frame-Options entirely (permissive to any origin) -- this header
+	# is the thing that actually scopes embedding to gramunger.com only,
+	# per DESIGN_DASHBOARDS.md 2.4 ("frame-ancestors must permit
+	# https://gramunger.com" -- not "permit everyone").
+	header {
+		-X-Frame-Options
+		Content-Security-Policy "frame-ancestors https://gramunger.com"
+	}
+}

@@ -163,6 +163,12 @@ PNL_DATA_PATH: Path = DATA_DIR / "pnl.json"
 # Lives in the same GCS bucket as pnl.json; read (never written) by the report
 # deployment. See DESIGN_DASHBOARDS.md 2.1.
 PNL_HISTORY_PATH: Path = DATA_DIR / "pnl_history.jsonl"
+# The GCS bucket pnl.py (GitHub Actions) writes pnl.json/pnl_history.jsonl
+# into. Read by gcs_bridge.py (k3s's read-only GCS->PVC CronJob, M17
+# DESIGN_DASHBOARDS.md 2.3) -- deliberately a plain constant, not env-gated,
+# since it names a specific real bucket rather than toggling a deployment
+# behavior.
+PNL_GCS_BUCKET = "munger-503515-data"
 # pm-reviewer finding: without a defined threshold, an old snapshot (the
 # GCS bridge silently broke, or daily-trade.yml stopped firing) just
 # looks like a normal snapshot to a viewer -- report.py flags pnl.html as

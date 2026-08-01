@@ -3,4 +3,5 @@ pandas~=2.3.3
 numpy~=2.4.6
 lxml~=6.1.1
 alpaca-py~=0.43.5
+google-cloud-storage~=3.13.0
 pytest~=8.4.2

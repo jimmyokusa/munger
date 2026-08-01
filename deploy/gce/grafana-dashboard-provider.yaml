@@ -1,0 +1,12 @@
+# Identical to deploy/k8s/50-grafana.yaml's dashboard-provider ConfigMap.
+apiVersion: 1
+providers:
+  - name: munger
+    orgId: 1
+    type: file
+    disableDeletion: true
+    editable: false
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

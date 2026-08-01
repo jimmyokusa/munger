@@ -34,7 +34,7 @@ data:
     datasources:
       - name: Munger P&L (Infinity)
         uid: infinity-munger
-        type: yesoreyeric-infinity-datasource
+        type: yesoreyeram-infinity-datasource
         access: proxy
         isDefault: true
         editable: false
@@ -97,7 +97,7 @@ data:
           "title": "Account equity over time",
           "description": "Daily account equity from the durable pnl_history series.",
           "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
-          "datasource": {"type": "yesoreyeric-infinity-datasource", "uid": "infinity-munger"},
+          "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity-munger"},
           "fieldConfig": {
             "defaults": {
               "unit": "currencyUSD",
@@ -112,7 +112,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "datasource": {"type": "yesoreyeric-infinity-datasource", "uid": "infinity-munger"},
+              "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity-munger"},
               "type": "json",
               "source": "url",
               "format": "table",
@@ -133,7 +133,7 @@ data:
           "title": "Daily profit / loss",
           "description": "Daily profit_loss from the durable pnl_history series.",
           "gridPos": {"h": 9, "w": 24, "x": 0, "y": 10},
-          "datasource": {"type": "yesoreyeric-infinity-datasource", "uid": "infinity-munger"},
+          "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity-munger"},
           "fieldConfig": {
             "defaults": {
               "unit": "currencyUSD",
@@ -150,7 +150,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "datasource": {"type": "yesoreyeric-infinity-datasource", "uid": "infinity-munger"},
+              "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity-munger"},
               "type": "json",
               "source": "url",
               "format": "table",
@@ -211,7 +211,7 @@ spec:
             - containerPort: 3000
           env:
             - name: GF_INSTALL_PLUGINS
-              value: "yesoreyeric-infinity-datasource"
+              value: "yesoreyeram-infinity-datasource"
             - name: GF_AUTH_ANONYMOUS_ENABLED
               value: "true"
             - name: GF_AUTH_ANONYMOUS_ORG_ROLE
