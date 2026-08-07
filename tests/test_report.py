@@ -377,7 +377,9 @@ def test_render_export_controls_escapes_script_closing_tag() -> None:
     # strings failing against the first draft): a reason string containing
     # "</script>" would close the embedded <script type="application/json">
     # early, letting arbitrary markup after it render as real HTML.
-    rows = [{"symbol": "AAPL", "reason": "</script><script>alert(1)</script>"}]
+    rows: list[dict[str, object]] = [
+        {"symbol": "AAPL", "reason": "</script><script>alert(1)</script>"}
+    ]
 
     html_out = report._render_export_controls(rows)
 

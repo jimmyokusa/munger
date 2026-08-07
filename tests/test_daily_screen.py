@@ -96,11 +96,12 @@ def test_run_skips_archive_when_fetch_quality_is_too_low(
         import pandas as pd
 
         # 3 of 4 failed to fetch -> fraction 0.25, well under the 0.90 floor.
+        fetch_failed = "data_missing:fetch_failed"
         return pd.DataFrame(
             [
-                {"symbol": "AAPL", "buyable": False, "score": 0.0, "fail_reasons": "data_missing:fetch_failed"},
-                {"symbol": "MSFT", "buyable": False, "score": 0.0, "fail_reasons": "data_missing:fetch_failed"},
-                {"symbol": "GOOG", "buyable": False, "score": 0.0, "fail_reasons": "data_missing:fetch_failed"},
+                {"symbol": "AAPL", "buyable": False, "score": 0.0, "fail_reasons": fetch_failed},
+                {"symbol": "MSFT", "buyable": False, "score": 0.0, "fail_reasons": fetch_failed},
+                {"symbol": "GOOG", "buyable": False, "score": 0.0, "fail_reasons": fetch_failed},
                 {"symbol": "AMZN", "buyable": True, "score": 80.0, "fail_reasons": ""},
             ]
         )

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from google.api_core.exceptions import NotFound
+from google.cloud import storage
 
 import config
 import gcs_bridge
@@ -26,7 +27,12 @@ def _fake_blob(*, content: bytes | None = None, missing: bool = False) -> MagicM
 
     def _download(path: str) -> None:
         if missing:
-            raise NotFound("no such object")
+            # google-api-core ships py.typed, but GoogleAPICallError.__init__
+            # itself is untyped -- a real gap in the third-party library, not
+            # ours to fix; ignore_missing_imports doesn't cover it since the
+            # import resolves fine (unlike google-cloud-storage, which has no
+            # py.typed at all).
+            raise NotFound("no such object")  # type: ignore[no-untyped-call]
         Path(path).write_bytes(content or b"")
 
     blob.download_to_filename.side_effect = _download
@@ -38,7 +44,10 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, blobs: dict[str, MagicMock]) 
     bucket.blob.side_effect = lambda name: blobs[name]
     client = MagicMock()
     client.bucket.return_value = bucket
-    monkeypatch.setattr(gcs_bridge.storage, "Client", lambda: client)
+    # Patches the same cached google.cloud.storage module object gcs_bridge.py
+    # imported -- not gcs_bridge.storage, which trips mypy's no_implicit_reexport
+    # (gcs_bridge.py never re-exports `storage` as part of its own API).
+    monkeypatch.setattr(storage, "Client", lambda: client)
 
 
 def test_bridge_downloads_both_files_and_publishes_json_array(
