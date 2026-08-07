@@ -69,4 +69,9 @@ jobs:
         run: .venv/bin/mypy . --config-file mypy.ini
 
       - name: Pytest
-        run: .venv/bin/pytest -v
+        # `.venv/bin/pytest` (the console-script entry point) doesn't add the
+        # repo root to sys.path the way `-m pytest` does, and there's no
+        # conftest.py/pytest.ini establishing that -- so top-level imports
+        # (`import config`, `import bot`, etc.) failed live here. Matches
+        # the invocation deploy/k8s/ci-test-job.yaml already uses.
+        run: .venv/bin/python -m pytest -v
