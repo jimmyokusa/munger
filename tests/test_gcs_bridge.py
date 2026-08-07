@@ -102,6 +102,33 @@ def test_bridge_raises_when_pnl_json_itself_is_missing(
         gcs_bridge.bridge()
 
 
+def test_bridge_leaves_both_history_files_on_last_good_state_if_a_line_is_malformed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_path = config.REPORT_DIR / "pnl_history.jsonl"
+    json_path = config.REPORT_DIR / "pnl_history.json"
+    config.REPORT_DIR.mkdir(parents=True)
+    history_path.write_text('{"date": "2026-07-28", "equity": 100000.0}\n')
+    json_path.write_text('[{"date": "2026-07-28", "equity": 100000.0}]')
+
+    _patch_client(
+        monkeypatch,
+        {
+            "pnl.json": _fake_blob(content=b"{}"),
+            "pnl_history.jsonl": _fake_blob(content=b"not valid json\n"),
+        },
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        gcs_bridge.bridge()
+
+    # Neither file was swapped to the bad download -- both still hold
+    # yesterday's last-good content, not a mismatched jsonl/json pair.
+    assert history_path.read_text() == '{"date": "2026-07-28", "equity": 100000.0}\n'
+    assert json_path.read_text() == '[{"date": "2026-07-28", "equity": 100000.0}]'
+    assert list(config.REPORT_DIR.glob("*.tmp")) == []
+
+
 def test_bridge_writes_atomically_with_no_leftover_tmp_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
