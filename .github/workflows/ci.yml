@@ -19,6 +19,13 @@ jobs:
   ci:
     name: Lint, typecheck, and test
     runs-on: [ self-hosted, k3s, arm64 ]
+    # This runs on the single self-hosted pod (actions-runner/munger-ci-runner,
+    # pinned to pi4) -- a hung step would otherwise tie up the only runner for
+    # up to GitHub's 360-minute default, silently stopping CI for every push
+    # after it. Matches the order of magnitude of the sibling trading
+    # workflows' own guards (daily-screen.yml: 30, daily-trade.yml: 45),
+    # scaled down since this job does far less.
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -32,16 +39,28 @@ jobs:
         # add PPA: '~deadsnakes/ubuntu/ppa'"). uv sidesteps apt/PPA
         # entirely: it fetches a standalone prebuilt CPython 3.11 for
         # linux-aarch64 directly (confirmed working live via `kubectl exec`
-        # into the runner pod before wiring this in).
+        # into the runner pod before wiring this in). Pinned to a specific
+        # release (astral's documented pinning mechanism -- a versioned
+        # install-script URL) rather than the unversioned latest, so a
+        # compromised or changed upstream script can't execute unpinned on
+        # every push to main.
         run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
+          curl -LsSf https://astral.sh/uv/0.12.3/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
+        # ruff/mypy are pinned here (matching the dev machine's installed
+        # versions) rather than left open -- an unrelated push landing
+        # between two commits to main shouldn't be able to turn CI red on a
+        # new tool release finding something new; that's indistinguishable
+        # in the UI from an actual regression and defeats this workflow's
+        # whole point. pytest's version already comes from requirements.txt
+        # (pytest~=8.4.2) -- not re-specified here to avoid two sources of
+        # truth for the same pin.
         run: |
           uv venv --python 3.11 .venv
           uv pip install --python .venv/bin/python -r requirements.txt
-          uv pip install --python .venv/bin/python ruff mypy pytest
+          uv pip install --python .venv/bin/python ruff==0.15.22 mypy==2.3.0
 
       - name: Ruff
         run: .venv/bin/ruff check .
