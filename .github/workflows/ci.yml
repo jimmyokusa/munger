@@ -1,0 +1,52 @@
+name: Munger CI
+
+# CI only -- no build/push/deploy. The self-hosted runner
+# (actions-runner/munger-ci-runner, a bare pod on pi4) has no Docker daemon
+# reachable, and no node in the cluster has Docker installed at all (image
+# builds have always run on the dev machine, via deploy/build-and-deploy.sh);
+# giving the runner that capability is a real infra decision -- see
+# DESIGN_CD_PIPELINE.md (still draft, not decided) -- not something this
+# workflow should quietly assume. This is the honest, currently-achievable
+# slice: run the real (non-neutered) quality gates on every push to main, so
+# a broken commit is visible here instead of only caught by a human looking
+# at the deployed site. Deploys stay manual (build-and-deploy.sh) until that
+# design lands.
+on:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  ci:
+    name: Lint, typecheck, and test
+    runs-on: [ self-hosted, k3s, arm64 ]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Python 3.11
+        # actions/setup-python has no prebuilt arm64 3.11 binary for this
+        # runner's Ubuntu 20.04 base (confirmed live -- that's why the
+        # previous version of this workflow never got past this step).
+        # deadsnakes is the standard workaround for focal.
+        run: |
+          apt-get update -y
+          apt-get install -y software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update -y
+          apt-get install -y python3.11 python3.11-venv
+
+      - name: Install dependencies
+        run: |
+          python3.11 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install ruff mypy pytest
+
+      - name: Ruff
+        run: .venv/bin/ruff check .
+
+      - name: Mypy
+        run: .venv/bin/mypy . --config-file mypy.ini
+
+      - name: Pytest
+        run: .venv/bin/pytest -v

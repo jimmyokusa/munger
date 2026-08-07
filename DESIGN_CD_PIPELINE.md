@@ -422,3 +422,30 @@ These are decisions this document deliberately does not make:
    personal email rule) is defined anywhere in this repo. Worth deciding
    before this pipeline goes live, since a failed promotion of a public site
    is exactly the kind of failure that shouldn't be discovered by a user.
+
+**2026-08-07 addendum — a concrete new fact for whoever resolves Q3/Q4:**
+a self-hosted GitHub Actions runner already exists (`actions-runner/munger-ci-runner`,
+a bare pod pinned to `pi4`, `myoung34/github-runner:latest`, default
+in-cluster ServiceAccount with no RBAC bindings) — so Q4 ("does a runner get
+installed, who maintains it") is already partially answered: yes, one
+exists, unmaintained/unmonitored beyond existing. More importantly, a
+concrete gap Q3 didn't anticipate: **no node in the k3s cluster has a Docker
+daemon at all**, and the runner pod has no Docker socket mounted (`docker
+info` fails inside it — confirmed live). Every build to date, including
+this pipeline's own manual runs, has happened on a dev machine, not
+in-cluster. This means Q3's "one shared image" tradeoff isn't the only
+open fork — there's a prior question: **how does an in-cluster CI runner
+build an image at all**, given neither a host Docker socket (simplest, but
+grants anything that compromises the runner pod root-equivalent control of
+`pi4` — meaningful given the pod also used to trigger on `pull_request`)
+nor installing Docker on a Pi (new persistent service/patch surface on home
+infra) is free. A daemonless in-cluster builder (kaniko, run as a
+Kubernetes Job) avoids both but needs its own new machinery: RBAC to launch
+the Job, and — for the side-load-into-containerd step this repo's k3s side
+depends on (§1.2 already flags the alternative, pulling from a registry
+instead) — a hostPath mount of the target node's containerd socket into
+whichever Job does the import, which is itself node-scoped privileged
+access, just narrower than a full Docker socket. **2026-08-07 interim
+decision** (see `TASKS.md` row 509): none of the above was granted yet;
+`.github/workflows/ci.yml` runs only lint/typecheck/test on push to `main`,
+no build/push/deploy, until this question gets an actual answer.
