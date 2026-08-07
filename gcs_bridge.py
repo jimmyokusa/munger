@@ -29,7 +29,6 @@ from google.cloud import storage
 
 import config
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -42,7 +41,17 @@ def _download_atomically(blob: storage.Blob, dest: Path) -> None:
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = dest.with_suffix(dest.suffix + ".tmp")
-    blob.download_to_filename(str(tmp_path))
+    try:
+        blob.download_to_filename(str(tmp_path))
+    except BaseException:
+        # download_to_filename opens/truncates the destination *before*
+        # issuing the GET and only self-cleans on DataCorruption -- so a
+        # NotFound (the expected missing-pnl_history first-run case, caught
+        # in bridge()) would otherwise leave a zero-byte .tmp orphaned.
+        # Remove it on any failure so the atomic-write guarantee holds on
+        # the error path too, not just the success path.
+        tmp_path.unlink(missing_ok=True)
+        raise
     tmp_path.replace(dest)
 
 
@@ -79,4 +88,5 @@ def bridge() -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     bridge()
