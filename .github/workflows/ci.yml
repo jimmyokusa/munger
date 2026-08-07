@@ -23,24 +23,25 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Python 3.11
+      - name: Install uv
         # actions/setup-python has no prebuilt arm64 3.11 binary for this
-        # runner's Ubuntu 20.04 base (confirmed live -- that's why the
-        # previous version of this workflow never got past this step).
-        # deadsnakes is the standard workaround for focal.
+        # runner's Ubuntu 20.04 base (confirmed live -- that's why an
+        # earlier version of this workflow never got past this step), and
+        # the deadsnakes-PPA workaround also failed live in CI (its
+        # focal-codename detection breaks inside this container -- "Cannot
+        # add PPA: '~deadsnakes/ubuntu/ppa'"). uv sidesteps apt/PPA
+        # entirely: it fetches a standalone prebuilt CPython 3.11 for
+        # linux-aarch64 directly (confirmed working live via `kubectl exec`
+        # into the runner pod before wiring this in).
         run: |
-          apt-get update -y
-          apt-get install -y software-properties-common
-          add-apt-repository -y ppa:deadsnakes/ppa
-          apt-get update -y
-          apt-get install -y python3.11 python3.11-venv
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: |
-          python3.11 -m venv .venv
-          .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install -r requirements.txt
-          .venv/bin/pip install ruff mypy pytest
+          uv venv --python 3.11 .venv
+          uv pip install --python .venv/bin/python -r requirements.txt
+          uv pip install --python .venv/bin/python ruff mypy pytest
 
       - name: Ruff
         run: .venv/bin/ruff check .
