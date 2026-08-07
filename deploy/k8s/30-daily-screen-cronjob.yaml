@@ -48,6 +48,15 @@ spec:
               env:
                 - name: MUNGER_DATA_DIR
                   value: /data
+                # M17: embeds the durable P&L history dashboard
+                # (deploy/k8s/50-grafana.yaml, NodePort 30030) into
+                # dashboards.html in place of the legacy calendar.html --
+                # report.py forks on this being set (config.GRAFANA_BASE_URL).
+                # Any node's IP works (NodePort exposes on all four); pi4 is
+                # the control-plane node, least likely to be
+                # rebuilt/relabeled.
+                - name: MUNGER_GRAFANA_URL
+                  value: "http://10.0.20.10:30030/d/munger-account-pnl/account-pandl-over-time?kiosk"
               volumeMounts:
                 - name: data
                   mountPath: /data
