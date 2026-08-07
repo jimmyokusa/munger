@@ -116,20 +116,35 @@ gates) argued to cut.
 
 ### 2.4 Prod (`gramunger.com`): e2-micro VM, authenticated pull, no public data
 
-- **Host:** a free-tier GCE `e2-micro` VM (us-central1) running **only Grafana**,
-  provisioned-stateless, at `grafana.gramunger.com` (Cloudflare A-record + free
-  TLS). Cross-origin iframe on `gramunger.com`, so Grafana's
-  `allow_embedding` + `frame-ancestors` must permit `https://gramunger.com`.
+- **Host:** a free-tier GCE `e2-micro` VM running **only Grafana** (behind
+  Caddy) plus a small internal-only json-server and a GCS-pull timer,
+  provisioned-stateless. **As-shipped (2026-08-07, see TASKS.md row 591 —
+  update this doc, not that row, if this changes again): `us-west1-b`, not
+  `us-central1`** as originally planned here (`ZONE_RESOURCE_POOL_EXHAUSTED`
+  on every `us-central1` zone at build time; `us-west1` is still
+  free-tier-eligible, GCP's Always Free e2-micro allowance covers exactly
+  `us-west1`/`us-central1`/`us-east1`). **Hostname is
+  `34-82-149-71.sslip.io`, not `grafana.gramunger.com`**: new subdomains on
+  the `gramunger.com` Cloudflare zone don't publish at all (API/dashboard
+  accepts the record, authoritative NS returns NXDOMAIN — the same
+  account/edge-level defect that already blocked `stats.`/`analytics.` in
+  M18; unresolved, see TASKS.md's dedicated tracking row for it). `sslip.io`
+  resolves to the VM's static IP with zero DNS config and still gets a real
+  Let's Encrypt cert via HTTP-01, sidestepping the zone entirely. Cross-origin
+  iframe on `gramunger.com`, so Grafana's `allow_embedding` + Caddy's
+  `frame-ancestors` header must permit `https://gramunger.com` (confirmed live
+  on the wire, not just in config).
 - **Data access is authenticated, nothing public** (staff-eng security finding):
   the VM pulls `pnl_history.jsonl`/`prices.json` from GCS using its **instance
   service account** (read-only, via GCE metadata — no key file) into local disk;
   Grafana reads local files. The naive "public JSON URL" alternative was wrong —
   `pnl.json` is outside the nginx web root today, and a public bucket would leak
   `state.json`/`journal.db`/archives.
-- **Cost is NOT yet confirmed** (pm 9.B-14): the free e2-micro is
-  one-per-account + region-locked, and the ~1GB/mo egress cap could bill on a
-  public iframe. **Folds into open TASKS row 510** and must be confirmed before
-  the prod phase (§6) ships — not pre-marked "decided."
+- **Cost confirmed (TASKS.md row 510, 2026-07-30):** the account-wide
+  one-e2-micro-free-tier allowance was unused before this VM, and it's the
+  only Compute Engine instance on the account — the ~1GB/mo egress cap is a
+  low-traffic personal dashboard, immaterial in practice (see row 510's
+  `report-web` comparison, ~134MB/mo for a comparably-sized workload).
 
 ---
 
