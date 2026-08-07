@@ -183,7 +183,7 @@ def fetched_fraction(results: pd.DataFrame) -> float:
     if len(results) == 0:
         return 0.0
     fetch_failed = results["fail_reasons"].fillna("").str.contains("fetch_failed")
-    return 1.0 - (fetch_failed.sum() / len(results))
+    return 1.0 - (float(fetch_failed.sum()) / len(results))
 
 
 def run_screen(tickers: list[str]) -> pd.DataFrame:
