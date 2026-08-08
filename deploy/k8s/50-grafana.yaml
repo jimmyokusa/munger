@@ -35,6 +35,26 @@
 # routine maintenance) would have silently broken this dashboard AND the
 # already-shipped account-pnl one, with nothing here having changed.
 # Re-evaluate this pin once upstream ships a fix past v3.11.2.
+#
+# SHARED INSTANCE (discovered live, 2026-08-08). This Grafana Deployment is
+# no longer exclusively munger's: a separate project (home-network Unifi/
+# node-exporter monitoring) has added its own dashboards directly onto this
+# same instance -- ConfigMaps munger-grafana-dashboard-node-exporter,
+# -unifi-gateway, -unifi-sites, -unifi-clients, none of them defined in this
+# repo. The Deployment below REFERENCES those ConfigMaps by name (volume +
+# volumeMount only) purely so that applying this file doesn't drop them --
+# it does not define or own their content, which lives/changes entirely
+# outside this repo. If `kubectl get deployment munger-grafana -o yaml`
+# ever shows volumes not listed here, reconcile this file from that live
+# state before applying, the same way this reconciliation was done -- a
+# blind `kubectl apply` of a stale version of this file silently deletes
+# whatever it doesn't know about. The dashboard-provider's editable/
+# allowUiUpdates below was also found live as `true` (this repo originally
+# shipped `false`, a deliberate lock-down) and is matched here rather than
+# reverted, since it wasn't this repo's change to unmake; anonymous
+# viewers still cannot edit anything regardless (GF_AUTH_ANONYMOUS_ORG_ROLE
+# stays Viewer, GF_USERS_VIEWERS_CAN_EDIT stays false, below), so this is
+# low-risk either way.
 apiVersion: v1
 kind: ConfigMap
 metadata:

@@ -113,6 +113,17 @@ gates) argued to cut.
   ConfigMap YAML/JSON), reading the bridged files via Infinity. Anonymous access
   **locked down** (9.B-8): viewer-only org, Explore disabled, only the intended
   dashboards shipped.
+  - **No longer exclusively munger's (found live, 2026-08-08, see TASKS.md
+    row 591):** a separate project (home-network Unifi/node-exporter
+    monitoring) added its own dashboards directly onto this same k3s
+    Grafana instance, outside this repo's IaC. `deploy/k8s/50-grafana.yaml`
+    now *references* those foreign ConfigMaps (volume/volumeMount only, not
+    their content) purely so a full `kubectl apply` of this file cannot
+    silently delete them — see that file's own header comment for the
+    reconciliation discipline this requires going forward (diff against
+    live state before applying, don't assume this file alone is the whole
+    truth). No namespace/instance split has been done yet; if one happens,
+    update this section.
 
 ### 2.4 Prod (`gramunger.com`): e2-micro VM, authenticated pull, no public data
 
