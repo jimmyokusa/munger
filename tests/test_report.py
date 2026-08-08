@@ -726,6 +726,23 @@ def test_render_pnl_treats_a_timezone_naive_generated_at_as_unparseable() -> Non
     report._render_pnl(snapshot)  # must not raise
 
 
+def test_disclaimer_banner_appears_on_every_page() -> None:
+    # staff-engineer-reviewer finding: nothing previously locked the "not
+    # investment advice" banner into all 5 pages -- a future refactor of
+    # any one _render_* function could silently drop the call and nothing
+    # would fail CI. Anchored on wording unique to the banner itself, not
+    # the pre-existing "not investment advice" phrasing that also appears
+    # elsewhere (SEO meta descriptions, pnl.html's own prose).
+    marker = "This is a personal, automated research project"
+
+    results = report._load_screen_results()
+    assert marker in report._render_index(picks=[], results=results)
+    assert marker in report._render_tickers(results, held_symbols=set())
+    assert marker in report._render_pnl(None)
+    assert marker in report._render_calendar(summaries={})
+    assert marker in report._render_dashboards()
+
+
 def test_generate_report_writes_pnl_html_from_a_real_snapshot() -> None:
     _write_pnl_snapshot({"mode": "live", "account": {"equity": 5_000.0}, "positions": []})
     report.generate_report()

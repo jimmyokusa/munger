@@ -660,9 +660,7 @@ def _render_methodology_drawer() -> str:
     score</strong>, weighted: return on equity 30%, gross margin 20%, FCF
     yield 20%, low debt 15%, operating margin 15%. Ranking, not a pass/fail
     bar &mdash; the buy queue takes the top-scoring names within the
-    portfolio's position limits. Full detail:
-    <a href="https://github.com/jimmyokusa/munger/blob/main/DESIGN.md#33-screener"
-      >DESIGN.md &sect;3.3</a>.</p>
+    portfolio's position limits.</p>
   </div>
 </details>"""
 
@@ -729,6 +727,25 @@ def _generated_at() -> str:
     """
     now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M UTC")
     return f'<p class="generated">Generated {html.escape(now)}</p>'
+
+
+def _disclaimer_banner() -> str:
+    """Standing "not financial advice" banner (user request).
+
+    Unlike _pnl_staleness_note (data-freshness warning, conditional on
+    age), this is unconditional -- shown on every page, every run. Borrows
+    that function's visual pattern (a `glass`-styled inline note) for
+    consistency rather than introducing a second banner style.
+    """
+    return (
+        '<div class="glass" style="padding: 0.75rem 1rem; margin-bottom: 1rem; '
+        'font-size: 0.85rem;">'
+        "&#9432; This is a personal, automated research project, not "
+        "investment advice. Nothing on this site is a recommendation to "
+        "buy or sell any security &mdash; it publishes the output of one "
+        "rules-based paper-trading strategy for its own record."
+        "</div>"
+    )
 
 
 def _progress_polling_script() -> str:
@@ -997,6 +1014,7 @@ def _render_index(picks: list[dict[str, object]], results: pd.DataFrame) -> str:
 <nav><a href="tickers.html">See all screened tickers &rarr;</a>
 {_history_nav_link()}
 <a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
+{_disclaimer_banner()}
 {_render_methodology_drawer()}
 <div class="progress-banner glass" id="progress-banner">
   <div class="phase" id="progress-phase"></div>
@@ -1130,6 +1148,7 @@ for (const th of table.tHead.rows[0].cells) {
 <nav><a href="index.html">&larr; Back to current picks</a>
 {_history_nav_link()}
 <a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
+{_disclaimer_banner()}
 {_generated_at()}
 {score_buyable_note}
 {fetch_failed_note}
@@ -1434,10 +1453,10 @@ def _render_pnl(snapshot: dict[str, object] | None) -> str:
 <nav><a href="index.html">&larr; Back to current picks</a>
 <a href="tickers.html">See all screened tickers &rarr;</a>
 {_history_nav_link()}</nav>
+{_disclaimer_banner()}
 <p style="font-size: 0.85rem; opacity: 0.7;">
   This account trades on the same daily cadence and rules as the
-  screener above (DESIGN.md section 4) &mdash; paper money only, not
-  investment advice.
+  screener above &mdash; paper money only, not investment advice.
 </p>
 {body}
 {_generated_at()}
@@ -1492,6 +1511,7 @@ def _render_calendar(
 <nav><a href="index.html">&larr; Back to current picks</a>
 <a href="tickers.html">See all screened tickers &rarr;</a>
 <a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
+{_disclaimer_banner()}
 {_generated_at()}
 <p style="font-size: 0.85rem; opacity: 0.75; margin-bottom: 1rem;">
   Each day's screen is informational only &mdash; daily_screen.py never places orders;
@@ -1580,6 +1600,7 @@ def _render_dashboards() -> str:
 <nav><a href="index.html">&larr; Back to current picks</a>
 <a href="tickers.html">See all screened tickers &rarr;</a>
 <a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
+{_disclaimer_banner()}
 <p style="font-size: 0.85rem; opacity: 0.75;">
   Account P&amp;L over time and daily closing prices for held positions.
   If the charts don't load,
