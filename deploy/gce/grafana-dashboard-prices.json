@@ -1,0 +1,64 @@
+{
+  "uid": "munger-prices",
+  "title": "Held-symbol daily close prices",
+  "tags": ["munger"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "",
+  "time": {"from": "now-1y", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Daily close price per held ticker",
+      "description": "Daily close prices for currently-held symbols (moving window -- a sold ticker's series drops off, a new buy's appears).",
+      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity-munger"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "displayName": "${__field.labels.symbol}",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 4, "showPoints": "auto", "spanNulls": true}
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {"mode": "multi", "sort": "none"},
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}
+      },
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": ["symbol"],
+            "keepFields": false,
+            "naming": {"asLabels": true}
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity-munger"},
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "http://json-server/prices_flat.json",
+          "url_options": {"method": "GET", "data": ""},
+          "root_selector": "",
+          "columns": [
+            {"selector": "symbol", "text": "symbol", "type": "string"},
+            {"selector": "date", "text": "date", "type": "timestamp"},
+            {"selector": "close", "text": "close", "type": "number"}
+          ],
+          "filters": []
+        }
+      ]
+    }
+  ]
+}

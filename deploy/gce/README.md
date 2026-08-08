@@ -32,23 +32,32 @@ surface):
   Not published to the host; only reachable through `caddy` over the internal
   Docker network `munger-grafana-net`.
 - **`json-server`** — a bare `nginx:alpine` serving the locally-pulled
-  `pnl_history.json` from a bind mount. Not published to the host either —
-  Grafana's Infinity datasource (`access: proxy`, i.e. server-side fetch, no
-  browser CORS) reaches it at `http://json-server/pnl_history.json` over the
-  same internal network. This keeps the JSON data off the public internet
-  entirely, per the design's explicit "no public JSON URL" requirement
-  (§2.4) — only the rendered Grafana panels are ever externally reachable.
+  `pnl_history.json` **and, as of M17 Phase 2 (2026-08-08), `prices_flat.json`**
+  from a bind mount. Not published to the host either — Grafana's Infinity
+  datasource (`access: proxy`, i.e. server-side fetch, no browser CORS)
+  reaches them at `http://json-server/pnl_history.json` and
+  `http://json-server/prices_flat.json` over the same internal network. This
+  keeps the JSON data off the public internet entirely, per the design's
+  explicit "no public JSON URL" requirement (§2.4) — only the rendered
+  Grafana panels are ever externally reachable.
 - **A systemd timer** (`munger-gcs-pull.timer`, every 15 min), *not* a
   container — runs a one-shot `google/cloud-sdk:slim` container
   (`--network=host` so it can always reach the GCE metadata server at
   `169.254.169.254`, regardless of the Docker bridge's routing) that pulls
-  `pnl_history.jsonl` from `gs://munger-503515-data` using the VM's own
-  **instance service account** (`munger-grafana-vm@...`, `storage.objectViewer`
-  scoped to the bucket) — no key file anywhere, matching the design's
-  "authenticated via GCE metadata" requirement. Transforms JSONL → a JSON
-  array (same transform as the k3s reader CronJob, since Infinity parses
-  JSON, not NDJSON) and writes it atomically (temp + `mv`) into the
-  `json-server` bind mount.
+  `pnl_history.jsonl` **and `prices.json`** from `gs://munger-503515-data`
+  using the VM's own **instance service account** (`munger-grafana-vm@...`,
+  `storage.objectViewer` scoped to the bucket) — no key file anywhere,
+  matching the design's "authenticated via GCE metadata" requirement.
+  Transforms `pnl_history.jsonl` → a JSON array (Infinity parses JSON, not
+  NDJSON) and `prices.json`'s nested-by-symbol shape → a flat
+  `{symbol, date, close}` array (same transforms as the k3s reader CronJob /
+  `gcs_bridge.py`), writing each pair atomically (temp + `mv`) into the
+  `json-server` bind mount. Two dashboards read from these: **Account P&L
+  over time** (`pnl_history.json`) and **Held-symbol daily close prices**
+  (`prices_flat.json`, M17 Phase 2) — the latter's iframe on
+  `gramunger.com/dashboards.html` is gated on `MUNGER_GRAFANA_PRICES_URL`
+  being set on the Cloud Run `daily-screen` Job, separately from this VM's
+  own setup (see `report.py`'s `_render_dashboards`).
 
 ## Rebuild runbook
 
@@ -70,7 +79,7 @@ gcloud compute instances create munger-grafana \
   --scopes=https://www.googleapis.com/auth/devstorage.read_only \
   --address=munger-grafana-ip \
   --tags=munger-grafana \
-  --metadata-from-file=startup-script=deploy/gce/bootstrap.sh,grafana-datasources=deploy/gce/grafana-datasources.yaml,grafana-dashboard-provider=deploy/gce/grafana-dashboard-provider.yaml,grafana-dashboard-account-pnl=deploy/gce/grafana-dashboard-account-pnl.json,caddyfile=deploy/gce/Caddyfile,pull-script=deploy/gce/pull-pnl-history.sh
+  --metadata-from-file=startup-script=deploy/gce/bootstrap.sh,grafana-datasources=deploy/gce/grafana-datasources.yaml,grafana-dashboard-provider=deploy/gce/grafana-dashboard-provider.yaml,grafana-dashboard-account-pnl=deploy/gce/grafana-dashboard-account-pnl.json,grafana-dashboard-prices=deploy/gce/grafana-dashboard-prices.json,caddyfile=deploy/gce/Caddyfile,pull-script=deploy/gce/pull-pnl-history.sh
 ```
 
 To pick up an edit to any of these files on an already-running VM without a

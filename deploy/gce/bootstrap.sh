@@ -20,6 +20,7 @@ mkdir -p /var/lib/munger/data /var/lib/munger/provisioning/datasources \
 fetch grafana-datasources > /var/lib/munger/provisioning/datasources/datasources.yaml
 fetch grafana-dashboard-provider > /var/lib/munger/provisioning/dashboards-provider/provider.yaml
 fetch grafana-dashboard-account-pnl > /var/lib/munger/provisioning/dashboards/account-pnl.json
+fetch grafana-dashboard-prices > /var/lib/munger/provisioning/dashboards/prices.json
 fetch caddyfile > /var/lib/munger/caddy/Caddyfile
 fetch pull-script > /var/lib/munger/scripts/pull-pnl-history.sh
 chmod +x /var/lib/munger/scripts/pull-pnl-history.sh
