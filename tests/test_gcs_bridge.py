@@ -62,6 +62,7 @@ def test_bridge_downloads_both_files_and_publishes_json_array(
         {
             "pnl.json": _fake_blob(content=b'{"equity": 100500.0}'),
             "pnl_history.jsonl": _fake_blob(content=history_jsonl),
+            "prices.json": _fake_blob(missing=True),
         },
     )
 
@@ -85,6 +86,7 @@ def test_bridge_tolerates_a_missing_pnl_history_as_the_expected_first_run(
         {
             "pnl.json": _fake_blob(content=b'{"equity": 100000.0}'),
             "pnl_history.jsonl": _fake_blob(missing=True),
+            "prices.json": _fake_blob(missing=True),
         },
     )
 
@@ -146,10 +148,63 @@ def test_bridge_writes_atomically_with_no_leftover_tmp_file(
         {
             "pnl.json": _fake_blob(content=b"{}"),
             "pnl_history.jsonl": _fake_blob(content=b'{"date": "2026-07-28"}\n'),
+            "prices.json": _fake_blob(content=b'{"generated_at": "x", "symbols": {}}'),
         },
     )
 
     gcs_bridge.bridge()
 
     assert list(config.PNL_DATA_PATH.parent.glob("*.tmp")) == []
+    assert list(config.REPORT_DIR.glob("*.tmp")) == []
+
+
+def test_bridge_downloads_prices_json_straight_into_report_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # prices.json (M17 Phase 2) is already a plain JSON object, unlike
+    # pnl_history.jsonl -- straight atomic download, no NDJSON->JSON
+    # transform, landing in REPORT_DIR so nginx serves it for Grafana.
+    prices_json = (
+        b'{"generated_at": "2026-08-08T00:00:00+00:00", '
+        b'"symbols": {"AAPL": {"status": "ok"}}}'
+    )
+    _patch_client(
+        monkeypatch,
+        {
+            "pnl.json": _fake_blob(content=b"{}"),
+            "pnl_history.jsonl": _fake_blob(missing=True),
+            "prices.json": _fake_blob(content=prices_json),
+        },
+    )
+
+    gcs_bridge.bridge()
+
+    assert (config.REPORT_DIR / "prices.json").read_bytes() == prices_json
+
+
+def test_bridge_tolerates_a_missing_prices_json_without_skipping_the_other_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real bug this guards against: an early `return` on a missing
+    # pnl_history.jsonl (the pre-M17-Phase-2 shape of this function) would
+    # have silently skipped prices.json too, and a naive re-add of
+    # prices.json handling after that return could equally skip nothing
+    # being downloaded at all if ordered wrong. Missing prices.json is its
+    # own expected first-run/no-positions case, independent of the other
+    # two files, which must still bridge normally.
+    _patch_client(
+        monkeypatch,
+        {
+            "pnl.json": _fake_blob(content=b'{"equity": 1.0}'),
+            "pnl_history.jsonl": _fake_blob(content=b'{"date": "2026-08-08"}\n'),
+            "prices.json": _fake_blob(missing=True),
+        },
+    )
+
+    gcs_bridge.bridge()
+
+    assert config.PNL_DATA_PATH.read_text() == '{"equity": 1.0}'
+    assert (config.REPORT_DIR / "pnl_history.jsonl").exists()
+    assert (config.REPORT_DIR / "pnl_history.json").exists()
+    assert not (config.REPORT_DIR / "prices.json").exists()
     assert list(config.REPORT_DIR.glob("*.tmp")) == []

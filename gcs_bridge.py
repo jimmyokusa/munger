@@ -1,12 +1,13 @@
 """Read-only GCS -> PVC bridge for the k3s deployment (M17).
 
-pnl.py runs only in GitHub Actions (that's where the Alpaca credentials
-live -- M14 screen-only boundary) and writes pnl.json + the durable
-pnl_history.jsonl append-series into config.PNL_GCS_BUCKET. The k3s report
-deployment deliberately has no Alpaca keys and has no local copy of either
-file -- this script pulls the already-produced artifacts from GCS onto the
-shared PVC so report.py's pnl.html gets real data and Grafana can chart the
-durable history.
+pnl.py and prices.py run only in GitHub Actions (that's where the Alpaca
+credentials live -- M14 screen-only boundary) and write pnl.json, the
+durable pnl_history.jsonl append-series, and prices.json into
+config.PNL_GCS_BUCKET. The k3s report deployment deliberately has no
+Alpaca keys and has no local copy of any of them -- this script pulls the
+already-produced artifacts from GCS onto the shared PVC so report.py's
+pnl.html gets real data and Grafana can chart the durable history and the
+held-symbol daily closes.
 
 Run as a standalone k3s CronJob (deploy/k8s/40-gcs-reader-cronjob.yaml),
 inside the same `munger` image already built and side-loaded for
@@ -67,7 +68,7 @@ def _download_atomically(blob: storage.Blob, dest: Path) -> None:
 
 
 def bridge() -> None:
-    """Pulls pnl.json and pnl_history.jsonl from GCS onto the local PVC."""
+    """Pulls pnl.json, pnl_history.jsonl, and prices.json from GCS onto the local PVC."""
     client = storage.Client()
     bucket = client.bucket(config.PNL_GCS_BUCKET)
 
@@ -80,26 +81,48 @@ def bridge() -> None:
         jsonl_tmp = _download_to_temp(bucket.blob("pnl_history.jsonl"), history_dest)
     except NotFound:
         logger.info("No pnl_history.jsonl in GCS yet -- skipping (first run).")
-        return
+    else:
+        # Transform from the temp download *before* committing either
+        # rename -- Grafana's Infinity datasource parses JSON, not NDJSON,
+        # so pnl_history.jsonl needs a JSON-array sibling for the dashboard
+        # to read. Deriving it here (rather than from the already-renamed
+        # jsonl) means a malformed line fails loudly with BOTH files left
+        # on their last-good state, instead of jsonl updating while json --
+        # what Grafana actually reads -- silently freezes on stale content.
+        try:
+            rows = [
+                json.loads(line) for line in jsonl_tmp.read_text().splitlines() if line.strip()
+            ]
+            json_tmp = json_dest.with_suffix(json_dest.suffix + ".tmp")
+            json_tmp.write_text(json.dumps(rows))
+        except BaseException:
+            jsonl_tmp.unlink(missing_ok=True)
+            raise
 
-    # Transform from the temp download *before* committing either rename --
-    # Grafana's Infinity datasource parses JSON, not NDJSON, so
-    # pnl_history.jsonl needs a JSON-array sibling for the dashboard to
-    # read. Deriving it here (rather than from the already-renamed jsonl)
-    # means a malformed line fails loudly with BOTH files left on their
-    # last-good state, instead of jsonl updating while json -- what Grafana
-    # actually reads -- silently freezes on stale content.
+        jsonl_tmp.replace(history_dest)
+        json_tmp.replace(json_dest)
+        logger.info("Bridged pnl_history.jsonl (+ .json array for Grafana).")
+
+    # prices.json (M17 Phase 2, DESIGN_DASHBOARDS.md §3): already a plain
+    # JSON object, not NDJSON like pnl_history.jsonl, so no transform is
+    # needed -- straight atomic download into REPORT_DIR so nginx serves it
+    # for Grafana's Infinity datasource, same reasoning as pnl_history.json
+    # above. Missing is tolerated the same way pnl_history.jsonl's absence
+    # is (an early, `else`-skipped state above): Phase 2 not deployed yet,
+    # or no positions currently held, are both expected, not a broken
+    # bridge -- this must NOT `return` early like the pre-refactor
+    # pnl_history handling used to, or a missing prices.json would
+    # silently also skip pnl_history.jsonl on a run where it exists.
+    # (pnl.json itself downloads first and unconditionally, above, with no
+    # NotFound handling -- its absence still aborts bridge() entirely,
+    # same as before this refactor; only pnl_history.jsonl and prices.json
+    # are independent of each other.)
     try:
-        rows = [json.loads(line) for line in jsonl_tmp.read_text().splitlines() if line.strip()]
-        json_tmp = json_dest.with_suffix(json_dest.suffix + ".tmp")
-        json_tmp.write_text(json.dumps(rows))
-    except BaseException:
-        jsonl_tmp.unlink(missing_ok=True)
-        raise
-
-    jsonl_tmp.replace(history_dest)
-    json_tmp.replace(json_dest)
-    logger.info("Bridged pnl_history.jsonl (+ .json array for Grafana).")
+        _download_atomically(bucket.blob("prices.json"), config.REPORT_DIR / "prices.json")
+    except NotFound:
+        logger.info("No prices.json in GCS yet -- skipping.")
+    else:
+        logger.info("Bridged prices.json.")
 
 
 if __name__ == "__main__":

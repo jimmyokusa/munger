@@ -175,6 +175,30 @@ PNL_GCS_BUCKET = "munger-503515-data"
 # stale past this age instead. Matches DATA_FRESHNESS_MAX_HOURS's
 # daily-cadence-appropriate tolerance (one missed run's worth of slack).
 PNL_STALENESS_MAX_HOURS = 48
+# Currently-held-symbol daily close prices (M17 Phase 2, DESIGN_DASHBOARDS.md
+# §3) -- feeds Graph 2 ("daily close price per owned ticker"). Written by
+# prices.py in the same GitHub Actions job as pnl.py (same Alpaca-credential
+# boundary), reading pnl.json's positions[] for which symbols to fetch.
+# Unlike PNL_HISTORY_PATH this is NOT an append-series: Alpaca's historical
+# bars endpoint has no rolling-window loss the way portfolio history does,
+# so each run simply re-fetches PRICES_LOOKBACK_DAYS of bars fresh.
+# "Currently held" is a moving window by design -- a sold ticker's series
+# drops off next run, a new buy's appears (DESIGN_DASHBOARDS.md §3).
+PRICES_DATA_PATH: Path = DATA_DIR / "prices.json"
+PRICES_LOOKBACK_DAYS = 365
+# Sanity ceiling for a single daily close price, mirroring
+# MAX_PLAUSIBLE_PE/MAX_PLAUSIBLE_DEBT_TO_EQUITY above. A close <= 0 or
+# beyond this is a data_invalid_outlier point, never silently plotted.
+PRICES_MAX_PLAUSIBLE_CLOSE = 100_000.0
+# Alpaca market-data feed for prices.py's historical bars. Confirmed live
+# (2026-08-07): this account's free-tier subscription 403s on the client's
+# default (SIP) feed -- "subscription does not permit querying recent SIP
+# data" -- while IEX succeeds; IEX is what the free tier actually grants
+# (DESIGN_DASHBOARDS.md §3 prerequisite). A future paid-tier upgrade would
+# just change this one constant. Plain string, not the alpaca-py DataFeed
+# enum, so config.py stays free of a provider-SDK import like every other
+# constant here.
+PRICES_DATA_FEED = "iex"
 SCREEN_RESULTS_CSV_PATH: Path = DATA_DIR / "screen_results.csv"
 SCREEN_RESULTS_ARCHIVE_DIR: Path = DATA_DIR / "screen_results_archive"
 LOG_FILE_PATH: Path = DATA_DIR / "munger.log"

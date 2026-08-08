@@ -191,6 +191,25 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
         run: python pnl.py
 
+      # Held-symbol daily close prices (M17 Phase 2, DESIGN_DASHBOARDS.md
+      # §3) -- feeds Graph 2 ("daily close price per owned ticker"). Runs
+      # after "Generate P&L snapshot" and reads its pnl.json output for the
+      # held-symbol list (see prices.py's own __main__ docstring), so the
+      # two can never disagree about which symbols are "held" this run.
+      # `if: always()` for the same reason as the P&L steps above: this is
+      # a display concern, independent of whether "Run bot" succeeded or
+      # ran in screen-only mode. Unlike pnl_history.jsonl, prices.json is
+      # NOT an append-series (Alpaca's historical bars endpoint has no
+      # rolling-window loss), so there is no "download prior state first"
+      # step needed here -- each run's prices.json is a complete, fresh
+      # fetch on its own.
+      - name: Generate held-symbol price history
+        if: always()
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python prices.py
+
       - name: Upload P&L snapshot and history to GCS
         if: always()
         env:
@@ -201,8 +220,8 @@ jobs:
           # issues. Matches how ALPACA_API_KEY is already passed above.
           GCP_PNL_WRITER_KEY: ${{ secrets.GCP_PNL_WRITER_KEY }}
         run: |
-          if [ ! -f pnl.json ] && [ ! -f pnl_history.jsonl ]; then
-            echo "No pnl.json or pnl_history.jsonl produced this run (see 'Generate P&L snapshot') -- skipping upload."
+          if [ ! -f pnl.json ] && [ ! -f pnl_history.jsonl ] && [ ! -f prices.json ]; then
+            echo "No pnl.json, pnl_history.jsonl, or prices.json produced this run -- skipping upload."
             exit 0
           fi
           key_file="$(mktemp)"
@@ -219,5 +238,13 @@ jobs:
           # durable GCS history with a truncated file.
           if [ -f pnl_history.jsonl ] && [ "${{ steps.download-pnl-history.outputs.real_failure }}" != "true" ]; then
             gcloud storage cp pnl_history.jsonl gs://munger-503515-data/pnl_history.jsonl
+          fi
+          # prices.json is a fresh fetch each run (not an append-series --
+          # see "Generate held-symbol price history" above), so unlike
+          # pnl_history.jsonl there's no truncated-reseed risk gating this
+          # upload; a missing file (prices.py step failed, or itself found
+          # no held symbols to fetch for) just means nothing to upload.
+          if [ -f prices.json ]; then
+            gcloud storage cp prices.json gs://munger-503515-data/prices.json
           fi
           rm -f "$key_file"
