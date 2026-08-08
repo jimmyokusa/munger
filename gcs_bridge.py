@@ -67,6 +67,33 @@ def _download_atomically(blob: storage.Blob, dest: Path) -> None:
     _download_to_temp(blob, dest).replace(dest)
 
 
+def _flatten_prices(prices_snapshot: dict[str, object]) -> list[dict[str, object]]:
+    """Flattens prices.py's nested-by-symbol shape into long-format rows.
+
+    prices.json (prices.py's own output) is `{"symbols": {"AAPL": {"status":
+    ..., "points": [{"date": ..., "close": ...}, ...], ...}, ...}}` -- rich
+    and keyed by symbol, good for programmatic/diagnostic consumption
+    (status, fail_reasons). Grafana's Infinity datasource wants a flat,
+    long-format array instead (`[{"symbol": ..., "date": ..., "close": ...},
+    ...]`), the same one-row-per-data-point shape Grafana's own
+    "Partition by values" transform expects to split into a per-symbol
+    multi-series chart -- so this is a Grafana-consumption *view*, derived
+    here, not a change to prices.py's own richer contract. A symbol with no
+    valid points (status "no_bars"/"no_valid_bars") simply contributes zero
+    rows, which is exactly the "drops off the chart" moving-window
+    semantics DESIGN_DASHBOARDS.md §3 already calls for.
+    """
+    symbols = prices_snapshot.get("symbols") or {}
+    assert isinstance(symbols, dict)
+    rows: list[dict[str, object]] = []
+    for symbol, entry in symbols.items():
+        if not isinstance(entry, dict):
+            continue
+        for point in entry.get("points") or []:
+            rows.append({"symbol": symbol, "date": point["date"], "close": point["close"]})
+    return rows
+
+
 def bridge() -> None:
     """Pulls pnl.json, pnl_history.jsonl, and prices.json from GCS onto the local PVC."""
     client = storage.Client()
@@ -99,30 +126,53 @@ def bridge() -> None:
             jsonl_tmp.unlink(missing_ok=True)
             raise
 
+        # staff-engineer-reviewer finding: these two renames are sequential,
+        # not transactional -- a crash between them (OOM, node reboot)
+        # leaves history_dest advanced while json_dest (what Grafana
+        # actually reads) stays one day stale. Accepted: this CronJob
+        # re-derives both files from scratch every run, so the exposure
+        # window is bounded to at most one day and self-heals on the next
+        # tick -- not worth a two-phase-commit for a read-only reporting
+        # pipeline. Same shape/tradeoff as the prices.json block below.
         jsonl_tmp.replace(history_dest)
         json_tmp.replace(json_dest)
         logger.info("Bridged pnl_history.jsonl (+ .json array for Grafana).")
 
-    # prices.json (M17 Phase 2, DESIGN_DASHBOARDS.md §3): already a plain
-    # JSON object, not NDJSON like pnl_history.jsonl, so no transform is
-    # needed -- straight atomic download into REPORT_DIR so nginx serves it
-    # for Grafana's Infinity datasource, same reasoning as pnl_history.json
-    # above. Missing is tolerated the same way pnl_history.jsonl's absence
-    # is (an early, `else`-skipped state above): Phase 2 not deployed yet,
-    # or no positions currently held, are both expected, not a broken
-    # bridge -- this must NOT `return` early like the pre-refactor
-    # pnl_history handling used to, or a missing prices.json would
-    # silently also skip pnl_history.jsonl on a run where it exists.
-    # (pnl.json itself downloads first and unconditionally, above, with no
-    # NotFound handling -- its absence still aborts bridge() entirely,
-    # same as before this refactor; only pnl_history.jsonl and prices.json
-    # are independent of each other.)
+    # prices.json (M17 Phase 2, DESIGN_DASHBOARDS.md §3). Missing is
+    # tolerated the same way pnl_history.jsonl's absence is (an early,
+    # `else`-skipped state above): Phase 2 not deployed yet, or no
+    # positions currently held, are both expected, not a broken bridge --
+    # this must NOT `return` early like the pre-refactor pnl_history
+    # handling used to, or a missing prices.json would silently also skip
+    # pnl_history.jsonl on a run where it exists. (pnl.json itself
+    # downloads first and unconditionally, above, with no NotFound
+    # handling -- its absence still aborts bridge() entirely, same as
+    # before this refactor; only pnl_history.jsonl and prices.json are
+    # independent of each other.)
+    prices_dest = config.REPORT_DIR / "prices.json"
+    flat_dest = config.REPORT_DIR / "prices_flat.json"
     try:
-        _download_atomically(bucket.blob("prices.json"), config.REPORT_DIR / "prices.json")
+        prices_tmp = _download_to_temp(bucket.blob("prices.json"), prices_dest)
     except NotFound:
         logger.info("No prices.json in GCS yet -- skipping.")
     else:
-        logger.info("Bridged prices.json.")
+        # Same "transform from the temp download before committing either
+        # rename" reasoning as the pnl_history block above: a malformed
+        # prices.json fails loudly with both files left on their last-good
+        # state, instead of prices.json updating while prices_flat.json --
+        # what Grafana actually reads -- silently freezes on stale content.
+        try:
+            snapshot = json.loads(prices_tmp.read_text())
+            rows = _flatten_prices(snapshot)
+            flat_tmp = flat_dest.with_suffix(flat_dest.suffix + ".tmp")
+            flat_tmp.write_text(json.dumps(rows))
+        except BaseException:
+            prices_tmp.unlink(missing_ok=True)
+            raise
+
+        prices_tmp.replace(prices_dest)
+        flat_tmp.replace(flat_dest)
+        logger.info("Bridged prices.json (+ flattened prices_flat.json for Grafana).")
 
 
 if __name__ == "__main__":

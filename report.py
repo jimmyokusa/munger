@@ -1581,13 +1581,34 @@ def _render_dashboards() -> str:
     """Renders dashboards.html -- embeds the Grafana dashboards (M17).
 
     Generated only when config.GRAFANA_BASE_URL is set (see generate_report);
-    the nav swaps the calendar link for this tab in the same case. The
+    the nav swaps the calendar link for this tab in the same case. Each
     <iframe> shows the live Grafana; the always-visible fallback link lets a
-    visitor open Grafana directly if the embed can't load (e.g. the prod VM
+    visitor open Grafana directly if an embed can't load (e.g. the prod VM
     is down), degrading to a link rather than a blank frame
     (DESIGN_DASHBOARDS.md 4, staff-engineer-reviewer finding).
+
+    The Prices dashboard (Graph 2) is a second, independently config-gated
+    section -- real bug found in review: the two Grafana dashboards can
+    ship on different schedules (P&L before Prices, as happened this
+    session), and a version of this page that only ever embedded
+    GRAFANA_BASE_URL left the Prices dashboard fully provisioned in
+    Grafana with no way for a visitor to ever reach it from the site.
+    Stacked sections, not a client-side tab switcher, to keep the
+    zero-JS pattern the rest of this page (and _render_methodology_drawer,
+    _render_pick) already uses.
     """
     url = html.escape(config.GRAFANA_BASE_URL, quote=True)
+    prices_section = ""
+    if config.GRAFANA_PRICES_URL:
+        prices_url = html.escape(config.GRAFANA_PRICES_URL, quote=True)
+        prices_section = f"""<h2>Held-symbol daily close prices</h2>
+<p style="font-size: 0.85rem; opacity: 0.75;">
+  If the chart doesn't load,
+  <a href="{prices_url}" target="_blank" rel="noopener">open it directly &rarr;</a>.
+</p>
+<iframe src="{prices_url}" title="Munger Grafana prices dashboard"
+  style="width: 100%; height: 80vh; border: 0;" loading="lazy"
+  referrerpolicy="no-referrer"></iframe>"""
     head = _seo_head(
         "Munger Screener &mdash; dashboards",
         "Account P&amp;L over time and daily closing prices for held positions, from the "
@@ -1601,14 +1622,15 @@ def _render_dashboards() -> str:
 <a href="tickers.html">See all screened tickers &rarr;</a>
 <a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
 {_disclaimer_banner()}
+<h2>Account P&amp;L over time</h2>
 <p style="font-size: 0.85rem; opacity: 0.75;">
-  Account P&amp;L over time and daily closing prices for held positions.
-  If the charts don't load,
-  <a href="{url}" target="_blank" rel="noopener">open them directly &rarr;</a>.
+  If the chart doesn't load,
+  <a href="{url}" target="_blank" rel="noopener">open it directly &rarr;</a>.
 </p>
-<iframe src="{url}" title="Munger Grafana dashboards"
+<iframe src="{url}" title="Munger Grafana P&amp;L dashboard"
   style="width: 100%; height: 80vh; border: 0;" loading="lazy"
   referrerpolicy="no-referrer"></iframe>
+{prices_section}
 {_generated_at()}
 </body></html>
 """

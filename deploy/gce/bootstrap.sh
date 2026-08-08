@@ -39,11 +39,18 @@ docker run -d --name json-server --restart=always \
 
 # grafana: anonymous Viewer-only, embedding allowed, not published to
 # the host -- only reachable through caddy. Mirrors
-# deploy/k8s/50-grafana.yaml's container env exactly.
+# deploy/k8s/50-grafana.yaml's container env exactly, including the
+# Infinity plugin version pin -- see that file's "INFINITY PLUGIN"
+# comment for why (a real, currently-unfixed v3.11.2 regression breaks
+# the plugin's frontend entirely). This VM's --restart=always container
+# only re-fetches "latest" on a genuine restart (crash, reboot, a
+# bootstrap.sh rerun), not continuously, but the exposure is identical:
+# whichever version is "latest" at that moment silently replaces
+# whatever's currently running.
 docker rm -f grafana >/dev/null 2>&1 || true
 docker run -d --name grafana --restart=always \
   --network munger-grafana-net \
-  -e GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource \
+  -e GF_INSTALL_PLUGINS="yesoreyeram-infinity-datasource 3.11.1" \
   -e GF_AUTH_ANONYMOUS_ENABLED=true \
   -e GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer \
   -e GF_AUTH_DISABLE_LOGIN_FORM=true \

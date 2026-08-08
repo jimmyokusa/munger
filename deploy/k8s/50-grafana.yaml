@@ -21,6 +21,20 @@
 # outbound internet on the scheduling node the first time (like the
 # cloud-sdk image). If the node is offline, bake a custom image with the
 # plugin instead.
+#
+# PINNED to 3.11.1, not unpinned/"latest" (2026-08-08, found live building
+# the Prices panel): v3.11.2 (released 2026-08-05) shipped a real,
+# currently-unfixed regression -- the plugin's frontend module fails to
+# load entirely ("404 Not Found, loading react/jsx-runtime", SystemJS
+# Error#7), confirmed both via a local Grafana+Infinity container/browser
+# test and against the upstream report (grafana/grafana-infinity-
+# datasource#1772, opened 2026-08-06, still open, no fix released as of
+# this pin). GF_INSTALL_PLUGINS re-fetches "latest" on every pod restart
+# (this deployment is provisioned-stateless by design) -- unpinned, the
+# *next* restart for any reason (node reschedule, a manifest reapply,
+# routine maintenance) would have silently broken this dashboard AND the
+# already-shipped account-pnl one, with nothing here having changed.
+# Re-evaluate this pin once upstream ships a fix past v3.11.2.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -62,6 +76,21 @@ data:
         allowUiUpdates: false
         options:
           path: /var/lib/grafana/dashboards
+          foldersFromFilesStructure: false
+      # Separate provider + directory for the Prices dashboard (M17 Phase
+      # 2), deliberately not sharing /var/lib/grafana/dashboards with the
+      # already-live account-pnl provider above -- avoids any risk to that
+      # proven-working mount/provisioning path (whether Grafana's file
+      # provisioner recurses into subdirectories of an existing provider's
+      # path wasn't worth testing against a live dashboard to find out).
+      - name: munger-prices
+        orgId: 1
+        type: file
+        disableDeletion: true
+        editable: false
+        allowUiUpdates: false
+        options:
+          path: /var/lib/grafana/dashboards-prices
           foldersFromFilesStructure: false
 ---
 apiVersion: v1
@@ -168,6 +197,109 @@ data:
       ]
     }
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: munger-grafana-dashboard-prices
+  namespace: munger
+  labels:
+    app.kubernetes.io/name: munger-grafana
+data:
+  # Graph 2 (DESIGN_DASHBOARDS.md 2.2/§3): daily close price per currently-
+  # held ticker. Reads prices_flat.json -- gcs_bridge.py's long-format
+  # derivation of prices.py's own nested-by-symbol prices.json (one row
+  # per {symbol, date, close}), the shape Grafana's own "Partition by
+  # values" transform (id: partitionByValues) expects to split into a
+  # per-symbol multi-series chart. "keepFields: false" + "naming.asLabels:
+  # true" drops the symbol column from the plotted data but attaches it as
+  # a field label on "close" in each split frame (confirmed against
+  # Grafana's own transformer source/tests, not guessed) -- displayName
+  # then renders that label as the legend/series name. A moving window by
+  # design: a symbol with zero rows (sold, or "no_bars"/"no_valid_bars"
+  # from prices.py's validation) simply contributes no series, matching
+  # "currently held" semantics -- no redeploy needed when holdings change.
+  #
+  # Real bug found live (2026-08-08, browser-driven test against a real
+  # local Grafana+Infinity container, not just re-reading the JSON):
+  # partitionByValues's "fields" option matches against the query's
+  # actual DataFrame field names, which come from each column's `text`
+  # (not `selector`) in the target below. This JSON originally had
+  # `text: "Symbol"` (capitalized) while the transform said
+  # `fields: ["symbol"]` (lowercase) -- a silent, case-sensitive
+  # mismatch. The transform's own source (grafana/grafana
+  # partitionByValues.ts): zero matched fields -> "return [frame]"
+  # unchanged, so every symbol rendered as one interleaved, zigzagging
+  # line instead of separate series, with a single generic "Close"
+  # legend entry instead of one per symbol. Fixed by lowercasing every
+  # column's `text` to match `fields`/`displayName` exactly -- confirmed
+  # live afterward with a real 2-symbol dataset (AAPL/MSFT) rendering as
+  # two visually distinct lines with correct per-symbol legend entries.
+  prices.json: |
+    {
+      "uid": "munger-prices",
+      "title": "Held-symbol daily close prices",
+      "tags": ["munger"],
+      "timezone": "utc",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": false,
+      "refresh": "",
+      "time": {"from": "now-1y", "to": "now"},
+      "templating": {"list": []},
+      "annotations": {"list": []},
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Daily close price per held ticker",
+          "description": "Daily close prices for currently-held symbols (moving window -- a sold ticker's series drops off, a new buy's appears).",
+          "gridPos": {"h": 14, "w": 24, "x": 0, "y": 0},
+          "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity-munger"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "displayName": "${__field.labels.symbol}",
+              "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 4, "showPoints": "auto", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {"mode": "multi", "sort": "none"},
+            "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}
+          },
+          "transformations": [
+            {
+              "id": "partitionByValues",
+              "options": {
+                "fields": ["symbol"],
+                "keepFields": false,
+                "naming": {"asLabels": true}
+              }
+            }
+          ],
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity-munger"},
+              "type": "json",
+              "source": "url",
+              "format": "table",
+              "parser": "backend",
+              "url": "http://munger-report.munger.svc.cluster.local/prices_flat.json",
+              "url_options": {"method": "GET", "data": ""},
+              "root_selector": "",
+              "columns": [
+                {"selector": "symbol", "text": "symbol", "type": "string"},
+                {"selector": "date", "text": "date", "type": "timestamp"},
+                {"selector": "close", "text": "close", "type": "number"}
+              ],
+              "filters": []
+            }
+          ]
+        }
+      ]
+    }
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -211,7 +343,15 @@ spec:
             - containerPort: 3000
           env:
             - name: GF_INSTALL_PLUGINS
-              value: "yesoreyeram-infinity-datasource"
+              # Pinned -- see this ConfigMap's "INFINITY PLUGIN" comment
+              # above for why (a real, currently-unfixed v3.11.2
+              # regression breaks the plugin entirely). Space, not "@":
+              # the docker image's run.sh word-splits this value into
+              # `grafana cli plugins install <id> <version>` positional
+              # args (confirmed against the image's actual run.sh and
+              # `grafana cli plugins install --help`, not guessed --
+              # "@3.11.1" silently 404'd instead of installing anything).
+              value: "yesoreyeram-infinity-datasource 3.11.1"
             - name: GF_AUTH_ANONYMOUS_ENABLED
               value: "true"
             - name: GF_AUTH_ANONYMOUS_ORG_ROLE
@@ -265,6 +405,13 @@ spec:
             - name: dashboard-account-pnl
               mountPath: /var/lib/grafana/dashboards
               readOnly: true
+            # Separate mount path from dashboard-account-pnl above -- matches
+            # the separate provider entry in dashboard-provider's provider.yaml
+            # (see that ConfigMap's comment for why this isn't just a second
+            # file in the same directory).
+            - name: dashboard-prices
+              mountPath: /var/lib/grafana/dashboards-prices
+              readOnly: true
       volumes:
         - name: grafana-data
           emptyDir: {}
@@ -277,6 +424,9 @@ spec:
         - name: dashboard-account-pnl
           configMap:
             name: munger-grafana-dashboard-account-pnl
+        - name: dashboard-prices
+          configMap:
+            name: munger-grafana-dashboard-prices
 ---
 # NodePort 30030 so the dashboards are reachable on the LAN and the report's
 # dashboards.html <iframe> can point at them: set MUNGER_GRAFANA_URL to e.g.

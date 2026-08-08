@@ -743,6 +743,32 @@ def test_disclaimer_banner_appears_on_every_page() -> None:
     assert marker in report._render_dashboards()
 
 
+def test_dashboards_omits_prices_section_when_prices_url_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "GRAFANA_PRICES_URL", "")
+
+    html_out = report._render_dashboards()
+
+    assert "Held-symbol daily close prices" not in html_out
+
+
+def test_dashboards_shows_prices_section_when_prices_url_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # staff-engineer-reviewer finding: the Prices Grafana dashboard was
+    # fully provisioned in k3s with no way for a visitor to ever reach it
+    # from the site -- dashboards.html only ever embedded GRAFANA_BASE_URL
+    # (the P&L dashboard). This locks in that a second, independently
+    # configured URL renders its own iframe.
+    monkeypatch.setattr(config, "GRAFANA_PRICES_URL", "https://grafana.example/d/munger-prices")
+
+    html_out = report._render_dashboards()
+
+    assert "Held-symbol daily close prices" in html_out
+    assert 'src="https://grafana.example/d/munger-prices"' in html_out
+
+
 def test_generate_report_writes_pnl_html_from_a_real_snapshot() -> None:
     _write_pnl_snapshot({"mode": "live", "account": {"equity": 5_000.0}, "positions": []})
     report.generate_report()

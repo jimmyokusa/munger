@@ -158,15 +158,20 @@ def test_bridge_writes_atomically_with_no_leftover_tmp_file(
     assert list(config.REPORT_DIR.glob("*.tmp")) == []
 
 
-def test_bridge_downloads_prices_json_straight_into_report_dir(
+def test_bridge_downloads_prices_json_and_publishes_a_flat_array_for_grafana(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # prices.json (M17 Phase 2) is already a plain JSON object, unlike
-    # pnl_history.jsonl -- straight atomic download, no NDJSON->JSON
-    # transform, landing in REPORT_DIR so nginx serves it for Grafana.
+    # prices.json (M17 Phase 2) is prices.py's own nested-by-symbol shape,
+    # downloaded as-is. Grafana's Infinity datasource + "Partition by
+    # values" transform want a flat, long-format array instead -- derived
+    # here into prices_flat.json, the same "raw + derived pair" pattern
+    # pnl_history.jsonl/.json already uses.
     prices_json = (
-        b'{"generated_at": "2026-08-08T00:00:00+00:00", '
-        b'"symbols": {"AAPL": {"status": "ok"}}}'
+        b'{"generated_at": "2026-08-08T00:00:00+00:00", "symbols": {'
+        b'"AAPL": {"status": "ok", "points": ['
+        b'{"date": "2026-08-05", "close": 200.0}, '
+        b'{"date": "2026-08-06", "close": 202.5}], "fail_reasons": []}, '
+        b'"ZZZZ": {"status": "no_bars", "points": [], "fail_reasons": []}}}'
     )
     _patch_client(
         monkeypatch,
@@ -180,6 +185,37 @@ def test_bridge_downloads_prices_json_straight_into_report_dir(
     gcs_bridge.bridge()
 
     assert (config.REPORT_DIR / "prices.json").read_bytes() == prices_json
+    flat = json.loads((config.REPORT_DIR / "prices_flat.json").read_text())
+    assert flat == [
+        {"symbol": "AAPL", "date": "2026-08-05", "close": 200.0},
+        {"symbol": "AAPL", "date": "2026-08-06", "close": 202.5},
+    ]
+
+
+def test_bridge_leaves_both_prices_files_on_last_good_state_if_prices_json_is_malformed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prices_path = config.REPORT_DIR / "prices.json"
+    flat_path = config.REPORT_DIR / "prices_flat.json"
+    config.REPORT_DIR.mkdir(parents=True)
+    prices_path.write_text('{"generated_at": "x", "symbols": {}}')
+    flat_path.write_text("[]")
+
+    _patch_client(
+        monkeypatch,
+        {
+            "pnl.json": _fake_blob(content=b"{}"),
+            "pnl_history.jsonl": _fake_blob(missing=True),
+            "prices.json": _fake_blob(content=b"not valid json"),
+        },
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        gcs_bridge.bridge()
+
+    assert prices_path.read_text() == '{"generated_at": "x", "symbols": {}}'
+    assert flat_path.read_text() == "[]"
+    assert list(config.REPORT_DIR.glob("*.tmp")) == []
 
 
 def test_bridge_tolerates_a_missing_prices_json_without_skipping_the_other_files(
@@ -207,4 +243,5 @@ def test_bridge_tolerates_a_missing_prices_json_without_skipping_the_other_files
     assert (config.REPORT_DIR / "pnl_history.jsonl").exists()
     assert (config.REPORT_DIR / "pnl_history.json").exists()
     assert not (config.REPORT_DIR / "prices.json").exists()
+    assert not (config.REPORT_DIR / "prices_flat.json").exists()
     assert list(config.REPORT_DIR.glob("*.tmp")) == []

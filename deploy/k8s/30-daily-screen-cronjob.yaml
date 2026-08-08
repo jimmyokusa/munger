@@ -57,6 +57,16 @@ spec:
                 # rebuilt/relabeled.
                 - name: MUNGER_GRAFANA_URL
                   value: "http://10.0.20.10:30030/d/munger-account-pnl/account-pandl-over-time?kiosk"
+                # M17 Phase 2: the Prices dashboard (50-grafana.yaml's
+                # separate munger-grafana-dashboard-prices ConfigMap/mount).
+                # A distinct env var, not derived from MUNGER_GRAFANA_URL
+                # above -- real bug found in review: the Prices Grafana
+                # dashboard was fully provisioned with no way for a site
+                # visitor to ever reach it, since dashboards.html only
+                # embedded MUNGER_GRAFANA_URL. config.GRAFANA_PRICES_URL
+                # gates a second, independent iframe section.
+                - name: MUNGER_GRAFANA_PRICES_URL
+                  value: "http://10.0.20.10:30030/d/munger-prices/held-symbol-daily-close-prices?kiosk"
               volumeMounts:
                 - name: data
                   mountPath: /data

@@ -217,6 +217,17 @@ PROGRESS_FILE_PATH: Path = REPORT_DIR / "progress.json"
 # MUNGER_GRAFANA_URL to the dashboards' embeddable URL on any deployment that
 # has Grafana (k3s dev; grafana.gramunger.com on prod).
 GRAFANA_BASE_URL = os.environ.get("MUNGER_GRAFANA_URL", "")
+# URL of the embedded "Prices" (Graph 2, held-symbol daily close) Grafana
+# dashboard -- M17 Phase 2, DESIGN_DASHBOARDS.md §3. Deliberately a
+# separate constant, not a second URL derived from GRAFANA_BASE_URL: the
+# two dashboards can ship on different schedules (P&L before Prices, as
+# happened this session), so dashboards.html renders whichever iframes are
+# actually configured rather than assuming both always exist together.
+# Same env-gated pattern; empty by default so dashboards.html doesn't
+# advertise a "Prices" panel that isn't deployed yet (real bug found in
+# review: an earlier version of this feature provisioned the Grafana
+# dashboard but had no way for a user to reach it from the site at all).
+GRAFANA_PRICES_URL = os.environ.get("MUNGER_GRAFANA_PRICES_URL", "")
 
 # --- Public site metadata + SEO (M18, DESIGN_WEB_ANALYTICS_SEO.md) ---
 # Absolute origin of the public site (e.g. https://gramunger.com). One
