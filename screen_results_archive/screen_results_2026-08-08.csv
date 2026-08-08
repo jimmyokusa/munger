@@ -69,7 +69,7 @@ WDC,False,74.50346666666667,"data_missing:market_cap,data_missing:price_to_book,
 LRCX,False,74.43522909668965,"graham_pe,graham_pe_times_pb",389585403904.0,53.222225,36.78521,2.629,0.29946,0.65066004,0.50469,0.37433997,3278951936.0,0.0034000000000000002,4.0
 DXCM,False,74.27469935215493,"graham_pe,graham_pe_times_pb",31981324288.0,32.84884,12.201266,1.733,0.5334599999999999,0.38491002,0.62473,0.24327,1021162496.0,,4.0
 WEX,False,74.18864285714287,"graham_current_ratio,graham_debt_to_equity,graham_pe_times_pb",6312595968.0,18.9,4.7248793,1.045,3.98423,0.3019,0.73232,0.26941,1331299968.0,,4.0
-HL,False,74.07128438924774,"data_missing:consecutive_positive_earnings_years,graham_pe_times_pb",11319299072.0,19.147728,4.3960347,5.197,0.008020000000000001,0.22173999,0.61395,0.4427,342344736.0,0.0009,
+HL,False,74.07128438924774,"graham_earnings_stability,graham_pe_times_pb",11319299072.0,19.147728,4.3960347,5.197,0.008020000000000001,0.22173999,0.61395,0.4427,342344736.0,0.0009,2.0
 FTDR,False,73.93683415863657,"graham_debt_to_equity,graham_pe,graham_pe_times_pb",6257579520.0,23.715406,27.85342,1.591,4.1408499999999995,1.01859,0.55544996,0.28217,333624992.0,,4.0
 GFF,False,73.8752380952381,"graham_debt_to_equity,graham_earnings_stability,graham_pe,graham_pe_times_pb",4917820416.0,22.152893,52.353516,2.411,10.351759999999999,2.27544,0.41297,0.23589,444938752.0,0.0083,3.0
 MA,False,73.59842735540826,"graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb",493149782016.0,31.64418,88.01595,1.061,4.39583,2.41202,1.0,0.61108,16961250304.0,0.006,4.0
@@ -94,7 +94,7 @@ ACGL,False,71.58950465476191,graham_current_ratio,33604245504.0,7.7726917,1.4414
 DOCU,False,71.56460789285714,"graham_current_ratio,graham_earnings_stability,graham_pe,graham_pe_times_pb",11506321408.0,39.12987,6.392956,0.665,0.10074999999999999,0.16440001,0.79541,0.13407,1250368768.0,,3.0
 PGR,False,71.52014523809524,"graham_current_ratio,graham_pe_times_pb,munger_gross_margin",125186785280.0,10.798897,3.6464474,0.293,0.24428,0.34943,0.18521,0.18208,15114500096.0,0.0645,4.0
 COCO,False,71.48878191533764,"graham_pe,graham_pe_times_pb",3602043392.0,35.57143,8.911954,3.356,0.03508,0.31370002,0.41127998,0.29209998,104597248.0,,4.0
-RRC,False,71.44270596863589,graham_current_ratio,8945251328.0,10.574586,1.8995632,0.649,0.21589,0.19475001,0.52119,0.36101002,454483360.0,0.0104,4.0
+RRC,False,71.44270596863589,graham_current_ratio,8945251328.0,10.662952,1.8995632,0.649,0.21589,0.19475001,0.52119,0.36101002,454483360.0,0.0104,4.0
 RLI,False,71.3888854778967,"data_missing:price_to_book,graham_current_ratio",5894578176.0,13.493697,,1.06,0.18189,0.25164,0.35513002,0.36861,316104256.0,0.011200000000000002,4.0
 RELY,False,71.37273901312176,"graham_earnings_stability,graham_pe_times_pb",5141901312.0,18.641222,5.92,3.181,0.03396,0.32246,0.61458,0.13467,142452624.0,,1.0
 MNST,False,71.36988022178743,"graham_pe,graham_pe_times_pb",88509956096.0,43.652176,10.1255045,3.257,0.010820000000000001,0.26654,0.55471003,0.31019,1684340480.0,,4.0
@@ -191,8 +191,8 @@ EPAC,False,65.21531593597423,"graham_size,graham_pe,graham_pe_times_pb",19442083
 MKTX,False,65.21374999999999,"data_missing:free_cash_flow,graham_pe_times_pb",5719900672.0,19.23432,4.618248,7.037,0.14275000000000002,0.2314,0.61667997,0.41862,,0.0192,4.0
 OLED,False,65.11392789265916,"graham_pe,graham_pe_times_pb,munger_roe",4191715840.0,22.026571,2.5035005,8.498,0.01288,0.115159996,0.73767996,0.35257998,111837128.0,0.0229,4.0
 SPG,False,65.0,"data_missing:market_cap,graham_current_ratio,graham_debt_to_equity,graham_pe_times_pb",,15.512178,15.002692,0.196,4.57473,1.1359,0.81582,0.43376,2494690560.0,0.0397,4.0
-VIRT,False,65.0,"data_missing:free_cash_flow,graham_current_ratio,graham_debt_to_equity",4931592704.0,9.231404,2.8013241,1.108,4.15015,0.53617,0.65787005,0.36321,,0.0173,4.0
 ORCL,False,65.0,"graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_fcf",423486849024.0,25.261168,11.27454,1.115,3.8887,0.53376,0.65822,0.36202,-24536750080.0,0.0139,4.0
+VIRT,False,65.0,"data_missing:free_cash_flow,graham_current_ratio,graham_debt_to_equity",4931592704.0,9.231404,2.8013241,1.108,4.15015,0.53617,0.65787005,0.36321,,0.0173,4.0
 JNJ,False,64.91698884348021,"graham_current_ratio,graham_pe,graham_pe_times_pb",624742039552.0,29.866358,7.347239,1.089,0.57709,0.25742,0.6814,0.2919,16885125120.0,0.0209,4.0
 MUR,False,64.88253725997868,"graham_current_ratio,munger_roe",4783575040.0,16.357843,0.9381501,0.854,0.41896,0.06461,0.82636,0.38206002,312294496.0,0.0424,4.0
 FTI,False,64.8124307486996,"graham_current_ratio,graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_gross_margin",27302486016.0,24.342659,8.358747,1.08,0.37898000000000004,0.35814,0.22966999,0.1769,1463362560.0,0.0029,3.0
@@ -201,7 +201,7 @@ OGN,False,64.71389285714287,"graham_debt_to_equity,graham_pe_times_pb",357148851
 SPSC,False,64.70942618174867,"graham_pe,graham_pe_times_pb,munger_roe",2641692928.0,34.61321,2.8300357,2.259,0.00672,0.08262,0.69821,0.16108999,176569376.0,,4.0
 MPWR,False,64.70342548022697,"graham_pe,graham_pe_times_pb",68875878400.0,85.25182,17.680809,4.975,0.00486,0.21979,0.55195,0.30989,444316128.0,0.0059,4.0
 FAF,False,64.64292142857143,"graham_current_ratio,munger_roe",7577862144.0,10.424158,1.3468589,0.396,0.49421,0.13846,0.63984,0.15567,2337762560.0,0.029300000000000003,4.0
-NATL,False,64.58761904761904,"graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,graham_pe_times_pb,munger_gross_margin",3442119424.0,18.054264,8.680581,1.026,6.32759,0.48529,0.25345,0.14325,476750016.0,,2.0
+NATL,False,64.58761904761904,"data_missing:consecutive_positive_earnings_years,graham_current_ratio,graham_debt_to_equity,graham_pe_times_pb,munger_gross_margin",3442119424.0,18.054264,8.680581,1.026,6.32759,0.48529,0.25345,0.14325,476750016.0,,
 ODFL,False,64.48770106893625,"graham_pe,graham_pe_times_pb",44996018176.0,41.607693,9.871339,1.889,0.0044,0.24818,0.39566,0.28835,970776000.0,0.0055000000000000005,4.0
 TRNO,False,64.4116574040309,"graham_current_ratio,graham_pe_times_pb,munger_roe",7492798976.0,18.336,1.6922207,0.62,0.21396,0.0928,0.76206,0.41769,319524640.0,0.0335,4.0
 IESC,False,64.40910543214942,"graham_pe,graham_pe_times_pb,munger_gross_margin",15196506112.0,34.110466,12.362591,1.63,0.062329999999999997,0.44522998,0.26305,0.14364,329443360.0,,4.0
@@ -345,7 +345,7 @@ NGVT,False,57.386160211340844,"graham_debt_to_equity,graham_earnings_stability,g
 CHE,False,57.37583202494907,"graham_current_ratio,graham_pe,graham_pe_times_pb",7224028672.0,27.622187,8.661829,0.911,0.35495,0.27106002,0.33113998,0.1325,307859488.0,0.0044,4.0
 BSX,False,57.3700283025852,"graham_current_ratio,graham_pe_times_pb",71461511168.0,19.963564,2.8615367,1.24,0.50151,0.15338999,0.69189,0.22895999,2451375104.0,,4.0
 PNR,False,57.32103585174968,"graham_current_ratio,graham_pe_times_pb",10994843648.0,18.03403,2.9332368,1.451,0.47067,0.17126,0.41388,0.2344,558312512.0,0.0152,4.0
-WTS,False,57.26749894790329,"data_missing:consecutive_positive_earnings_years,graham_pe,graham_pe_times_pb",13093833728.0,32.9052,6.2483873,2.66,0.09673999999999999,0.18805,0.48853,0.20912,228787504.0,0.0060999999999999995,
+WTS,False,57.26749894790329,"graham_pe,graham_pe_times_pb",13093833728.0,32.9052,6.2483873,2.66,0.09673999999999999,0.18805,0.48853,0.20912,228787504.0,0.0060999999999999995,4.0
 AIG,False,57.2198670952381,"graham_current_ratio,graham_earnings_stability,munger_roe",41335865344.0,14.093022,1.0390399,0.611,0.22646999999999998,0.07723,0.35534,0.18620001,9517249536.0,0.025,1.0
 SYK,False,57.196887691341544,"graham_pe,graham_pe_times_pb",130042773504.0,34.951546,5.6560616,2.157,0.6439100000000001,0.16508,0.65588,0.27015,4107624960.0,0.0104,4.0
 STAG,False,57.15899174245054,"graham_pe,graham_pe_times_pb,munger_roe",7340926464.0,28.257574,1.989015,1.816,0.9378,0.069759995,0.79549,0.37036,469642880.0,0.0421,4.0
@@ -378,7 +378,7 @@ PLD,False,56.159414135223585,"graham_current_ratio,graham_pe,graham_pe_times_pb,
 ITW,False,56.14980952380952,"data_missing:free_cash_flow,graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb",84488765440.0,26.84706,29.357746,1.109,3.3485300000000002,1.04618,0.44162,0.26668,,0.0219,4.0
 CRGY,False,56.13775000000001,"graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe",4551673856.0,144.625,0.7418569,0.945,1.00234,0.01517,0.62158,0.53849,601587648.0,0.0424,1.0
 DLTR,False,56.05411447429694,"graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,graham_pe,graham_pe_times_pb",25155653632.0,20.843946,7.218484,1.161,2.16518,0.33976,0.36991,0.09088001,1443624960.0,,1.0
-CCL,False,56.014845382094,"graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,graham_pe_times_pb",39706128384.0,13.058558,3.0670757,0.334,2.0155600000000002,0.26689,0.55676997,0.12787,1899374976.0,0.015600000000000001,2.0
+CCL,False,56.014845382094,"graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,graham_pe_times_pb",39706128384.0,12.941964,3.0670757,0.334,2.0155600000000002,0.26689,0.55676997,0.12787,1899374976.0,0.015600000000000001,2.0
 CMCSA,False,56.00199927142857,"graham_current_ratio,graham_debt_to_equity,munger_roe",89993428992.0,8.076433,1.001936,0.796,1.00474,0.114879996,0.6939,0.17233999,12697624576.0,0.0524,4.0
 TMDX,False,55.95803894264162,"graham_debt_to_equity,graham_earnings_stability,graham_pe,graham_pe_times_pb",2908897792.0,20.76485,5.8664336,6.625,1.67496,0.36285,0.58694,0.124960005,44496752.0,,2.0
 HWM,False,55.93947244901144,"graham_pe,graham_pe_times_pb",112414146560.0,62.501106,20.469103,1.818,0.78524,0.34732,0.36032,0.27915,1211750016.0,0.0019,4.0
@@ -462,7 +462,7 @@ ADI,False,53.357749999999996,"data_missing:market_cap,graham_pe,graham_pe_times_
 NTST,False,53.21523190893721,"graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe",2108935424.0,147.78572,1.335873,5.531,0.88837,0.00962,0.90376997,0.39020002,133447376.0,0.042800000000000005,1.0
 WFRD,False,53.16580952380953,graham_pe_times_pb,6223729664.0,17.539394,3.486327,2.344,0.9066500000000001,0.22793,0.30515,0.10498,558000000.0,0.0124,4.0
 LIF,False,53.12321353603608,"graham_earnings_stability,graham_pe,graham_pe_times_pb",5120797696.0,34.15946,8.523262,5.372,0.52071,0.30646,0.77102,-0.05644,60412376.0,,1.0
-HLI,False,53.10217217857143,"data_missing:free_cash_flow,data_missing:consecutive_positive_earnings_years,graham_pe,graham_pe_times_pb",9015358464.0,21.464226,3.9987602,1.664,0.20846,0.17794001,0.94111,0.18395,,0.0219,
+HLI,False,53.10217217857143,"data_missing:free_cash_flow,graham_pe,graham_pe_times_pb",9015358464.0,21.464226,3.9987602,1.664,0.20846,0.17794001,0.94111,0.18395,,0.0219,4.0
 LIVN,False,53.08154318275834,"graham_current_ratio,graham_earnings_stability,graham_pe,graham_pe_times_pb",4187034112.0,22.351906,3.4544961,1.45,0.26556,0.15404001,0.68266,0.15516,64685124.0,,0.0
 IBKR,False,53.01424850000001,"data_missing:free_cash_flow,graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb",149646131200.0,34.1751,6.663379,1.096,2.04148,0.24018998,0.93036,0.76532996,,0.0040999999999999995,4.0
 TRU,False,52.92484722036856,"graham_debt_to_equity,graham_earnings_stability,graham_pe,graham_pe_times_pb",15331831808.0,20.89295,3.2454574,1.9,1.13212,0.15626,0.5873,0.19701,808625024.0,0.0063,2.0
@@ -527,7 +527,7 @@ NABL,False,51.03530714285714,"data_missing:trailing_pe,graham_size,graham_curren
 TRMB,False,50.902754935759084,"graham_current_ratio,graham_pe,graham_pe_times_pb,munger_roe",13872465920.0,31.157068,2.4459515,1.014,0.25062,0.08252,0.71480006,0.15874,370112512.0,,4.0
 DD,False,50.72179523809523,"graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe",19239573504.0,61.675327,1.3972716,2.427,0.22902,0.01792,0.35132,0.14239,1835250048.0,0.0167,0.0
 VICI,False,50.612553003431394,munger_roe,29442811904.0,10.2846155,1.0140696,11.236,0.60277,0.09849,0.99271005,0.70182997,267028992.0,0.0678,4.0
-IIPR,False,50.60495045000001,"data_missing:free_cash_flow,graham_size,munger_roe",1715365632.0,13.384615,0.9468933,4.321,0.32892000000000005,0.073850006,0.88355005,0.46752,,0.13019999999999998,4.0
+IIPR,False,50.60495045000001,"data_missing:free_cash_flow,graham_size,munger_roe",1715365632.0,13.205357,0.9468933,4.321,0.32892000000000005,0.073850006,0.88355005,0.46752,,0.13019999999999998,4.0
 SCI,False,50.528617991063605,"graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_gross_margin",11586148352.0,22.195824,7.4121547,0.531,3.44863,0.34714,0.26026,0.21003,315907872.0,0.0169,4.0
 WM,False,50.502347278538885,"graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb",91007156224.0,60.232803,9.175096,0.907,2.35301,0.29841,0.40601003,0.18986,2348375040.0,0.0155,4.0
 AMD,False,50.46160339111646,"graham_pe,graham_pe_times_pb,munger_roe",789073100800.0,124.89922,11.734601,2.609,0.06361,0.10196,0.55724,0.1725,8841499648.0,,4.0
@@ -576,7 +576,7 @@ MRVL,False,48.939319895878384,"graham_earnings_stability,graham_pe,graham_pe_tim
 NHC,False,48.93510874543482,"graham_pe,graham_pe_times_pb,munger_roe",3375656960.0,27.847546,3.0835478,1.856,0.03585,0.12014,0.39181998,0.08447,118574000.0,0.0121,4.0
 VNOM,False,48.9063067606914,"data_missing:trailing_pe,graham_earnings_stability,munger_roe",21422979072.0,,1.5509708,6.374,0.1632,0.0109,0.97966003,0.63596,46000000.0,0.0592,0.0
 WTW,False,48.86153169570745,"graham_current_ratio,graham_earnings_stability,graham_pe,graham_pe_times_pb",32024100864.0,21.051283,4.171395,1.098,0.9139,0.19761999,0.42516,0.17559,1415624960.0,0.0113,1.0
-TREX,False,48.84942773424229,"graham_current_ratio,graham_pe,graham_pe_times_pb",5008711168.0,28.421965,5.130426,1.061,0.30034,0.17740999,0.38204,0.20618999,69669128.0,,4.0
+TREX,False,48.84942773424229,"data_missing:consecutive_positive_earnings_years,graham_current_ratio,graham_pe,graham_pe_times_pb",5008711168.0,28.421965,5.130426,1.061,0.30034,0.17740999,0.38204,0.20618999,69669128.0,,
 BURL,False,48.81687738054566,"graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb",23223156736.0,37.958847,12.496105,1.164,3.19733,0.39141,0.43947,0.05933,210811744.0,,4.0
 TYL,False,48.77904182550662,"graham_pe,graham_pe_times_pb,munger_roe",12795537408.0,40.31613,4.2106895,1.554,0.47906,0.09731,0.47205,0.14741,594435648.0,,4.0
 ATEN,False,48.75367709263237,"graham_size,graham_current_ratio,graham_pe,graham_pe_times_pb",1948826240.0,47.92857,8.17296,1.29,0.9376000000000001,0.19444999,0.79379,0.11261,65541248.0,0.0087,4.0
@@ -651,7 +651,7 @@ PPG,False,46.54968862631074,graham_pe_times_pb,26613755904.0,16.814608,3.1521854
 CNR,False,46.50476579933061,"graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe,munger_gross_margin",4447408640.0,45.252525,1.2010562,1.825,0.12037,0.02675,0.17333001,0.13155,353809888.0,0.0044,0.0
 FOX,False,46.44855739117713,"graham_pe_times_pb,munger_roe",23932647424.0,14.401515,2.1877396,3.169,0.5591700000000001,0.14291,0.36629,0.25736,562750016.0,0.0101,4.0
 SPHR,False,46.40358054668313,"data_missing:trailing_pe,graham_current_ratio,graham_earnings_stability,munger_roe",5729656832.0,,2.571774,1.224,0.40995,-0.03097,0.54707,-0.19548,442722880.0,,1.0
-HLNE,False,46.3538,"data_missing:current_ratio,data_missing:return_on_equity,data_missing:free_cash_flow,data_missing:consecutive_positive_earnings_years,graham_pe_times_pb",6763664384.0,15.011887,4.8235855,,0.24308,,0.6066,0.45933998,,0.024399999999999998,
+HLNE,False,46.3538,"data_missing:current_ratio,data_missing:return_on_equity,data_missing:free_cash_flow,graham_pe_times_pb",6763664384.0,15.011887,4.8235855,,0.24308,,0.6066,0.45933998,,0.024399999999999998,4.0
 SMP,False,46.304007142857145,"graham_size,munger_roe",910590272.0,10.014741,1.2685567,2.003,0.9527899999999999,0.12528,0.31992,0.12917,130171000.0,0.0336,4.0
 VSXY,False,46.294108045378,"graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb",7833114112.0,37.325756,9.854,1.264,3.3739600000000003,0.32016,0.37012002,0.05192,241875008.0,,4.0
 PLMR,False,46.26622380952381,"data_missing:free_cash_flow,graham_current_ratio,graham_pe_times_pb,munger_gross_margin",3472007168.0,18.398876,3.6216857,0.541,0.30152,0.22226,0.26792,0.23774,,0.0132,4.0
@@ -730,10 +730,10 @@ VAC,False,43.30904761904762,"data_missing:trailing_pe,graham_debt_to_equity,grah
 NTCT,False,43.24811428571429,"data_missing:free_cash_flow,graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe",2794868992.0,30.751999,1.6656556,1.825,0.02404,0.0754,0.79839,0.06892,,,1.0
 PM,False,43.219527458775545,"data_missing:debt_to_equity,data_missing:return_on_equity,graham_current_ratio,graham_pe,graham_pe_times_pb",295466336256.0,26.039835,-34.423462,0.98,,,0.67481005,0.40002,9714374656.0,0.0313,4.0
 FIVE,False,43.196594688439966,"graham_pe,graham_pe_times_pb",13512524800.0,29.161097,5.843516,2.098,0.86432,0.21127,0.36805,0.11998,427309888.0,,4.0
-PIPR,False,43.163964285714286,"data_missing:current_ratio,data_missing:return_on_equity,data_missing:free_cash_flow,graham_pe_times_pb",5285430784.0,17.3125,3.7822394,,0.07325,,0.91817003,0.21613,,0.0108,4.0
+PIPR,False,43.163964285714286,"data_missing:current_ratio,data_missing:return_on_equity,data_missing:free_cash_flow,graham_pe_times_pb",5285430784.0,17.23272,3.7822394,,0.07325,,0.91817003,0.21613,,0.0108,4.0
 MDT,False,43.09650676785714,"data_missing:market_cap,graham_pe,graham_pe_times_pb,munger_roe",,23.367292,2.2558105,2.126,0.58214,0.098409995,0.65309,0.22045,4625375232.0,0.0335,4.0
 CNM,False,43.05822711013475,"graham_debt_to_equity,graham_pe_times_pb,munger_gross_margin",9009288192.0,19.235537,4.2867665,2.312,1.15941,0.23888001,0.2706,0.09267,437875008.0,,4.0
-WWD,False,43.036056957205034,"data_missing:consecutive_positive_earnings_years,graham_pe,graham_pe_times_pb,munger_gross_margin",21427138560.0,40.637177,8.56317,1.645,0.5594100000000001,0.22339001,0.29626,0.17764,187228624.0,0.0034999999999999996,
+WWD,False,43.036056957205034,"graham_pe,graham_pe_times_pb,munger_gross_margin",21427138560.0,40.637177,8.56317,1.645,0.5594100000000001,0.22339001,0.29626,0.17764,187228624.0,0.0034999999999999996,4.0
 ENOV,False,43.01200000000001,"data_missing:trailing_pe,graham_size,graham_earnings_stability,munger_roe",1534585344.0,,1.0369418,1.985,0.9084,-0.54142,0.62115,0.03822,229472880.0,,0.0
 CRH,False,43.00702285043837,graham_pe_times_pb,66847784960.0,17.234993,2.783842,1.579,0.7759199999999999,0.15812,0.3625,0.19022,2019124992.0,0.016,4.0
 MOG-A,False,42.998418836424236,"graham_pe,graham_pe_times_pb,munger_gross_margin",12766963712.0,34.27806,6.0748672,2.087,0.51557,0.18106002,0.28204,0.14516,333472640.0,0.0029,4.0
@@ -752,7 +752,7 @@ AWK,False,42.571250000000006,"graham_current_ratio,graham_debt_to_equity,graham_
 CENX,False,42.56052958571428,"graham_earnings_stability,graham_pe_times_pb,munger_gross_margin,munger_fcf",5071426560.0,15.247025,6.2936115,2.303,0.42499000000000003,0.32259998,0.121700004,0.13262,-85825000.0,,2.0
 LNN,False,42.43102540105279,"graham_size,graham_pe,graham_pe_times_pb,munger_roe,munger_gross_margin",1180200832.0,22.02277,2.3647106,2.935,0.27616,0.10741,0.29463,0.115159996,41360124.0,0.013300000000000001,4.0
 MSEX,False,42.35804010119048,"graham_size,graham_current_ratio,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",1097094528.0,22.221376,2.1053014,0.497,0.83981,0.097679995,0.53659,0.344,-28346000.0,0.025099999999999997,4.0
-JCI,False,42.34497423452071,"graham_current_ratio,graham_pe,graham_pe_times_pb,munger_roe",92199911424.0,42.87606,6.8387475,1.0,0.70107,0.14332,0.36651,0.15875,2984124928.0,0.0104,4.0
+JCI,False,42.34497423452071,"graham_current_ratio,graham_pe,graham_pe_times_pb,munger_roe",92199911424.0,43.488575,6.8387475,1.0,0.70107,0.14332,0.36651,0.15875,2984124928.0,0.0104,4.0
 CBT,False,42.30318885106377,"graham_current_ratio,graham_pe,graham_pe_times_pb,munger_roe,munger_gross_margin",4523909120.0,24.543419,2.882237,1.467,0.74394,0.13345,0.24215999,0.14257,258250000.0,0.021099999999999997,4.0
 MSCI,False,42.295030711653794,"data_missing:debt_to_equity,data_missing:return_on_equity,graham_current_ratio,graham_pe,graham_pe_times_pb",40942456832.0,31.06288,-15.223279,0.894,,,0.82975,0.56298,1194705920.0,0.014499999999999999,4.0
 ATR,False,42.27797877216089,"graham_pe,graham_pe_times_pb,munger_roe",8610156544.0,24.488245,3.2769508,1.614,0.5278,0.13459,0.3607,0.12494001,265978880.0,0.0141,4.0
@@ -793,7 +793,7 @@ WINA,False,41.23026890301314,"data_missing:debt_to_equity,data_missing:return_on
 CI,False,41.178190309523806,"graham_current_ratio,munger_gross_margin",74645291008.0,11.687629,1.7478329,0.846,0.7429000000000001,0.16758,0.091359995,0.03985,7980125184.0,0.0227,4.0
 FLS,False,40.978424435343605,"graham_pe,graham_pe_times_pb",10162666496.0,27.857143,4.502703,2.153,0.9960800000000001,0.16936001,0.35146,0.13919,428336256.0,0.011200000000000002,4.0
 APTV,False,40.977371,"graham_pe,munger_roe,munger_gross_margin",10288231424.0,20.995764,1.1396044,2.018,0.6493800000000001,0.05158,0.19251,0.12675999,1615874944.0,,4.0
-BOOT,False,40.94029388238897,"graham_pe,graham_pe_times_pb",4954600448.0,20.682682,3.7530684,2.53,0.59323,0.19174999,0.38451,0.15253,21869500.0,,4.0
+BOOT,False,40.94029388238897,"graham_pe,graham_pe_times_pb",4954600448.0,20.73511,3.7530684,2.53,0.59323,0.19174999,0.38451,0.15253,21869500.0,,4.0
 WWW,False,40.88753571428572,"data_missing:market_cap,data_missing:price_to_book,graham_debt_to_equity,graham_earnings_stability",,15.516394,,1.533,1.81316,0.29239,0.47322,0.0743,97575000.0,0.021,2.0
 HOG,False,40.88128571428572,"munger_roe,munger_gross_margin",2706925824.0,14.291208,0.8772936,1.903,0.71965,0.06093,0.28377,0.06177,764361984.0,0.0286,4.0
 RBA,False,40.858944315582164,"graham_current_ratio,graham_pe,graham_pe_times_pb,munger_roe",17542144000.0,40.827587,3.1405835,1.312,0.77606,0.08066,0.45761,0.17721,603587520.0,0.014199999999999999,4.0
@@ -831,7 +831,7 @@ DGX,False,40.03342146268505,"graham_pe,graham_pe_times_pb,munger_roe",2630749184
 FOUR,False,39.979832195238096,"graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_roe",3257894400.0,47.425285,5.0508018,1.211,2.6232100000000003,0.064899996,0.35904998,0.073359996,355024992.0,,4.0
 AMH,False,39.97713233333333,"data_missing:market_cap,graham_pe,graham_pe_times_pb,munger_roe",,27.484129,1.830435,1.672,0.68848,0.07084,0.56646997,0.25921,822327360.0,0.0382,4.0
 LFUS,False,39.97130669268771,"data_missing:trailing_pe,graham_earnings_stability,munger_roe",11595798528.0,,4.428268,2.761,0.27093,-0.0030899998,0.39343,0.18799,364767136.0,0.006999999999999999,0.0
-WTRG,False,39.95616666666667,"data_missing:consecutive_positive_earnings_years,graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",11356664832.0,20.428572,1.6459079,0.777,1.21656,0.08078,0.56693,0.35409,-653414272.0,0.0362,
+WTRG,False,39.95616666666667,"graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",11356664832.0,20.428572,1.6459079,0.777,1.21656,0.08078,0.56693,0.35409,-653414272.0,0.0362,4.0
 APO,False,39.88111233333334,"data_missing:free_cash_flow,graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe",73401843712.0,45.514286,3.743501,5.053,0.33091000000000004,0.11412,0.36109,0.21582001,,0.0176,3.0
 HLT,False,39.87501032873039,"data_missing:debt_to_equity,data_missing:return_on_equity,graham_current_ratio,graham_pe,graham_pe_times_pb",71480614912.0,47.19168,-11.372507,0.649,,,0.79036003,0.62987,1393874944.0,0.0019,4.0
 CHRW,False,39.83039806353684,"graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_gross_margin",17451151360.0,28.500956,10.745791,1.582,1.21188,0.37123,0.08447,0.05337,480618368.0,0.0172,4.0
@@ -927,7 +927,7 @@ PPC,False,36.87334433055739,"graham_current_ratio,munger_roe,munger_gross_margin
 OGE,False,36.838288018438284,"graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_roe",9713452032.0,20.532751,1.9499854,0.767,1.1730500000000001,0.09703,0.44762,0.26549,126750000.0,0.0363,4.0
 BILL,False,36.82082678326739,"data_invalid_outlier:trailing_pe,graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe",4779646976.0,inf,1.2567104,1.661,0.49591999999999997,4.0000003e-05,0.83681,0.01143,167608256.0,,1.0
 ATI,False,36.77320202705941,"graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_gross_margin",31025059840.0,65.28367,16.514933,2.327,1.09699,0.25357,0.23858999,0.16635999,331687488.0,,4.0
-CWT,False,36.70862857142858,"graham_current_ratio,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",3124729600.0,22.659191,1.7287625,0.701,0.9267700000000001,0.07677,0.53286,0.28211,-258749376.0,0.0271,4.0
+CWT,False,36.70862857142858,"graham_current_ratio,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",3124729600.0,22.162281,1.7287625,0.701,0.9267700000000001,0.07677,0.53286,0.28211,-258749376.0,0.0271,4.0
 LEN,False,36.62342750543924,"munger_roe,munger_gross_margin",21242132480.0,13.300151,0.982496,8.508,0.28692,0.07368,0.16363001,0.052750003,1077926016.0,0.0236,4.0
 RGEN,False,36.585674415259916,"graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe",9249798144.0,224.52054,4.3789573,9.05,0.32715000000000005,0.0199,0.53836,0.09309,113421752.0,,1.0
 TRN,False,36.558048285714285,"graham_debt_to_equity,munger_gross_margin,munger_fcf",2382117632.0,7.3284316,2.214979,2.168,4.68386,0.30156,0.26239002,0.12121,-335049984.0,0.04,4.0
@@ -978,17 +978,17 @@ PSKY,False,35.11466600000001,"graham_current_ratio,graham_debt_to_equity,graham_
 BAX,False,35.10734014971179,"data_missing:trailing_pe,graham_debt_to_equity,graham_earnings_stability,munger_roe",14243238912.0,,2.2950683,1.946,1.5644900000000002,-0.14371,0.34098,0.14425999,1000374976.0,0.0015,0.0
 QDEL,False,35.05966666666667,"data_missing:trailing_pe,graham_size,graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,munger_roe",837726336.0,,0.45188698,1.431,1.5527199999999999,-0.49948,0.45179,-0.04098,208575008.0,,0.0
 IPGP,False,35.05825814735295,"graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe",3837891584.0,132.69118,1.804167,6.179,0.00764,0.01302,0.38351002,0.07595,48475500.0,,1.0
-ZTS,False,35.0,"data_missing:price_to_book,data_missing:current_ratio,data_missing:return_on_equity,data_missing:free_cash_flow,graham_debt_to_equity",30024828928.0,11.950659,,,2.86236,,0.71726996,0.40478,,0.0274,4.0
 PAYX,False,35.0,"data_missing:return_on_equity,data_missing:free_cash_flow,graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb",42696167424.0,24.548058,11.428028,1.152,1.23967,,0.67197996,0.38325,,0.039599999999999996,4.0
+ZTS,False,35.0,"data_missing:price_to_book,data_missing:current_ratio,data_missing:return_on_equity,data_missing:free_cash_flow,graham_debt_to_equity",30024828928.0,11.950659,,,2.86236,,0.71726996,0.40478,,0.0274,4.0
 CLH,False,34.96347138648848,"graham_debt_to_equity,graham_pe,graham_pe_times_pb",16267447296.0,37.399273,5.5554156,2.131,1.10951,0.15562001,0.32257,0.15498,383758016.0,,4.0
 PK,False,34.89876257142858,"data_missing:trailing_pe,graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,munger_roe",2972100864.0,,0.9619396,0.257,1.33366,-0.06431,0.30457002,0.11075,1040499968.0,0.0669,0.0
 PEB,False,34.89751904761905,"data_missing:trailing_pe,graham_current_ratio,graham_earnings_stability,munger_roe,munger_gross_margin",2051480704.0,,0.8454241,0.708,0.97934,-0.016339999,0.25336,0.14332,258438128.0,0.0022,0.0
 SMG,False,34.891536130907596,"data_missing:debt_to_equity,data_missing:return_on_equity,graham_current_ratio,graham_earnings_stability,graham_pe,graham_pe_times_pb",3662637312.0,24.011452,-12.778793,1.215,,,0.32157,0.16825001,248500000.0,0.0425,1.0
-PTEN,False,34.8905360189319,"data_missing:trailing_pe,data_missing:consecutive_positive_earnings_years,munger_roe,munger_gross_margin",3764268544.0,,1.2143208,1.75,0.41383000000000003,-0.0277,0.23754999,-0.00567,273732384.0,0.0398,
+PTEN,False,34.8905360189319,"data_missing:trailing_pe,graham_earnings_stability,munger_roe,munger_gross_margin",3764268544.0,,1.2143208,1.75,0.41383000000000003,-0.0277,0.23754999,-0.00567,273732384.0,0.0398,0.0
 CNXC,False,34.87271428571429,"data_missing:trailing_pe,graham_size,graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,munger_roe",1569392000.0,,0.57950115,1.179,2.03764,-0.37662,0.3447,0.07893,775551744.0,0.0546,0.0
 PBF,False,34.79185247847709,"graham_current_ratio,graham_earnings_stability,munger_gross_margin",7314908672.0,5.366087,1.3223476,1.33,0.38423999999999997,0.23228,0.050430004,0.08801,78462496.0,0.018000000000000002,0.0
 LYV,False,34.78853726261606,"data_missing:trailing_pe,graham_current_ratio,graham_debt_to_equity,munger_gross_margin",42086465536.0,,506.05045,0.852,6.202140000000001,0.17677,0.25777,0.06696,1695030656.0,,4.0
-PTGX,False,34.77635,"data_missing:consecutive_positive_earnings_years,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",9438997504.0,143.0098,14.292572,17.756,0.014910000000000001,-0.17063,1.0,-0.064720005,-77664624.0,,
+PTGX,False,34.77635,"graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",9438997504.0,143.0098,14.292572,17.756,0.014910000000000001,-0.17063,1.0,-0.064720005,-77664624.0,,0.0
 WRLD,False,34.69775,"data_missing:free_cash_flow,graham_size,graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_roe",872620928.0,23.747461,2.3905518,13.491,1.78936,0.09901,0.69242996,0.16968,,,4.0
 UFPI,False,34.610105222591436,"graham_pe,graham_pe_times_pb,munger_roe,munger_gross_margin",5187386880.0,20.944323,1.7247134,3.981,0.07657,0.08021,0.16128,0.05508,145378256.0,0.015700000000000002,4.0
 ALGM,False,34.59778309415567,"graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe",8158817792.0,625.2857,8.457971,3.703,0.31472,0.015269999,0.47375,0.09824,103498872.0,,0.0
@@ -1022,7 +1022,7 @@ VYX,False,33.627761904761904,"graham_size,graham_current_ratio,graham_debt_to_eq
 NTNX,False,33.6208123032576,"data_missing:debt_to_equity,data_missing:return_on_equity,graham_earnings_stability,graham_pe,graham_pe_times_pb",16940986368.0,63.30303,-23.023512,1.777,,,0.87095,0.10029,631740864.0,,1.0
 CNP,False,33.539702380952384,"graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",26796740608.0,24.214287,2.2862926,1.123,2.10256,0.09825,0.47027,0.24489,-5191875072.0,0.0236,4.0
 ETSY,False,33.43517161854152,"data_missing:debt_to_equity,data_missing:return_on_equity,graham_current_ratio,graham_earnings_stability,graham_pe,graham_pe_times_pb",7851928576.0,26.00304,-7.140473,1.476,,,0.71401,0.18744,169665376.0,,3.0
-LTH,False,33.3994160952381,"graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",9789868032.0,23.939892,2.961336,0.657,1.29478,0.13445,0.48022997,0.17052001,-345163264.0,,3.0
+LTH,False,33.3994160952381,"graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",9789868032.0,23.809782,2.961336,0.657,1.29478,0.13445,0.48022997,0.17052001,-345163264.0,,3.0
 CASY,False,33.29611846548734,"graham_current_ratio,graham_pe,graham_pe_times_pb,munger_gross_margin",30860247040.0,43.480186,7.788102,1.01,0.7351399999999999,0.19153,0.24606001,0.05351,550939648.0,0.0031,4.0
 NUE,False,33.234473059523815,"data_missing:market_cap,graham_pe,graham_pe_times_pb,munger_roe,munger_gross_margin",,21.74083,2.8139837,2.508,0.30512,0.14548999,0.15554,0.15668,669000000.0,0.008199999999999999,4.0
 TXT,False,33.21610093951946,"graham_pe_times_pb,munger_roe,munger_gross_margin",15380789248.0,16.561111,1.9430321,1.861,0.5228499999999999,0.12126,0.17628999,0.08701,452750016.0,0.0009,4.0
@@ -1034,7 +1034,7 @@ GKOS,False,32.999006352268836,"data_missing:trailing_pe,graham_earnings_stabilit
 HTO,False,32.92934566666667,"graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",2622747392.0,21.756943,1.4222485,1.667,1.02581,0.06463,0.56912,0.21260001,-250611632.0,0.0285,4.0
 CUZ,False,32.864943278214284,"graham_current_ratio,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",4875513344.0,740.50006,1.0874114,0.524,0.8420799999999999,0.0015199999,0.67779,0.24225001,-25106624.0,0.0429,4.0
 AMN,False,32.853619476190474,"data_missing:trailing_pe,graham_size,graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_gross_margin",1396297856.0,,1.9523836,1.088,1.08994,-0.045440003,0.27631,0.08501001,671518528.0,,0.0
-XPO,False,32.790292817062436,"data_missing:price_to_book,data_missing:consecutive_positive_earnings_years,graham_current_ratio,graham_debt_to_equity,graham_pe,munger_gross_margin",23719376896.0,57.88,,1.011,2.06167,0.21587,0.18988001,0.12314,473750016.0,,
+XPO,False,32.790292817062436,"data_missing:price_to_book,graham_current_ratio,graham_debt_to_equity,graham_pe,munger_gross_margin",23719376896.0,57.88,,1.011,2.06167,0.21587,0.18988001,0.12314,473750016.0,,4.0
 XEL,False,32.77690519047619,"graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",48765198336.0,21.1,2.0468788,0.701,1.73135,0.0992,0.46825,0.22700001,-7907999744.0,0.0308,4.0
 FND,False,32.74633251043065,"graham_current_ratio,graham_pe,graham_pe_times_pb,munger_roe",6675855872.0,27.986607,2.6846817,1.333,0.80645,0.09694,0.44976002,0.054380003,140193248.0,,4.0
 PRGO,False,32.7342380952381,"data_missing:trailing_pe,graham_size,graham_debt_to_equity,graham_earnings_stability,munger_roe",1776642304.0,,0.7096275,2.324,1.38183,-0.48746,0.33263,0.03842,437212512.0,0.0925,0.0
@@ -1063,7 +1063,7 @@ OSIS,False,31.808969219319355,"graham_debt_to_equity,graham_pe,graham_pe_times_p
 LAD,False,31.741737541050586,"graham_current_ratio,graham_debt_to_equity,munger_roe,munger_gross_margin",8257518080.0,12.438079,1.2908026,1.003,2.57698,0.10719,0.15438,0.04611,547649984.0,0.0075,4.0
 AAON,False,31.704189726190478,"graham_pe,graham_pe_times_pb,munger_roe,munger_gross_margin,munger_fcf",7767687680.0,63.644295,8.308946,2.624,0.47454999999999997,0.13498999,0.26242,0.11552,-215134368.0,0.0044,4.0
 ACI,False,31.663084,"graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_roe,munger_gross_margin",5828761600.0,75.0625,3.639394,0.842,9.735850000000001,0.02717,0.27040002,0.01428,1753387520.0,0.056299999999999996,4.0
-PTCT,False,31.653,"data_missing:trailing_pe,data_missing:debt_to_equity,data_missing:return_on_equity,data_missing:consecutive_positive_earnings_years,munger_fcf",6118511104.0,,-36.931988,3.394,,,0.49959,0.41323003,-286804256.0,,
+PTCT,False,31.653,"data_missing:trailing_pe,data_missing:debt_to_equity,data_missing:return_on_equity,graham_earnings_stability,munger_fcf",6118511104.0,,-36.931988,3.394,,,0.49959,0.41323003,-286804256.0,,1.0
 KOP,False,31.59057185714286,"data_missing:trailing_pe,graham_size,graham_debt_to_equity,munger_roe,munger_gross_margin",969028800.0,,1.7931131,2.332,2.58811,-0.19013001,0.22362,0.09652001,164450000.0,0.0069,4.0
 DXC,False,31.556130952380958,"graham_size,graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_gross_margin",1732001024.0,15.055555,0.5704963,1.408,1.25421,0.04025,0.22997,0.02034,877000000.0,,3.0
 DE,False,31.54684165429153,"graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_gross_margin",167585267712.0,34.838947,6.1149254,2.213,3.76022,0.18349001,0.25965,0.17479,1098749952.0,0.0105,4.0
@@ -1087,7 +1087,7 @@ MFP,False,31.020124023809526,"data_missing:return_on_equity,data_missing:free_ca
 ORLY,False,30.99704607914585,"data_missing:debt_to_equity,data_missing:return_on_equity,graham_current_ratio,graham_pe,graham_pe_times_pb",76335988736.0,29.692062,-41.58737,0.752,,,0.51636004,0.2015,1572316928.0,,4.0
 PSN,False,30.98162741243738,"graham_pe,graham_pe_times_pb,munger_roe,munger_gross_margin",5078596096.0,33.020832,1.9298673,1.662,0.59881,0.082440004,0.21959999,0.02224,213456128.0,,4.0
 AORT,False,30.97832874285714,"graham_size,graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",1316495744.0,108.48,2.8946526,3.857,0.57309,0.03139,0.64553,0.051810004,-7293625.0,,1.0
-NAVI,False,30.97142857142857,"data_missing:trailing_pe,data_missing:free_cash_flow,graham_size,graham_debt_to_equity,graham_earnings_stability,munger_roe",853423872.0,,0.36150813,7.863,19.0,-0.02456,1.0,0.256,,0.0706,0.0
+NAVI,False,30.97142857142857,"data_missing:trailing_pe,data_missing:free_cash_flow,data_missing:consecutive_positive_earnings_years,graham_size,graham_debt_to_equity,munger_roe",853423872.0,,0.36150813,7.863,19.0,-0.02456,1.0,0.256,,0.0706,
 PCG,False,30.886262571428574,"graham_current_ratio,graham_debt_to_equity,munger_roe,munger_fcf",38453325824.0,12.561151,1.1896974,1.216,1.8944999999999999,0.09318,0.39823002,0.24788,-6150125056.0,0.0118,4.0
 KNX,False,30.804941440698126,"graham_current_ratio,graham_pe,graham_pe_times_pb,munger_roe,munger_gross_margin",11396174848.0,259.3333,1.6322058,0.877,0.38409999999999994,0.00611,0.24333,0.051810004,491255488.0,0.0115,4.0
 BC,False,30.799100198004464,"data_missing:trailing_pe,graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_gross_margin",5284230656.0,,3.1771078,1.447,1.2515,-0.048270002,0.26487,0.08756,385062496.0,0.0217,0.0
@@ -1346,7 +1346,7 @@ BKU,False,21.89099925,"data_missing:current_ratio,data_missing:debt_to_equity,da
 CAH,False,21.857238161904764,"data_missing:debt_to_equity,data_missing:return_on_equity,graham_current_ratio,graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_gross_margin",55366262784.0,36.257668,-19.616629,0.907,,,0.037550002,0.01413,4849999872.0,0.0086,3.0
 AVAV,False,21.80115952380952,"data_missing:trailing_pe,graham_earnings_stability,munger_roe,munger_gross_margin,munger_fcf",9450037248.0,,2.1396568,4.304,0.18971,-0.10029,0.25325,0.02812,-251387504.0,,0.0
 TFC,False,21.794249999999998,"data_missing:current_ratio,data_missing:debt_to_equity,data_missing:free_cash_flow,graham_earnings_stability,munger_roe,munger_gross_margin",63952130048.0,12.090069,1.0897623,,,0.09059,0.0,0.39815,,0.039599999999999996,2.0
-FNB,False,21.775499999999997,"data_missing:current_ratio,data_missing:debt_to_equity,data_missing:free_cash_flow,munger_roe,munger_gross_margin",6752635392.0,11.291667,0.98071647,,,0.09034,0.0,0.4449,,0.0274,4.0
+FNB,False,21.775499999999997,"data_missing:current_ratio,data_missing:debt_to_equity,data_missing:free_cash_flow,data_missing:consecutive_positive_earnings_years,munger_roe,munger_gross_margin",6752635392.0,11.291667,0.98071647,,,0.09034,0.0,0.4449,,0.0274,
 HBAN,False,21.7515,"data_missing:current_ratio,data_missing:debt_to_equity,data_missing:free_cash_flow,munger_roe,munger_gross_margin",35458277376.0,13.396947,1.1921744,,,0.09002,0.0,0.41932,,0.035699999999999996,4.0
 SBSI,False,21.746249625,"data_missing:current_ratio,data_missing:debt_to_equity,data_missing:free_cash_flow,graham_size,munger_roe,munger_gross_margin",966970816.0,12.822134,1.0955758,,,0.089949995,0.0,0.47232,,0.0441,4.0
 WSBC,False,21.734999249999998,"data_missing:current_ratio,data_missing:debt_to_equity,data_missing:free_cash_flow,munger_roe,munger_gross_margin",3998316288.0,11.84375,1.0518215,,,0.08979999,0.0,0.48699,,0.0364,4.0
@@ -1393,11 +1393,11 @@ SLAB,False,20.28242687048084,"data_missing:trailing_pe,data_missing:debt_to_equi
 MTZ,False,20.28013776190476,"graham_current_ratio,graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_gross_margin,munger_fcf",21879883776.0,43.38535,6.1170607,1.4,0.89874,0.16176,0.12913999,0.05424,-57898876.0,,2.0
 HLX,False,20.261507142857145,"data_missing:market_cap,graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe,munger_gross_margin",,35.555557,0.9082309,3.465,0.38543999999999995,0.02191,0.13374,0.11531,297335744.0,,2.0
 PFGC,False,20.21286405100048,"graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_roe,munger_gross_margin",18049624064.0,54.71429,3.7962136,1.516,1.66845,0.072519995,0.12508,0.00914,737350016.0,,4.0
+STEP,False,20.0,"data_missing:trailing_pe,graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_gross_margin",5990785536.0,,-9.057377,0.819,1.47327,-0.55877,-0.41939998,-0.03455,2628495360.0,0.0335,0.0
 NOG,False,20.0,"data_missing:trailing_pe,graham_current_ratio,graham_debt_to_equity,munger_roe,munger_fcf",2349737728.0,,1.2750133,0.526,1.4299100000000002,-0.29766,0.74581003,-0.73636,-13380500.0,0.091,4.0
 BOX,False,20.0,"data_missing:market_cap,graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_roe",,49.611942,239.1367,0.76,20.48842,-5.75826,0.69536,-0.22146,152298752.0,,4.0
 MRK,False,20.0,"data_missing:market_cap,data_missing:current_ratio,data_missing:return_on_equity,data_missing:free_cash_flow,graham_debt_to_equity,graham_pe,graham_pe_times_pb",,102.864,6.9218345,,1.06936,,0.75953,-0.01367,,0.0265,4.0
 ARWR,False,20.0,"data_missing:trailing_pe,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_fcf",12380953600.0,,26.576714,5.899,2.95984,-0.55207,1.0,-2.26028,-48628124.0,,0.0
-STEP,False,20.0,"data_missing:trailing_pe,graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_gross_margin",5990785536.0,,-9.057377,0.819,1.47327,-0.55877,-0.41939998,-0.03455,2628495360.0,0.0335,0.0
 KBH,False,19.812076276190474,"data_missing:market_cap,munger_roe,munger_gross_margin",,13.851064,0.9460987,5.635,0.5264099999999999,0.06989,0.17731,0.036310002,316819744.0,0.0176,4.0
 MTUS,False,19.775407217857143,"graham_size,graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe,munger_gross_margin,munger_fcf",898206016.0,114.052635,1.3210998,1.752,0.021230000000000002,0.011720001,0.08196,0.0346,-62337500.0,,0.0
 VTRS,False,19.76834523809524,"data_missing:trailing_pe,data_missing:free_cash_flow,graham_earnings_stability,munger_roe",18871347200.0,,1.3052113,1.585,0.93625,-0.02754,0.40307,0.12545,,0.029500000000000002,0.0
@@ -1409,8 +1409,8 @@ KSS,False,19.377036057142856,"data_missing:market_cap,graham_current_ratio,graha
 GNW,False,19.356097619047617,"data_missing:current_ratio,data_missing:free_cash_flow,munger_roe,munger_gross_margin",3711359488.0,18.634615,0.43392593,,0.23433,0.03384,0.06868,0.07102,,,4.0
 SBUX,False,19.351084728381412,"data_missing:debt_to_equity,data_missing:return_on_equity,graham_current_ratio,graham_pe,graham_pe_times_pb,munger_gross_margin",120361205760.0,60.67816,-15.680975,0.76,,,0.22341,0.12919,3065537536.0,0.0236,4.0
 CNH,False,19.307127904520666,"graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_roe,munger_gross_margin",17545011200.0,43.64,1.740587,4.883,3.35044,0.03914,0.17789,0.05538,566249984.0,0.0092,4.0
-UAA,False,19.028809523809525,"data_missing:trailing_pe,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_fcf",2604845056.0,,1.8414707,1.621,1.37139,-0.29997,0.45749,0.08818,-528018624.0,,0.0
 UA,False,19.028809523809525,"data_missing:trailing_pe,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_fcf",2528106496.0,,1.7872211,1.621,1.37139,-0.29997,0.45749,0.08818,-528018624.0,,0.0
+UAA,False,19.028809523809525,"data_missing:trailing_pe,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_fcf",2604845056.0,,1.8414707,1.621,1.37139,-0.29997,0.45749,0.08818,-528018624.0,,0.0
 HOPE,False,18.917250300000003,"data_missing:current_ratio,data_missing:debt_to_equity,data_missing:free_cash_flow,graham_size,munger_roe,munger_gross_margin",1787108352.0,13.582524,0.7783898,,,0.056550004,0.0,0.34244,,0.0401,4.0
 SMCI,False,18.824321514285714,"graham_debt_to_equity,graham_pe_times_pb,munger_gross_margin,munger_fcf",20137156608.0,16.38421,2.471223,2.655,1.20798,0.17877,0.08394,0.061100002,-7448383488.0,,4.0
 AAP,False,18.772333483333334,"data_missing:market_cap,graham_debt_to_equity,graham_earnings_stability,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",,51.607143,1.5671177,1.778,2.5531,0.030840002,0.44509,0.03787,-228000000.0,0.0173,1.0
@@ -1455,8 +1455,8 @@ MRNA,False,15.311563143340312,"data_missing:trailing_pe,graham_earnings_stabilit
 HE,False,15.24953538095238,"data_missing:market_cap,graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_gross_margin",,16.9863,1.3073274,1.338,1.7995500000000002,0.07987,0.18431999,0.07269,101446624.0,,1.0
 MARA,False,15.111333333333334,"data_missing:trailing_pe,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_fcf",3897760000.0,,1.721843,1.844,1.05602,-0.67333,0.45334,-5.5812597,-531064736.0,,0.0
 CBRL,False,15.105535864285713,"graham_size,graham_current_ratio,graham_debt_to_equity,graham_pe,graham_pe_times_pb,munger_roe,munger_fcf",1291690880.0,50.252174,2.77503,0.501,2.4666300000000003,0.056110002,0.31608,0.00843,-3550125.0,0.0172,4.0
-BANF,False,15.0,"data_missing:current_ratio,data_missing:debt_to_equity,data_missing:return_on_equity,data_missing:free_cash_flow,graham_pe_times_pb,munger_gross_margin",3796994048.0,15.251013,1.995057,,,,0.0,0.50523,,0.0173,4.0
 BANC,False,15.0,"data_missing:trailing_pe,data_missing:current_ratio,data_missing:debt_to_equity,data_missing:free_cash_flow,graham_earnings_stability,munger_roe,munger_gross_margin",2967440896.0,,1.0187652,,,-0.0065499996,0.0,2.16263,,0.0253,2.0
+BANF,False,15.0,"data_missing:current_ratio,data_missing:debt_to_equity,data_missing:return_on_equity,data_missing:free_cash_flow,graham_pe_times_pb,munger_gross_margin",3796994048.0,15.292288,1.995057,,,,0.0,0.50523,,0.0173,4.0
 SFNC,False,15.0,"data_missing:trailing_pe,data_missing:current_ratio,data_missing:debt_to_equity,data_missing:free_cash_flow,graham_earnings_stability,munger_roe,munger_gross_margin",3390293504.0,,0.97320163,,,-0.09941,0.0,0.39915,,0.0365,0.0
 DELL,False,14.833319316564546,"data_missing:debt_to_equity,data_missing:return_on_equity,graham_current_ratio,graham_pe,graham_pe_times_pb,munger_gross_margin",293200035840.0,34.851765,-209.78732,0.946,,,0.19212,0.088570006,5434124800.0,0.0058,4.0
 DFH,False,14.75967857142857,"graham_size,graham_debt_to_equity,munger_roe,munger_gross_margin,munger_fcf",1363579904.0,9.953642,0.9543463,7.59,1.12734,0.09423,0.1998,0.02409,-217692992.0,,4.0
@@ -1502,6 +1502,6 @@ EQH,False,4.256,"data_missing:trailing_pe,data_missing:free_cash_flow,graham_deb
 OLN,False,4.013142857142858,"data_missing:market_cap,data_missing:trailing_pe,graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_gross_margin",,,1.2380952,1.418,1.99059,-0.10585,0.06858,0.0403,311800000.0,0.042699999999999995,0.0
 F,False,3.178238052380953,"data_missing:trailing_pe,graham_current_ratio,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_gross_margin,munger_fcf",55746588672.0,,1.5606161,1.089,4.567080000000001,-0.18252,0.07115,0.018819999,-7940250112.0,0.0435,0.0
 CLF,False,0.3663405355386422,"data_missing:trailing_pe,graham_debt_to_equity,graham_earnings_stability,munger_roe,munger_gross_margin",6994821120.0,,1.2482184,1.89,1.3274299999999999,-0.13862,-0.01052,0.0034400001,6125000.0,,0.0
-FISV,False,0.0,"data_missing:current_ratio,data_missing:debt_to_equity,data_missing:return_on_equity,data_missing:gross_margin,data_missing:operating_margin,data_missing:free_cash_flow",27869894656.0,10.378218,1.066154,,,,,,,,4.0
-CWEN-A,False,0.0,data_missing:fetch_failed,,,,,,,,,,,
 CYTK,False,0.0,"data_missing:trailing_pe,data_missing:debt_to_equity,data_missing:return_on_equity,graham_earnings_stability,munger_gross_margin,munger_fcf",10421750784.0,,-11.537653,4.214,,,-2.90728,-9.48685,-381057760.0,,0.0
+CWEN-A,False,0.0,data_missing:fetch_failed,,,,,,,,,,,
+FISV,False,0.0,"data_missing:current_ratio,data_missing:debt_to_equity,data_missing:return_on_equity,data_missing:gross_margin,data_missing:operating_margin,data_missing:free_cash_flow",27869894656.0,10.378218,1.066154,,,,,,,,4.0
