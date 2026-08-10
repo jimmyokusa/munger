@@ -1,0 +1,84 @@
+name: Intraday P&L snapshot
+
+# M19 (2026-08-10, user request): pnl.html's Unrealized P&L was a once/day
+# snapshot (daily-trade.yml, 14:00 UTC) diverging visibly from Alpaca's own
+# live site by market midday. User asked for continuous updates "unless
+# that generates cost" -- GCS/Cloud Run cost turned out negligible, but
+# GitHub Actions minutes are the real constraint (Alpaca credentials can
+# only live here, never in the public-facing report deployment -- DESIGN.md
+# 3.5/3.8.1, M14's screen-only boundary). User chose 30 minutes as the
+# cost/freshness tradeoff over the originally-asked-for 5. See TASKS.md M19
+# and DESIGN.md 3.8.1 for the full cost arithmetic and design reasoning
+# this file doesn't repeat.
+#
+# Deliberately a standalone workflow, not folded into daily-trade.yml:
+# that workflow's 14:00 UTC cadence is for the actual trading decision,
+# and a display-refresh cadence is not a reason to run bot.py more often.
+#
+# Cron can't express "market hours" directly -- a fixed UTC schedule can't
+# track ET's DST shift (9:30am-4pm ET is 13:30-20:00 UTC in EDT, 14:30-21:00
+# UTC in EST) -- so this cron is a wide UTC envelope covering both offsets,
+# and pnl.py's own market_is_open() check (MUNGER_PNL_MARKET_HOURS_ONLY
+# below) is the actual authority on whether to spend an Alpaca call: a tick
+# inside this envelope but outside real trading hours (pre-market,
+# after-hours, a holiday) is a fast no-op inside pnl.py, not a wasted fetch.
+on:
+  schedule:
+    - cron: "*/30 13-21 * * 1-5"
+  workflow_dispatch: {}
+
+# Same reasoning as daily-trade.yml's own group (M10 staff-engineer-reviewer
+# finding): prevents a slow tick from overlapping the next scheduled one.
+concurrency:
+  group: pnl-snapshot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # MUNGER_PNL_MARKET_HOURS_ONLY: skip the Alpaca fetch entirely unless
+      # market_is_open() confirms it (see the cron comment above).
+      # MUNGER_PNL_SNAPSHOT_ONLY: never touch pnl_history.jsonl -- that
+      # durable append-series is daily-trade.yml's exclusive responsibility
+      # (its own "Download prior P&L history from GCS" step exists
+      # specifically to make its read-modify-write upsert safe; this
+      # workflow doesn't replicate that dance because it doesn't need to --
+      # see config.PNL_SNAPSHOT_ONLY's own comment for what would go wrong
+      # if it upserted here anyway). Only pnl.json (the current-state file)
+      # refreshes on this cadence.
+      - name: Generate intraday P&L snapshot (market hours only)
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          MUNGER_PNL_MARKET_HOURS_ONLY: "1"
+          MUNGER_PNL_SNAPSHOT_ONLY: "1"
+        run: python pnl.py
+
+      # Only pnl.json -- no pnl_history.jsonl upload here (see above; that
+      # file is untouched by this workflow) and no prices.json (M17 Phase 2
+      # is a daily close chart, not something an intraday refresh serves).
+      - name: Upload P&L snapshot to GCS
+        env:
+          GCP_PNL_WRITER_KEY: ${{ secrets.GCP_PNL_WRITER_KEY }}
+        run: |
+          if [ ! -f pnl.json ]; then
+            echo "No pnl.json produced this run (market closed, or an intraday tick outside real trading hours) -- skipping upload."
+            exit 0
+          fi
+          key_file="$(mktemp)"
+          printf '%s' "$GCP_PNL_WRITER_KEY" > "$key_file"
+          gcloud auth activate-service-account --key-file="$key_file"
+          gcloud storage cp pnl.json gs://munger-503515-data/pnl.json
+          rm -f "$key_file"

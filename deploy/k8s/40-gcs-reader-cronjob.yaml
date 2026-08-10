@@ -15,9 +15,12 @@
 #   daily-screen runs 13:00 UTC; daily-trade (which produces the P&L) runs
 #   14:00 UTC. Bolting this onto daily-screen would pull *yesterday's*
 #   snapshot, and daily-screen's manifest is deliberately secret-free
-#   (defense in depth) -- keep it that way. This job runs at 15:00 UTC,
-#   after daily-trade has had a full hour (its own timeout is 45m) to place
-#   trades, snapshot P&L, and upload to GCS.
+#   (defense in depth) -- keep it that way. Originally ran once/day at
+#   15:00 UTC (after daily-trade had a full hour, its own timeout is 45m,
+#   to place trades, snapshot P&L, and upload to GCS); M19 (DESIGN.md 3.8.1)
+#   moved this to every 30 min to match pnl-snapshot.yml's own intraday
+#   cadence -- see the `schedule` field below, not this header, for the
+#   current value.
 #
 # CREDENTIALS (read-only; NOT Alpaca)
 #   Uses a dedicated GCP service account `munger-gcs-reader` with
@@ -61,12 +64,25 @@ metadata:
   labels:
     app.kubernetes.io/name: munger-gcs-reader
 spec:
-  # 15:00 UTC daily -- one hour after daily-trade.yml's 14:00 run (whose own
-  # timeout is 45m), so the P&L it uploads to GCS is this run's to pull.
-  schedule: "0 15 * * *"
+  # M19 (DESIGN.md 3.8.1): every 30 min, matching pnl-snapshot.yml's own
+  # cadence, so k3s dev doesn't silently lag Cloud Run prod's freshness --
+  # not gated to market hours like pnl-snapshot.yml itself, since this job
+  # makes no Alpaca call and no GCS write, only cheap read-only GCS GETs
+  # (bucket.blob().download_to_filename), so there's no cost/rate-limit
+  # reason to narrow its own schedule beyond "run often enough to matter."
+  # A harmless no-op copy of the same content on a tick where pnl.py itself
+  # skipped (outside real trading hours) is expected, not a bug.
+  schedule: "*/30 * * * *"
   timeZone: "Etc/UTC"
   concurrencyPolicy: Forbid
-  startingDeadlineSeconds: 3600
+  # Was 3600s (appropriate when a missed daily tick had a full day before
+  # the next one) -- at 30-min cadence that would let a missed tick fire
+  # nearly an hour late, almost colliding with the next regular one, or
+  # (per Kubernetes CronJob semantics) get silently dropped in favor of it
+  # anyway once the deadline is that much longer than the interval between
+  # ticks. Shrunk so a missed tick either catches up promptly or is cleanly
+  # skipped for the next one, matching the new cadence rather than the old.
+  startingDeadlineSeconds: 300
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:

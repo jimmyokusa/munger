@@ -59,6 +59,14 @@ class _FakeExecutionModule:
 def _isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "KILL_SWITCH", False)
     monkeypatch.setattr(config, "KILL_SWITCH_FLAG_FILE_PATH", tmp_path / "KILL_SWITCH")
+    # Without this, tests would check the *real* repo-root path -- which
+    # doesn't have this file today, so it happens to read False, but any
+    # test run from a checkout that ever did create one (or a future
+    # regression) would otherwise silently flip every test in this file
+    # to a screen-only run instead of the behavior each test expects.
+    monkeypatch.setattr(
+        config, "GLOBAL_KILL_SWITCH_FLAG_FILE_PATH", tmp_path / "GLOBAL_KILL_SWITCH"
+    )
     monkeypatch.setattr(config, "SCREEN_RESULTS_CSV_PATH", tmp_path / "screen_results.csv")
     (tmp_path / "screen_results.csv").write_text("symbol,buyable,score,fail_reasons\n")
     monkeypatch.setattr(config, "SCREEN_RESULTS_ARCHIVE_DIR", tmp_path / "archive")
@@ -75,6 +83,19 @@ def test_kill_switch_active_via_flag_file(tmp_path: Path, monkeypatch: pytest.Mo
     flag_path.touch()
     monkeypatch.setattr(config, "KILL_SWITCH_FLAG_FILE_PATH", flag_path)
     assert bot._kill_switch_active() is True
+
+
+def test_global_kill_switch_inactive_by_default() -> None:
+    assert bot._global_kill_switch_active() is False
+
+
+def test_global_kill_switch_active_via_flag_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flag_path = tmp_path / "GLOBAL_KILL_SWITCH"
+    flag_path.touch()
+    monkeypatch.setattr(config, "GLOBAL_KILL_SWITCH_FLAG_FILE_PATH", flag_path)
+    assert bot._global_kill_switch_active() is True
 
 
 # --- _cap_buy_orders_to_budget ---
@@ -202,6 +223,36 @@ def test_fetched_fraction_empty_results() -> None:
 
 def test_run_screen_only_when_kill_switch_active(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "KILL_SWITCH", True)
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+    construct_calls: list[str] = []
+
+    def _fake_execution_module(run_date: str) -> MagicMock:
+        construct_calls.append(run_date)
+        return MagicMock()
+
+    monkeypatch.setattr(execution, "ExecutionModule", _fake_execution_module)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    assert construct_calls == []  # never touches the broker at all
+    assert exit_code == 0  # kill switch is intentional, not itself alert-worthy
+
+
+def test_run_screen_only_when_global_kill_switch_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # M20 (DESIGN_REAL_MONEY.md §3.2): checked before the per-account
+    # switch, so this must halt the run even with the per-account switch
+    # left off (config.KILL_SWITCH is already False via the autouse
+    # fixture, unlike the per-account test above).
+    flag_path = tmp_path / "GLOBAL_KILL_SWITCH"
+    flag_path.touch()
+    monkeypatch.setattr(config, "GLOBAL_KILL_SWITCH_FLAG_FILE_PATH", flag_path)
     monkeypatch.setattr(
         universe,
         "get_universe_with_diagnostics",
@@ -621,16 +672,25 @@ def test_run_clean_when_nothing_notable_happens(monkeypatch: pytest.MonkeyPatch)
 def test_run_logs_reconciliation_warnings_without_aborting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # config.PAPER_TRADING is left at its real default (True) here --
+    # this is specifically the paper-account posture (M10, unchanged by
+    # M20): warn and continue, never the live-account abort added below.
     monkeypatch.setattr(
         universe,
         "get_universe_with_diagnostics",
         lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
     )
     monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+    fetch_calls: list[list[str]] = []
     monkeypatch.setattr(
         journal, "check_reconciliation", lambda holdings: ["AAPL: unexpected mismatch"]
     )
-    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {})
+
+    def _fake_fetch_all_metrics(symbols: list[str], **_kwargs: Any) -> dict[str, MagicMock]:
+        fetch_calls.append(symbols)
+        return {}
+
+    monkeypatch.setattr(data, "fetch_all_metrics", _fake_fetch_all_metrics)
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
     monkeypatch.setattr(portfolio, "process_sells", lambda holdings, metrics, state: [])
     monkeypatch.setattr(portfolio, "generate_buy_queue", lambda holdings, results, cash: [])
@@ -642,3 +702,48 @@ def test_run_logs_reconciliation_warnings_without_aborting(
 
     fake_exec.verify_account_access.assert_called_once()
     assert exit_code == 1  # logged, not aborted, but still alert-worthy (DESIGN.md 3.6)
+    # Proves this actually continued past the mismatch (not just that the
+    # exit code happens to be 1, which an abort would also produce) --
+    # fetch_all_metrics is the very next real call after the
+    # reconciliation check.
+    assert fetch_calls == [[]]
+
+
+def test_run_aborts_on_reconciliation_mismatch_for_the_live_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M20 (DESIGN_REAL_MONEY.md §3.3): the live account gets the stricter
+    # posture -- a mismatch stops the run before any sell/buy evaluation,
+    # rather than warning and proceeding to place orders on top of state
+    # this run can't currently trust.
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+    monkeypatch.setattr(
+        journal, "check_reconciliation", lambda holdings: ["AAPL: unexpected mismatch"]
+    )
+    fetch_calls: list[list[str]] = []
+
+    def _fake_fetch_all_metrics(symbols: list[str], **_kwargs: Any) -> dict[str, MagicMock]:
+        fetch_calls.append(symbols)
+        return {}
+
+    monkeypatch.setattr(data, "fetch_all_metrics", _fake_fetch_all_metrics)
+
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    fake_exec.verify_account_access.assert_called_once()
+    assert exit_code == 1
+    # Never got as far as evaluating holdings for sells/buys, let alone
+    # placing an order -- this is what distinguishes "aborted" from
+    # "warned and continued."
+    assert fetch_calls == []
+    fake_exec.liquidate.assert_not_called()
+    fake_exec.market_buy.assert_not_called()

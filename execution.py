@@ -83,7 +83,19 @@ class ExecutionModule:
         )
 
     def _client_order_id(self, symbol: str, side: str) -> str:
-        return f"{self._run_date}-{symbol}-{side}"
+        # Account-tagged (M20, DESIGN_REAL_MONEY.md §3.5): not needed for
+        # broker-side idempotency -- paper and live are separate Alpaca
+        # endpoints reached with separate credentials, so a bare
+        # "run_date-symbol-side" id was never at risk of colliding across
+        # accounts there. This is independent defense-in-depth for a
+        # human (or journal.py, see §3.4) reading client_order_id out of
+        # context: it's self-describing which account an order belongs to
+        # even from a raw id string alone. Changing this format is safe
+        # for existing (paper) runs -- client_order_id only needs to be
+        # unique within a single day's run for the has_already_submitted
+        # crash-restart check to work, not stable across the change.
+        mode = "paper" if config.PAPER_TRADING else "live"
+        return f"{mode}-{self._run_date}-{symbol}-{side}"
 
     def _limit_price(self, symbol: str, side: str) -> float:
         """Last trade price adjusted by the configured band.

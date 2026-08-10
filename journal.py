@@ -43,11 +43,34 @@ def _connect() -> sqlite3.Connection:
             side TEXT NOT NULL,
             notional REAL,
             reason TEXT NOT NULL,
-            client_order_id TEXT
+            client_order_id TEXT,
+            account TEXT NOT NULL DEFAULT 'paper'
         )
         """
     )
+    # M20 (DESIGN_REAL_MONEY.md §3.4): CREATE TABLE IF NOT EXISTS is a
+    # no-op against an already-existing journal.db from before this
+    # column existed -- every persisted bot-state journal predates it, so
+    # without an explicit migration the column would simply be missing on
+    # every real deployment, not just fresh ones. ALTER TABLE ADD COLUMN
+    # with a DEFAULT retroactively backfills existing rows as 'paper',
+    # which is accurate: nothing but the paper account has ever written
+    # to this table before this milestone.
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(journal)").fetchall()}
+    if "account" not in existing_columns:
+        conn.execute("ALTER TABLE journal ADD COLUMN account TEXT NOT NULL DEFAULT 'paper'")
     return conn
+
+
+def _current_account() -> str:
+    """The account label for calls that don't pass one explicitly.
+
+    "paper"/"live", derived from live config, not a module-level
+    constant, so it reflects whichever process env this is running in
+    (mirrors how execution.py reads config.PAPER_TRADING at call time,
+    not import time).
+    """
+    return "paper" if config.PAPER_TRADING else "live"
 
 
 def record_order(
@@ -56,6 +79,7 @@ def record_order(
     reason: str,
     notional: float | None = None,
     client_order_id: str | None = None,
+    account: str | None = None,
 ) -> None:
     """Append one order attempt to the journal, with its reason string.
 
@@ -66,13 +90,21 @@ def record_order(
     Raises ValueError for anything other than exactly "buy" or "sell" --
     get_expected_holdings() depends on this value being one of exactly
     those two strings to correctly derive reconciliation state.
+
+    `account` ("paper"/"live") defaults to whichever this process's own
+    config.PAPER_TRADING says (M20, DESIGN_REAL_MONEY.md §3.4). Existing
+    callers (bot.py) don't pass this explicitly and get today's exact
+    behavior for the paper account; only tests and the new live workflow
+    need to pass it explicitly.
     """
     if side not in _VALID_SIDES:
         raise ValueError(f"side must be one of {_VALID_SIDES}, got {side!r}")
+    account = account or _current_account()
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO journal (timestamp, symbol, side, notional, reason, client_order_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO journal "
+            "(timestamp, symbol, side, notional, reason, client_order_id, account) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 datetime.datetime.now(datetime.UTC).isoformat(),
                 symbol,
@@ -80,56 +112,77 @@ def record_order(
                 notional,
                 reason,
                 client_order_id,
+                account,
             ),
         )
 
 
-def get_expected_holdings() -> set[str]:
+def get_expected_holdings(account: str | None = None) -> set[str]:
     """Tickers the journal expects to currently be held.
 
-    Derived from the most recent recorded action per symbol: if it was a
-    buy, we expect to hold it; if it was a sell/liquidation, we don't.
-    Used for the reconciliation check (DESIGN.md 3.4/3.6) against what
-    the broker actually reports -- a mismatch is a signal something
-    upstream (a failed order, a manual trade, a bug) needs attention, not
-    itself an abort condition.
+    Derived from the most recent recorded action per symbol *for the
+    given account*: if it was a buy, we expect to hold it; if it was a
+    sell/liquidation, we don't. Used for the reconciliation check
+    (DESIGN.md 3.4/3.6) against what the broker actually reports -- a
+    mismatch is a signal something upstream (a failed order, a manual
+    trade, a bug) needs attention, not itself an abort condition.
+
+    Args:
+      account: "paper" or "live" -- defaults to this process's own
+        config.PAPER_TRADING (M20 §3.4). Filtering by account here, not
+        just at write time, is the actual defense-in-depth property: even
+        if a journal.db somehow ends up holding both accounts' rows (an
+        isolation failure elsewhere), a paper run's reconciliation only
+        ever considers paper rows and a live run only ever considers live
+        rows -- one account's activity can never silently explain away
+        the other's mismatch.
     """
+    account = account or _current_account()
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT symbol, side FROM journal WHERE id IN "
-            "(SELECT MAX(id) FROM journal GROUP BY symbol)"
+            "SELECT symbol, side FROM journal WHERE account = ? AND id IN "
+            "(SELECT MAX(id) FROM journal WHERE account = ? GROUP BY symbol)",
+            (account, account),
         ).fetchall()
     return {symbol for symbol, side in rows if side == "buy"}
 
 
-def get_holdings_detail() -> list[dict[str, object]]:
+def get_holdings_detail(account: str | None = None) -> list[dict[str, object]]:
     """Most recent buy record for every symbol currently expected held.
 
-    Same "most recent action per symbol" logic as get_expected_holdings,
-    but returns the full row (reason, notional, timestamp) rather than
-    just the symbol set -- for display purposes (report.py), which needs
-    to show *why* each current pick was bought, not just that it was.
+    Same "most recent action per symbol, per account" logic as
+    get_expected_holdings, but returns the full row (reason, notional,
+    timestamp) rather than just the symbol set -- for display purposes
+    (report.py), which needs to show *why* each current pick was bought,
+    not just that it was.
     """
+    account = account or _current_account()
     with _connect() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT symbol, reason, notional, timestamp FROM journal "
-            "WHERE id IN (SELECT MAX(id) FROM journal GROUP BY symbol) "
-            "AND side = 'buy' ORDER BY symbol"
+            "WHERE account = ? AND id IN "
+            "(SELECT MAX(id) FROM journal WHERE account = ? GROUP BY symbol) "
+            "AND side = 'buy' ORDER BY symbol",
+            (account, account),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
-def check_reconciliation(actual_holdings: set[str]) -> list[str]:
+def check_reconciliation(actual_holdings: set[str], account: str | None = None) -> list[str]:
     """Compare live-fetched holdings against what the journal expects.
 
     Returns human-readable warning strings for the caller to log
     (DESIGN.md 3.4/3.6); an empty list means no divergence. Not an abort
-    condition -- this is the cheapest signal that something needs
-    attention, not proof that something is broken (e.g. a legitimate
-    corporate action could also cause a one-off mismatch).
+    condition by default -- this is the cheapest signal that something
+    needs attention, not proof that something is broken (e.g. a
+    legitimate corporate action could also cause a one-off mismatch).
+    Whether the *caller* treats a non-empty result as fatal is a policy
+    decision made by the caller (bot.py escalates to abort for the live
+    account specifically -- DESIGN_REAL_MONEY.md §3.3), not by this
+    function.
     """
-    expected = get_expected_holdings()
+    expected = get_expected_holdings(account)
     warnings = [
         f"{ticker}: expected to hold (per journal) but broker reports no position"
         for ticker in sorted(expected - actual_holdings)

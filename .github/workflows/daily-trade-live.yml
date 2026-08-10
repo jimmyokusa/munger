@@ -1,0 +1,222 @@
+name: Daily live-account screen and trade run
+
+# M20 (DESIGN_REAL_MONEY.md §3.1): a second, genuinely independent
+# workflow -- NOT a second job/step inside daily-trade.yml -- running the
+# exact same bot.py/pnl.py binaries against the user's real Alpaca
+# account. This is the actual isolation mechanism the design settled on
+# after a staff-engineer-reviewer finding that git-branch/GCS-prefix
+# separation alone, bolted onto one job, would still let both accounts
+# share the same local state.json/journal.db/KILL_SWITCH on that job's
+# one runner. A separate workflow file gets its own fresh runner and
+# checkout automatically -- no shared local disk with daily-trade.yml is
+# possible, by construction, not by convention.
+#
+# Screening (pm-reviewer finding, DESIGN_REAL_MONEY.md §3.1: this exact
+# question was left "TBD at implementation time"): this workflow runs its
+# OWN independent bot.py invocation, including its own screener.run_screen()
+# universe fetch, rather than reading daily-trade.yml's output via
+# cross-workflow artifact passing. Mirrors the precedent daily-trade.yml
+# itself already set relative to daily-screen.yml ("this workflow runs its
+# own independent screen ... not a shared fetch") -- simplest, no new
+# cross-workflow coupling or artifact-passing failure mode, and the
+# screening logic is deterministic against the same day's data, so both
+# accounts should reach the same picks in practice even though the fetch
+# itself isn't literally shared. The tradeoff (a second full universe
+# fetch's worth of yfinance/Wikipedia load) is accepted for that
+# simplicity, same as the existing daily-trade.yml/daily-screen.yml split.
+#
+# 14:30 UTC -- staggered 30 minutes after daily-trade.yml's 14:00 UTC (which
+# is itself staggered an hour after daily-screen.yml's 13:00 UTC), so none
+# of the three hit the same yfinance/Wikipedia rate limits simultaneously.
+on:
+  schedule:
+    - cron: "30 14 * * *"
+  workflow_dispatch:
+    inputs:
+      screen_only:
+        description: "Force KILL_SWITCH (screen-only, no broker calls) for this manual run"
+        type: boolean
+        default: true
+
+# Independent from daily-trade.yml's own "daily-trade" group -- these are
+# two different accounts/workflows and must never block each other, only
+# overlapping invocations of this same workflow (M10's original finding,
+# applied identically here).
+concurrency:
+  group: daily-trade-live
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # Same outer safety net as daily-trade.yml, same reasoning.
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Own persisted-state branch -- bot-state-live, never bot-state.
+      # Sharing a branch with the paper account would defeat the entire
+      # point of this being a separate workflow (DESIGN_REAL_MONEY.md
+      # §3.1's core finding). Otherwise identical to daily-trade.yml's
+      # own restore step.
+      - name: Prepare persisted bot-state-live branch
+        run: |
+          set -e
+          if git ls-remote --exit-code --heads origin bot-state-live >/dev/null 2>&1; then
+            git fetch origin bot-state-live
+            git worktree add ../bot-state-wt -b bot-state-live origin/bot-state-live
+          else
+            echo "No bot-state-live branch yet -- first run, starting fresh."
+            git worktree add --detach ../bot-state-wt
+            git -C ../bot-state-wt checkout --orphan bot-state-live
+            git -C ../bot-state-wt rm -rf . >/dev/null 2>&1 || true
+          fi
+          for f in state.json journal.db munger.log; do
+            if [ -f "../bot-state-wt/$f" ]; then
+              cp "../bot-state-wt/$f" .
+              echo "Restored $f from bot-state-live branch."
+            fi
+          done
+          if [ -d ../bot-state-wt/screen_results_archive ]; then
+            mkdir -p screen_results_archive
+            cp -a ../bot-state-wt/screen_results_archive/. screen_results_archive/
+            echo "Restored screen_results_archive/ from bot-state-live branch."
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Force screen-only mode for this manual run
+        if: github.event_name == 'workflow_dispatch' && inputs.screen_only
+        run: touch KILL_SWITCH
+
+      # ALPACA_API_KEY/ALPACA_SECRET_KEY are the exact same env var names
+      # daily-trade.yml sets -- bot.py/execution.py/pnl.py are already
+      # fully credential-agnostic (DESIGN_REAL_MONEY.md §3.1), so the only
+      # thing that makes this run against the live account is which GitHub
+      # secret gets mapped to those names here, plus MUNGER_PAPER_TRADING.
+      - name: Run bot (live account)
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_LIVE_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
+          MUNGER_PAPER_TRADING: "false"
+        run: python bot.py
+
+      - name: Persist bot-state-live
+        if: always()
+        run: |
+          set -e
+          git config user.name "munger-bot-live"
+          git config user.email "munger-bot@users.noreply.github.com"
+          for f in state.json journal.db munger.log; do
+            [ -f "$f" ] && cp "$f" ../bot-state-wt/
+          done
+          if [ -d screen_results_archive ]; then
+            mkdir -p ../bot-state-wt/screen_results_archive
+            cp -a screen_results_archive/. ../bot-state-wt/screen_results_archive/
+          fi
+          cd ../bot-state-wt
+          git add -A
+          git commit -q -m "Live state snapshot from run ${{ github.run_id }}" --allow-empty
+          git push origin HEAD:bot-state-live
+
+      - name: Upload run artifacts for manual inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-artifacts-live-${{ github.run_id }}
+          path: |
+            munger.log
+            journal.db
+            state.json
+            screen_results.csv
+          if-no-files-found: ignore
+          retention-days: 400
+
+      # Live's own durable P&L history -- gs://.../live/pnl_history.jsonl,
+      # never the paper account's gs://.../pnl_history.jsonl. Same
+      # restore-before-upsert reasoning as daily-trade.yml's own step
+      # (a missing object is the expected first-run case; any other
+      # failure must abort loudly, not silently truncate the durable
+      # series on re-upload).
+      - name: Download prior live P&L history from GCS
+        id: download-pnl-history
+        if: always()
+        env:
+          GCP_PNL_WRITER_KEY: ${{ secrets.GCP_PNL_WRITER_KEY }}
+        run: |
+          key_file="$(mktemp)"
+          printf '%s' "$GCP_PNL_WRITER_KEY" > "$key_file"
+          gcloud auth activate-service-account --key-file="$key_file"
+          if output=$(gcloud storage cp gs://munger-503515-data/live/pnl_history.jsonl pnl_history.jsonl 2>&1); then
+            echo "Restored live pnl_history.jsonl from GCS ($(wc -l < pnl_history.jsonl) rows)."
+          elif echo "$output" | grep -q "matched no objects"; then
+            echo "No existing live pnl_history.jsonl in GCS (first run) -- pnl.py will seed it from Alpaca history."
+          else
+            echo "$output" >&2
+            echo "real_failure=true" >> "$GITHUB_OUTPUT"
+            rm -f "$key_file"
+            echo "::error::gcloud storage cp failed for a reason other than 'object not found' -- marking this run's local pnl_history.jsonl unusable so the upload step below skips it rather than overwriting the durable GCS history with a truncated reseed." >&2
+            exit 1
+          fi
+          rm -f "$key_file"
+
+      - name: Generate P&L snapshot (live account)
+        if: always()
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_LIVE_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
+          MUNGER_PAPER_TRADING: "false"
+        run: python pnl.py
+
+      # No "Generate held-symbol price history" (prices.py) step here --
+      # M17 Phase 2's held-symbol daily-close chart is out of scope for
+      # M20a (DESIGN_REAL_MONEY.md doesn't propose a live-account Prices
+      # dashboard); nothing prevents adding one later the same way this
+      # step was added to daily-trade.yml, if wanted.
+      - name: Upload live P&L snapshot and history to GCS
+        if: always()
+        env:
+          GCP_PNL_WRITER_KEY: ${{ secrets.GCP_PNL_WRITER_KEY }}
+        run: |
+          # staff-engineer-reviewer finding (code-push review): the
+          # original version of this step had no `set -e` and never
+          # checked `gcloud storage cp`'s own exit code, so a failed
+          # upload -- including the specific, already-predicted 403 below
+          # -- would leave this step green. A silently-broken P&L bridge
+          # is exactly the failure class §4.1's "verification bar before
+          # live" exists to catch; a passing CI run must actually mean
+          # the upload succeeded.
+          set -e
+          if [ ! -f pnl.json ] && [ ! -f pnl_history.jsonl ]; then
+            echo "No pnl.json or pnl_history.jsonl produced this run -- skipping upload."
+            exit 0
+          fi
+          key_file="$(mktemp)"
+          printf '%s' "$GCP_PNL_WRITER_KEY" > "$key_file"
+          gcloud auth activate-service-account --key-file="$key_file"
+          # NOTE (DESIGN_REAL_MONEY.md §4, staff-engineer-reviewer finding):
+          # munger-pnl-writer's existing IAM condition is scoped by literal
+          # object name to pnl.json/pnl_history.jsonl/prices.json only (see
+          # DESIGN.md §3.8's IAM-scoping history, four iterations to get
+          # right). These live/-prefixed object names are NOT covered by
+          # that condition yet -- expect this upload to 403 until that
+          # condition is explicitly widened (a live IAM change, done
+          # deliberately and user-confirmed, same as every prior widening
+          # of this same service account). Not a bug in this workflow --
+          # but with `set -e` above, that expected 403 now correctly fails
+          # this step (and the job) instead of passing silently.
+          if [ -f pnl.json ]; then
+            gcloud storage cp pnl.json gs://munger-503515-data/live/pnl.json
+          fi
+          if [ -f pnl_history.jsonl ] && [ "${{ steps.download-pnl-history.outputs.real_failure }}" != "true" ]; then
+            gcloud storage cp pnl_history.jsonl gs://munger-503515-data/live/pnl_history.jsonl
+          fi
+          rm -f "$key_file"

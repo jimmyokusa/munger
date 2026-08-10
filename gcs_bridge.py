@@ -99,8 +99,33 @@ def bridge() -> None:
     client = storage.Client()
     bucket = client.bucket(config.PNL_GCS_BUCKET)
 
-    _download_atomically(bucket.blob("pnl.json"), config.PNL_DATA_PATH)
-    logger.info("Bridged pnl.json.")
+    pnl_blob = bucket.blob("pnl.json")
+    _download_atomically(pnl_blob, config.PNL_DATA_PATH)
+    # M19 (DESIGN.md 3.8.1): a second copy inside REPORT_DIR, the only tree
+    # k3s's nginx container can see at all (its volumeMount is scoped to
+    # the PVC's `report` subPath -- unlike Cloud Run's FUSE mount, there is
+    # no filesystem visibility outside it to alias from). Cloud Run instead
+    # serves DATA_DIR/pnl.json directly via an nginx exact-match location,
+    # since its mount already covers both paths; k3s has no such option, so
+    # this is a second real download, not a symlink or an alias.
+    _download_atomically(pnl_blob, config.REPORT_DIR / "pnl.json")
+    logger.info("Bridged pnl.json (+ REPORT_DIR copy for the report-web nginx to serve).")
+
+    # M20 (DESIGN_REAL_MONEY.md §4): the live account's own snapshot, same
+    # DATA_DIR-root + REPORT_DIR-copy treatment as pnl.json above. Unlike
+    # pnl.json (whose absence means the core, long-established bridge is
+    # broken and should fail loud), a missing real_money.json is the
+    # expected default state until the live trading pipeline is actually
+    # provisioned and running -- tolerated the same way pnl_history.jsonl/
+    # prices.json's "not deployed yet" case already is below.
+    try:
+        real_money_blob = bucket.blob("real_money.json")
+        _download_atomically(real_money_blob, config.REAL_MONEY_DATA_PATH)
+        _download_atomically(real_money_blob, config.REPORT_DIR / "real_money.json")
+    except NotFound:
+        logger.info("No real_money.json in GCS yet -- skipping (live pipeline not live yet).")
+    else:
+        logger.info("Bridged real_money.json (+ REPORT_DIR copy for the report-web nginx).")
 
     history_dest = config.REPORT_DIR / "pnl_history.jsonl"
     json_dest = config.REPORT_DIR / "pnl_history.json"

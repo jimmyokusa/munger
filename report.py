@@ -423,7 +423,14 @@ _ALWAYS_INDEXED_PAGES = ("index.html", "tickers.html", "pnl.html")
 
 def _sitemap_pages() -> tuple[str, ...]:
     history_page = "dashboards.html" if config.GRAFANA_BASE_URL else "calendar.html"
-    return (*_ALWAYS_INDEXED_PAGES, history_page)
+    pages: tuple[str, ...] = (*_ALWAYS_INDEXED_PAGES, history_page)
+    # M20: real-money.html only exists where the live pipeline is
+    # provisioned (config.LIVE_TRADING_ENABLED) -- same fork as the
+    # history page above, so the sitemap never advertises a page that
+    # generate_report() didn't actually write this run.
+    if config.LIVE_TRADING_ENABLED:
+        pages = (*pages, "real-money.html")
+    return pages
 
 
 def _render_robots_txt() -> str:
@@ -472,10 +479,16 @@ def _load_screen_results() -> pd.DataFrame:
     return pd.read_csv(config.SCREEN_RESULTS_CSV_PATH)
 
 
-def _load_pnl_snapshot() -> dict[str, object] | None:
-    """The latest P&L snapshot pnl.py wrote, or None if it doesn't exist yet.
+def _load_pnl_snapshot(path: Path | None = None) -> dict[str, object] | None:
+    """The latest P&L snapshot written at `path`, or None if missing.
 
-    pnl.py runs where the Alpaca keys live (daily-trade.yml, GitHub
+    Defaults to config.PNL_DATA_PATH (pnl.html, the paper account); M20's
+    real-money.html passes config.REAL_MONEY_DATA_PATH instead -- both
+    are written by the exact same pnl.py binary (DESIGN_REAL_MONEY.md
+    §3.1), just from two separate GitHub Actions workflows/credentials,
+    so one loader function serves both.
+
+    Either account's writer runs where the Alpaca keys live (GitHub
     Actions) and pushes its output into the same GCS bucket this
     deployment mounts at config.DATA_DIR -- report.py itself never talks
     to Alpaca (DESIGN.md 3.5/M14's screen-only boundary). A missing or
@@ -484,12 +497,13 @@ def _load_pnl_snapshot() -> dict[str, object] | None:
     generation failure -- returns None rather than raising, so one bad
     P&L file can't take down index.html/tickers.html too.
     """
-    if not config.PNL_DATA_PATH.exists():
+    path = path or config.PNL_DATA_PATH
+    if not path.exists():
         return None
     try:
-        data = json.loads(config.PNL_DATA_PATH.read_text())
+        data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
-        logger.error("%s unreadable/corrupt; omitting the P&L page", config.PNL_DATA_PATH)
+        logger.error("%s unreadable/corrupt; omitting the P&L page", path)
         return None
     return data if isinstance(data, dict) else None
 
@@ -1013,7 +1027,7 @@ def _render_index(picks: list[dict[str, object]], results: pd.DataFrame) -> str:
 <h1>Current picks</h1>
 <nav><a href="tickers.html">See all screened tickers &rarr;</a>
 {_history_nav_link()}
-<a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
+<a href="pnl.html">Paper trading P&amp;L &rarr;</a>{_real_money_nav_link()}</nav>
 {_disclaimer_banner()}
 {_render_methodology_drawer()}
 <div class="progress-banner glass" id="progress-banner">
@@ -1147,7 +1161,7 @@ for (const th of table.tHead.rows[0].cells) {
 <h1>All screened tickers</h1>
 <nav><a href="index.html">&larr; Back to current picks</a>
 {_history_nav_link()}
-<a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
+<a href="pnl.html">Paper trading P&amp;L &rarr;</a>{_real_money_nav_link()}</nav>
 {_disclaimer_banner()}
 {_generated_at()}
 {score_buyable_note}
@@ -1273,8 +1287,16 @@ def _format_pct_signed(value: object) -> str:
 
 
 def _render_pnl_positions_table(positions: list[dict[str, object]]) -> str:
+    """Renders the positions table, wrapped in a stable `id` (M19).
+
+    `pnl.html`'s client-side poller (_pnl_polling_script) replaces this
+    wrapper's `innerHTML` wholesale on every refresh rather than diffing
+    individual rows -- simplest correct approach for a table that can gain,
+    lose, or reorder rows between polls (a position opened/closed
+    intraday), and cheap enough given how rarely it actually changes.
+    """
     if not positions:
-        return '<p style="opacity: 0.7;">No open positions.</p>'
+        return '<div id="pnl-positions"><p style="opacity: 0.7;">No open positions.</p></div>'
     header_cols = [
         "Symbol",
         "Qty",
@@ -1305,12 +1327,12 @@ def _render_pnl_positions_table(positions: list[dict[str, object]]) -> str:
             pl_pct_cell,
         ]
         rows_html.append(f"<tr>{''.join(cells)}</tr>")
-    return f"""<div class="glass table-wrap">
+    return f"""<div id="pnl-positions"><div class="glass table-wrap">
 <table class="tickers">
 <thead><tr>{header_html}</tr></thead>
 <tbody>{"".join(rows_html)}</tbody>
 </table>
-</div>"""
+</div></div>"""
 
 
 def _pnl_staleness_note(generated_at: object) -> str:
@@ -1359,12 +1381,261 @@ def _pnl_staleness_note(generated_at: object) -> str:
     )
 
 
-def _render_pnl(snapshot: dict[str, object] | None) -> str:
-    """Renders pnl.html (new milestone, user request: track P&L).
+_PNL_POLLING_SCRIPT_TEMPLATE = """
+<script>
+function pnlIsNum(v) {
+  return typeof v === 'number' && isFinite(v);
+}
+function pnlFmtDollars(v, stripSign) {
+  if (!pnlIsNum(v)) return '\\u2014';
+  const sign = v < 0 ? '-' : (v > 0 ? '+' : '');
+  const opts = {minimumFractionDigits: 2, maximumFractionDigits: 2};
+  const abs = Math.abs(v).toLocaleString('en-US', opts);
+  return (stripSign ? '' : sign) + '$' + abs;
+}
+function pnlFmtPct(v) {
+  if (!pnlIsNum(v)) return '\\u2014';
+  const pct = v * 100;
+  const sign = pct < 0 ? '-' : (pct > 0 ? '+' : '');
+  return sign + Math.abs(pct).toFixed(2) + '%';
+}
+function pnlClassFor(v) {
+  if (!pnlIsNum(v)) return '';
+  if (v > 0) return 'pnl-gain';
+  if (v < 0) return 'pnl-loss';
+  return 'pnl-flat';
+}
+function pnlSetText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+function pnlSetValue(id, baseClass, text, cls) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = cls ? (baseClass + ' ' + cls) : baseClass;
+}
+function pnlEscapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+  });
+}
+function pnlStalenessBanner(bodyText) {
+  const style = 'padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.85rem;';
+  return '<div class="glass" style="' + style + '">' +
+    '\\u2139 This snapshot ' + bodyText + ' \\u2014 the daily bridge from the ' +
+    'trading job to this site may have stopped running or be misconfigured. ' +
+    'Numbers below may not reflect the current account.</div>';
+}
+function pnlUpdateStaleness(generatedAt) {
+  const wrap = document.getElementById('pnl-staleness-wrap');
+  if (!wrap) return;
+  const maxHours = __PNL_STALENESS_MAX_HOURS__;
+  if (typeof generatedAt !== 'string') {
+    wrap.innerHTML = pnlStalenessBanner('has no valid timestamp');
+    return;
+  }
+  // Mirrors _pnl_staleness_note's own naive-datetime rejection: Date()
+  // parses an offset-less string "successfully" (silently assuming the
+  // browser's local timezone) rather than raising the way Python's
+  // fromisoformat does, so that case needs an explicit check here to
+  // match the server-rendered page's behavior for the same string.
+  const hasOffset = /(Z|[+-]\\d{2}:\\d{2})$/.test(generatedAt);
+  const parsed = new Date(generatedAt);
+  if (!hasOffset || isNaN(parsed.getTime())) {
+    wrap.innerHTML = pnlStalenessBanner('has an unparseable timestamp');
+    return;
+  }
+  const ageHours = (Date.now() - parsed.getTime()) / 3600000;
+  if (ageHours <= maxHours) {
+    wrap.innerHTML = '';
+    return;
+  }
+  wrap.innerHTML = pnlStalenessBanner(
+    'is ' + Math.round(ageHours) + ' hours old (expected within ' + maxHours + 'h)'
+  );
+}
+function pnlUpdatePositions(positions) {
+  const wrap = document.getElementById('pnl-positions');
+  if (!wrap) return;
+  if (!positions.length) {
+    wrap.innerHTML = '<p style="opacity: 0.7;">No open positions.</p>';
+    return;
+  }
+  const sorted = positions.slice().sort(function (a, b) {
+    return String(a.symbol || '').localeCompare(String(b.symbol || ''));
+  });
+  const headerCols = [
+    'Symbol', 'Qty', 'Avg Entry', 'Current Price', 'Market Value',
+    'Unrealized P&amp;L', 'Unrealized %'
+  ];
+  const qtyOpts = {minimumFractionDigits: 4, maximumFractionDigits: 4};
+  let rows = '';
+  for (const p of sorted) {
+    const plValue = pnlIsNum(p.unrealized_pl) ? Number(p.unrealized_pl) : null;
+    const cls = pnlClassFor(plValue);
+    const qtyCell = pnlIsNum(p.qty) ? Number(p.qty).toLocaleString('en-US', qtyOpts) : '\\u2014';
+    rows += '<tr>' +
+      '<td>' + pnlEscapeHtml(p.symbol || '\\u2014') + '</td>' +
+      '<td>' + qtyCell + '</td>' +
+      '<td>' + pnlFmtDollars(p.avg_entry_price, true) + '</td>' +
+      '<td>' + pnlFmtDollars(p.current_price, true) + '</td>' +
+      '<td>' + pnlFmtDollars(p.market_value, true) + '</td>' +
+      '<td class="' + cls + '">' + pnlFmtDollars(plValue, false) + '</td>' +
+      '<td class="' + cls + '">' + pnlFmtPct(p.unrealized_plpc) + '</td>' +
+      '</tr>';
+  }
+  const headerHtml = headerCols.map(function (c) { return '<th>' + c + '</th>'; }).join('');
+  wrap.innerHTML = '<div class="glass table-wrap"><table class="tickers">' +
+    '<thead><tr>' + headerHtml + '</tr></thead>' +
+    '<tbody>' + rows + '</tbody></table></div>';
+}
+async function pollPnl() {
+  try {
+    const res = await fetch('__PNL_SNAPSHOT_URL__', {cache: 'no-store'});
+    if (!res.ok) throw new Error('no snapshot file');
+    const data = await res.json();
+    const account = (data && typeof data.account === 'object' && data.account) || {};
+    const equity = account.equity;
+    const cash = account.cash;
+    const lastEquity = account.last_equity;
+    const todayPl = (pnlIsNum(equity) && pnlIsNum(lastEquity)) ? (equity - lastEquity) : null;
+    const todayPlPct = (todayPl !== null && pnlIsNum(lastEquity) && lastEquity !== 0)
+      ? (todayPl / lastEquity) : null;
+    const positions = Array.isArray(data.positions)
+      ? data.positions.filter(function (p) { return p && typeof p === 'object'; })
+      : [];
+    let totalUnrealized = 0;
+    for (const p of positions) {
+      if (pnlIsNum(p.unrealized_pl)) totalUnrealized += Number(p.unrealized_pl);
+    }
+
+    const todayCls = pnlClassFor(todayPl);
+    const unrealizedCls = pnlClassFor(totalUnrealized);
+    pnlSetText('pnl-tile-equity', pnlFmtDollars(equity, true));
+    pnlSetText('pnl-tile-cash', pnlFmtDollars(cash, true));
+    pnlSetValue('pnl-tile-today-value', 'stat-value', pnlFmtDollars(todayPl, false), todayCls);
+    pnlSetValue('pnl-tile-today-pct', 'stat-subvalue', pnlFmtPct(todayPlPct), todayCls);
+    pnlSetValue(
+      'pnl-tile-unrealized', 'stat-value', pnlFmtDollars(totalUnrealized, false), unrealizedCls
+    );
+
+    const genNote = document.getElementById('pnl-generated-note');
+    if (genNote) {
+      genNote.textContent = data.generated_at ? ('Snapshot generated ' + data.generated_at) : '';
+    }
+
+    pnlUpdateStaleness(data.generated_at);
+    pnlUpdatePositions(positions);
+  } catch (e) {
+    // Fetch/parse failure -- fail quietly and leave whatever the page
+    // already shows (the last successful poll, or the once/day static
+    // bake), same posture as the progress-bar poller's own catch.
+  }
+}
+pollPnl();
+setInterval(pollPnl, __PNL_POLL_INTERVAL_MS__);
+</script>
+"""
+
+
+def _pnl_polling_script(snapshot_url: str = "pnl.json") -> str:
+    """JS polling a P&L snapshot file for a live-updating page (M19).
+
+    `snapshot_url` parameterized in M20. Mirrors
+    `_progress_polling_script`'s established pattern (a static page
+    polling a separate, independently-updating JSON file) rather than
+    inventing a new one -- but at a poll interval sized to this data's
+    actual freshness (the snapshot changes at most every 30 min via
+    pnl-snapshot.yml), not that function's 2-second interval, which is
+    tuned for a screening run users watch complete in minutes. Placeholder
+    tokens, not an f-string: the template body is almost entirely JS
+    braces, and escaping every one of them for str.format would be its own
+    source of bugs.
+
+    `snapshot_url` defaults to `pnl.json` (the paper account, `pnl.html`'s
+    own call site) -- M20's `real-money.html` passes `real_money.json`
+    instead. staff-engineer-reviewer finding on the M20 design: this was
+    previously a hardcoded literal, the one templated value missing from
+    an otherwise fully parameterized script -- reusing it unmodified for
+    a second account would have silently displayed the *paper* account's
+    numbers on the *live* page.
+    """
+    return (
+        _PNL_POLLING_SCRIPT_TEMPLATE.replace(
+            "__PNL_STALENESS_MAX_HOURS__", str(config.PNL_STALENESS_MAX_HOURS)
+        )
+        .replace("__PNL_POLL_INTERVAL_MS__", str(config.PNL_CLIENT_POLL_INTERVAL_SECONDS * 1000))
+        .replace("__PNL_SNAPSHOT_URL__", snapshot_url)
+    )
+
+
+def _real_money_nav_link() -> str:
+    """The "real-money trading" nav entry (M20).
+
+    Shown once the live account/page are actually provisioned. Same
+    config-gated-off-by-default shape as `_history_nav_link()` above
+    -- a deployment without `config.LIVE_TRADING_ENABLED` set renders no
+    link to a page that doesn't exist yet.
+    """
+    if not config.LIVE_TRADING_ENABLED:
+        return ""
+    return '\n<a href="real-money.html">Real-money trading &rarr;</a>'
+
+
+def _render_pnl(
+    snapshot: dict[str, object] | None,
+    *,
+    expected_mode: str = "paper",
+    heading: str = "Paper trading P&amp;L",
+    account_note_html: str = (
+        "This account trades on the same daily cadence and rules as the "
+        "screener above &mdash; paper money only, not investment advice."
+    ),
+    seo_title: str = "Munger Screener &mdash; P&amp;L",
+    seo_description: str = (
+        "Paper-trading profit and loss for the daily quality-value screen: account equity "
+        "and open positions. Paper money only, not investment advice."
+    ),
+    seo_slug: str = "pnl.html",
+    snapshot_url: str = "pnl.json",
+    nav_html: str | None = None,
+) -> str:
+    """Renders a P&L page (M16, `pnl.html`).
+
+    M20 parameterizes this to also render `real-money.html` from the same
+    function rather than a duplicate one. With `config.LIVE_TRADING_ENABLED`
+    off, every keyword argument defaults to `pnl.html`'s exact original
+    values, so the only call site (`_render_pnl(_load_pnl_snapshot())`) is
+    unchanged; once enabled, `pnl.html`'s own nav gains a new link (see
+    `_real_money_nav_link`), which is intended, not a regression -- "byte-
+    for-byte unchanged" only holds pre-M20-enablement, not unconditionally.
+    `real-money.html`'s call site overrides every other keyword.
+    staff-engineer-reviewer finding on the M20 design: an earlier draft
+    assumed this function could be reused unmodified for a second account
+    -- it could not, since the heading, disclaimer paragraph, and SEO slug
+    were all literal "paper" strings, not values that happened to default
+    that way.
+
+    `expected_mode` ("paper"/"live") is a second, independent
+    defense-in-depth check (staff-engineer-reviewer finding, code-push
+    review) -- mirrors journal.py's own account-column defense (§3.4): if
+    a snapshot's own `mode` field ever disagreed with which page is
+    rendering it (a misrouted upload, a future workflow bug reintroducing
+    the exact class of cross-account mixup §3.4/§3.5 were written to
+    prevent at the journal layer), the page would otherwise silently show
+    the wrong mode badge with nothing to catch it. A mismatch renders a
+    visible warning instead of trusting the snapshot's self-reported mode.
 
     Reads a snapshot pnl.py already computed and wrote to disk -- this
     function never talks to Alpaca itself (see _load_pnl_snapshot).
     """
+    if nav_html is None:
+        nav_html = (
+            '<nav><a href="index.html">&larr; Back to current picks</a>\n'
+            '<a href="tickers.html">See all screened tickers &rarr;</a>\n'
+            f"{_history_nav_link()}{_real_money_nav_link()}</nav>"
+        )
     mode_badge = ""
     body: str
     if snapshot is None:
@@ -1379,6 +1650,17 @@ def _render_pnl(snapshot: dict[str, object] | None) -> str:
     else:
         mode = str(snapshot.get("mode") or "paper")
         mode_badge = f'<span class="mode-badge">{html.escape(mode.upper())}</span>'
+        mode_mismatch_note = (
+            '<div class="glass" style="padding: 0.75rem 1rem; margin-bottom: 1rem; '
+            'font-size: 0.85rem;">'
+            f"&#9432; This snapshot reports mode {html.escape(mode.upper())}, but this "
+            f"page expects {html.escape(expected_mode.upper())} &mdash; the wrong "
+            "account's data may have been uploaded here. Numbers below may not "
+            "reflect the account this page is meant to show."
+            "</div>"
+            if mode != expected_mode
+            else ""
+        )
         account = snapshot.get("account")
         account = account if isinstance(account, dict) else {}
         equity = account.get("equity")
@@ -1404,59 +1686,58 @@ def _render_pnl(snapshot: dict[str, object] | None) -> str:
             if _is_numeric(p.get("unrealized_pl"))
         )
 
+        today_pl_class = _pnl_class(today_pl)
+        unrealized_class = _pnl_class(total_unrealized)
+        today_pl_str = _format_dollars(today_pl)
+        today_pl_pct_str = _format_pct_signed(today_pl_pct)
+        unrealized_str = _format_dollars(total_unrealized)
         tiles = f"""<div class="stat-tiles">
 <div class="glass stat-tile">
   <div class="stat-label">Equity</div>
-  <div class="stat-value">{_format_dollars(equity).lstrip('+')}</div>
+  <div class="stat-value" id="pnl-tile-equity">{_format_dollars(equity).lstrip('+')}</div>
 </div>
 <div class="glass stat-tile">
   <div class="stat-label">Cash</div>
-  <div class="stat-value">{_format_dollars(cash).lstrip('+')}</div>
+  <div class="stat-value" id="pnl-tile-cash">{_format_dollars(cash).lstrip('+')}</div>
 </div>
 <div class="glass stat-tile">
   <div class="stat-label">Today&rsquo;s P&amp;L</div>
-  <div class="stat-value {_pnl_class(today_pl)}">{_format_dollars(today_pl)}</div>
-  <div class="stat-subvalue {_pnl_class(today_pl)}">{_format_pct_signed(today_pl_pct)}</div>
+  <div class="stat-value {today_pl_class}" id="pnl-tile-today-value">{today_pl_str}</div>
+  <div class="stat-subvalue {today_pl_class}" id="pnl-tile-today-pct">{today_pl_pct_str}</div>
 </div>
 <div class="glass stat-tile">
   <div class="stat-label">Unrealized P&amp;L</div>
-  <div class="stat-value {_pnl_class(total_unrealized)}">{_format_dollars(total_unrealized)}</div>
+  <div class="stat-value {unrealized_class}" id="pnl-tile-unrealized">{unrealized_str}</div>
 </div>
 </div>"""
 
         generated_at = snapshot.get("generated_at")
         generated_note = (
-            f'<p style="font-size: 0.8rem; opacity: 0.65;">Snapshot generated '
-            f"{html.escape(str(generated_at))}</p>"
+            f'<p style="font-size: 0.8rem; opacity: 0.65;" id="pnl-generated-note">'
+            f"Snapshot generated {html.escape(str(generated_at))}</p>"
             if generated_at
-            else ""
+            else '<p style="font-size: 0.8rem; opacity: 0.65;" id="pnl-generated-note"></p>'
         )
-        staleness_note = _pnl_staleness_note(generated_at)
+        staleness_note = f'<div id="pnl-staleness-wrap">{_pnl_staleness_note(generated_at)}</div>'
 
         body = (
-            staleness_note
+            mode_mismatch_note
+            + staleness_note
             + tiles
             + generated_note
             + "<h2>Open positions</h2>"
             + _render_pnl_positions_table(positions)
+            + _pnl_polling_script(snapshot_url)
         )
 
-    head = _seo_head(
-        "Munger Screener &mdash; P&amp;L",
-        "Paper-trading profit and loss for the daily quality-value screen: account equity "
-        "and open positions. Paper money only, not investment advice.",
-        "pnl.html",
-    )
+    head = _seo_head(seo_title, seo_description, seo_slug)
     return f"""{head}
 <body>
-<h1>Paper trading P&amp;L{mode_badge}</h1>
-<nav><a href="index.html">&larr; Back to current picks</a>
-<a href="tickers.html">See all screened tickers &rarr;</a>
-{_history_nav_link()}</nav>
+<h1>{heading}{mode_badge}</h1>
+{nav_html}
 {_disclaimer_banner()}
 <p style="font-size: 0.85rem; opacity: 0.7;">
-  This account trades on the same daily cadence and rules as the
-  screener above &mdash; paper money only, not investment advice.
+  {account_note_html}
 </p>
 {body}
 {_generated_at()}
@@ -1510,7 +1791,7 @@ def _render_calendar(
 <h1>Daily screen calendar</h1>
 <nav><a href="index.html">&larr; Back to current picks</a>
 <a href="tickers.html">See all screened tickers &rarr;</a>
-<a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
+<a href="pnl.html">Paper trading P&amp;L &rarr;</a>{_real_money_nav_link()}</nav>
 {_disclaimer_banner()}
 {_generated_at()}
 <p style="font-size: 0.85rem; opacity: 0.75; margin-bottom: 1rem;">
@@ -1620,7 +1901,7 @@ def _render_dashboards() -> str:
 <h1>Dashboards</h1>
 <nav><a href="index.html">&larr; Back to current picks</a>
 <a href="tickers.html">See all screened tickers &rarr;</a>
-<a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
+<a href="pnl.html">Paper trading P&amp;L &rarr;</a>{_real_money_nav_link()}</nav>
 {_disclaimer_banner()}
 <h2>Account P&amp;L over time</h2>
 <p style="font-size: 0.85rem; opacity: 0.75;">
@@ -1685,6 +1966,36 @@ def generate_report() -> None:
         else:
             _write_text_atomically(config.REPORT_DIR / "calendar.html", _render_calendar())
         _write_text_atomically(config.REPORT_DIR / "pnl.html", _render_pnl(_load_pnl_snapshot()))
+        # M20 (DESIGN_REAL_MONEY.md §4): the live account's own page,
+        # generated only where config.LIVE_TRADING_ENABLED is set --
+        # otherwise a deployment without the live pipeline provisioned
+        # yet would ship a dead nav link or an empty page (same failure
+        # mode config.GRAFANA_BASE_URL's own gating above prevents).
+        if config.LIVE_TRADING_ENABLED:
+            _write_text_atomically(
+                config.REPORT_DIR / "real-money.html",
+                _render_pnl(
+                    _load_pnl_snapshot(config.REAL_MONEY_DATA_PATH),
+                    expected_mode="live",
+                    heading="Real-money trading P&amp;L",
+                    account_note_html=(
+                        "This account trades on the same daily cadence and rules as the "
+                        "screener above &mdash; the user's own real capital, not investment "
+                        "advice, and not an offer or solicitation to invest."
+                    ),
+                    seo_title="Munger Screener &mdash; Real-Money Trading",
+                    seo_description=(
+                        "Real-money trading profit and loss for the daily quality-value "
+                        "screen: account equity and open positions. Not investment advice."
+                    ),
+                    seo_slug="real-money.html",
+                    snapshot_url="real_money.json",
+                    nav_html=(
+                        '<nav><a href="index.html">&larr; Back to current picks</a>\n'
+                        '<a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>'
+                    ),
+                ),
+            )
         # SEO artifacts (M18): robots.txt always (dev emits Disallow: / to stay
         # unindexed); sitemap.xml only on prod, where SITE_BASE_URL makes its
         # absolute URLs meaningful. Both must live in REPORT_DIR to be served

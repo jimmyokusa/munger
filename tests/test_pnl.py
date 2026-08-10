@@ -10,7 +10,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from alpaca.trading.models import PortfolioHistory, Position, TradeAccount
+from alpaca.trading.models import Clock, PortfolioHistory, Position, TradeAccount
 
 import config
 import pnl
@@ -232,6 +232,184 @@ def test_write_snapshot_accepts_a_prefetched_snapshot_without_fetching(
     pnl.write_snapshot(path=target, snapshot={"mode": "paper"})
 
     assert json.loads(target.read_text()) == {"mode": "paper"}
+
+
+# --- M19: intraday refresh (retry, market-hours gate, snapshot-only) ---
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Every retry test below deliberately triggers pnl._with_retry's sleep
+    # -- patched to a no-op globally so the suite doesn't actually wait
+    # config.PNL_ALPACA_RETRY_DELAY_SECONDS on every one of them.
+    monkeypatch.setattr(pnl.time, "sleep", lambda seconds: None)
+
+
+def _fake_clock(is_open: bool) -> MagicMock:
+    clock = MagicMock(spec=Clock)
+    clock.is_open = is_open
+    return clock
+
+
+def test_with_retry_returns_first_success_without_retrying() -> None:
+    calls = []
+
+    def fetch() -> str:
+        calls.append(1)
+        return "ok"
+
+    assert pnl._with_retry(fetch, "test") == "ok"
+    assert len(calls) == 1
+
+
+def test_with_retry_retries_once_after_a_transient_failure() -> None:
+    calls = []
+
+    def fetch() -> str:
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionError("transient blip")
+        return "ok"
+
+    assert pnl._with_retry(fetch, "test") == "ok"
+    assert len(calls) == 2
+
+
+def test_with_retry_fails_closed_after_a_second_failure() -> None:
+    # A persistently broken bridge must still fail loud after the retry is
+    # exhausted -- this is a reduction in false-positive noise, not a
+    # blanket suppression of real failures.
+    def fetch() -> str:
+        raise ConnectionError("still broken")
+
+    with pytest.raises(ConnectionError, match="still broken"):
+        pnl._with_retry(fetch, "test")
+
+
+def test_market_is_open_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    trading_mock = MagicMock()
+    trading_mock.get_clock.return_value = _fake_clock(True)
+    _patch_trading_client(monkeypatch, trading_mock)
+
+    assert pnl.market_is_open() is True
+
+
+def test_market_is_open_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    trading_mock = MagicMock()
+    trading_mock.get_clock.return_value = _fake_clock(False)
+    _patch_trading_client(monkeypatch, trading_mock)
+
+    assert pnl.market_is_open() is False
+
+
+def test_market_is_open_fails_closed_on_unexpected_clock_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trading_mock = MagicMock()
+    trading_mock.get_clock.return_value = {"not": "a Clock"}
+    _patch_trading_client(monkeypatch, trading_mock)
+
+    with pytest.raises(ValueError, match="unexpected get_clock"):
+        pnl.market_is_open()
+
+
+def test_market_is_open_retries_a_transient_clock_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trading_mock = MagicMock()
+    trading_mock.get_clock.side_effect = [ConnectionError("blip"), _fake_clock(True)]
+    _patch_trading_client(monkeypatch, trading_mock)
+
+    assert pnl.market_is_open() is True
+    assert trading_mock.get_clock.call_count == 2
+
+
+def test_generate_snapshot_retries_a_transient_get_account_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trading_mock = MagicMock()
+    trading_mock.get_account.side_effect = [ConnectionError("blip"), _fake_account()]
+    trading_mock.get_all_positions.return_value = []
+    trading_mock.get_portfolio_history.return_value = _fake_history()
+    _patch_trading_client(monkeypatch, trading_mock)
+
+    snapshot = pnl.generate_snapshot()
+
+    assert snapshot["account"]["equity"] == 100_000.0
+    assert trading_mock.get_account.call_count == 2
+
+
+def test_main_market_hours_only_skips_the_fetch_when_market_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PNL_MARKET_HOURS_ONLY", True)
+    monkeypatch.setattr(pnl, "market_is_open", lambda: False)
+
+    def _fail() -> dict[str, object]:
+        pytest.fail("generate_snapshot called despite the market being closed")
+
+    monkeypatch.setattr(pnl, "generate_snapshot", _fail)
+
+    pnl.main()  # must return cleanly without ever calling generate_snapshot
+
+
+def test_main_market_hours_only_runs_when_market_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "PNL_MARKET_HOURS_ONLY", True)
+    monkeypatch.setattr(config, "PNL_SNAPSHOT_ONLY", False)
+    monkeypatch.setattr(pnl, "market_is_open", lambda: True)
+    fixed_snapshot = {"mode": "paper", "account": {}, "positions": [], "history": {}}
+    monkeypatch.setattr(pnl, "generate_snapshot", lambda: fixed_snapshot)
+    write_mock = MagicMock()
+    history_mock = MagicMock()
+    monkeypatch.setattr(pnl, "write_snapshot", write_mock)
+    monkeypatch.setattr(pnl, "update_history_series", history_mock)
+
+    pnl.main()
+
+    write_mock.assert_called_once_with(snapshot=fixed_snapshot)
+    history_mock.assert_called_once_with(fixed_snapshot)
+
+
+def test_main_snapshot_only_skips_the_durable_history_upsert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M19's core safety property: the intraday cron must never touch
+    # pnl_history.jsonl (see config.PNL_SNAPSHOT_ONLY's own comment for
+    # why an unguarded upsert here would risk truncating the durable
+    # multi-month series on an ephemeral GitHub Actions runner).
+    monkeypatch.setattr(config, "PNL_MARKET_HOURS_ONLY", False)
+    monkeypatch.setattr(config, "PNL_SNAPSHOT_ONLY", True)
+    fixed_snapshot = {"mode": "paper", "account": {}, "positions": [], "history": {}}
+    monkeypatch.setattr(pnl, "generate_snapshot", lambda: fixed_snapshot)
+    monkeypatch.setattr(pnl, "write_snapshot", MagicMock())
+
+    def _fail(snapshot: dict[str, object]) -> None:
+        pytest.fail("update_history_series called despite PNL_SNAPSHOT_ONLY")
+
+    monkeypatch.setattr(pnl, "update_history_series", _fail)
+
+    pnl.main()  # must not raise -- proves update_history_series was never called
+
+
+def test_main_default_flags_run_the_full_flow_unaffected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # daily-trade.yml never sets either M19 env var -- both config flags
+    # default False, so `main()` must behave exactly as it did before this
+    # milestone: no market-hours gating, durable history always upserted.
+    monkeypatch.setattr(config, "PNL_MARKET_HOURS_ONLY", False)
+    monkeypatch.setattr(config, "PNL_SNAPSHOT_ONLY", False)
+    fixed_snapshot = {"mode": "paper", "account": {}, "positions": [], "history": {}}
+    monkeypatch.setattr(pnl, "generate_snapshot", lambda: fixed_snapshot)
+    write_mock = MagicMock()
+    history_mock = MagicMock()
+    monkeypatch.setattr(pnl, "write_snapshot", write_mock)
+    monkeypatch.setattr(pnl, "update_history_series", history_mock)
+
+    pnl.main()
+
+    write_mock.assert_called_once_with(snapshot=fixed_snapshot)
+    history_mock.assert_called_once_with(fixed_snapshot)
 
 
 # --- Durable P&L append-series (M17, DESIGN_DASHBOARDS.md 2.1) ---

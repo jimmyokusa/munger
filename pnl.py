@@ -26,15 +26,68 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.models import PortfolioHistory, Position, TradeAccount
+from alpaca.trading.models import Clock, PortfolioHistory, Position, TradeAccount
 from alpaca.trading.requests import GetPortfolioHistoryRequest
 
 import config
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+def _with_retry(fetch: Callable[[], _T], description: str) -> _T:
+    """Calls `fetch()`, retrying once after a short delay on any failure.
+
+    Every Alpaca read in this module is a GET (safe to retry) -- this
+    exists for M19, which raises call frequency from ~1/day to ~13/day
+    during market hours, meaningfully raising the odds of hitting an
+    ordinary transient network blip that would otherwise fail the whole
+    step and fire a false-positive alert email for a non-incident. Still
+    fails closed: a second failure propagates uncaught, same posture the
+    rest of this module already has (see module docstring) -- a
+    persistently broken bridge must still alert, just not on one blip.
+    """
+    try:
+        return fetch()
+    except Exception:
+        logger.warning(
+            "%s failed once; retrying once after %.0fs.",
+            description,
+            config.PNL_ALPACA_RETRY_DELAY_SECONDS,
+        )
+        time.sleep(config.PNL_ALPACA_RETRY_DELAY_SECONDS)
+        return fetch()
+
+
+def market_is_open() -> bool:
+    """Whether Alpaca's own market clock reports the market open right now.
+
+    Used to gate the intraday snapshot cron (pnl-snapshot.yml, M19): its
+    cron schedule is a UTC envelope wide enough to tolerate ET's DST shift
+    (a fixed UTC cron can't track that shift itself), so this is the actual
+    authority on "is trading happening right now," not the envelope alone.
+    Builds its own TradingClient rather than sharing one with
+    generate_snapshot() -- constructing a client makes no network call, so
+    a second instance costs nothing, and keeping this function
+    self-contained means callers (and tests) don't need to thread a client
+    through just for this one read.
+    """
+    trading = TradingClient(
+        api_key=config.ALPACA_API_KEY,
+        secret_key=config.ALPACA_SECRET_KEY,
+        paper=config.PAPER_TRADING,
+    )
+    clock = _with_retry(trading.get_clock, "get_clock")
+    if not isinstance(clock, Clock):
+        raise ValueError(f"unexpected get_clock() response: {clock!r}")
+    return bool(clock.is_open)
 
 
 def _float_or_none(value: object) -> float | None:
@@ -80,11 +133,11 @@ def generate_snapshot() -> dict[str, object]:
         secret_key=config.ALPACA_SECRET_KEY,
         paper=config.PAPER_TRADING,
     )
-    account = trading.get_account()
+    account = _with_retry(trading.get_account, "get_account")
     if not isinstance(account, TradeAccount):
         raise ValueError(f"unexpected get_account() response: {account!r}")
 
-    positions = trading.get_all_positions()
+    positions = _with_retry(trading.get_all_positions, "get_all_positions")
     if not all(isinstance(p, Position) for p in positions):
         # staff-engineer-reviewer finding: silently filtering non-Position
         # entries (as an earlier draft did) is the one place this
@@ -97,8 +150,11 @@ def generate_snapshot() -> dict[str, object]:
         raise ValueError(f"unexpected get_all_positions() response: {positions!r}")
     position_snapshots = [_position_snapshot(p) for p in positions if isinstance(p, Position)]
 
-    history = trading.get_portfolio_history(
-        GetPortfolioHistoryRequest(period="1M", timeframe="1D")
+    history = _with_retry(
+        lambda: trading.get_portfolio_history(
+            GetPortfolioHistoryRequest(period="1M", timeframe="1D")
+        ),
+        "get_portfolio_history",
     )
     if not isinstance(history, PortfolioHistory):
         raise ValueError(f"unexpected get_portfolio_history() response: {history!r}")
@@ -237,27 +293,57 @@ def update_history_series(
     tmp_path.replace(target)
 
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    # Deliberately NOT swallowed into a guaranteed exit 0 -- pm-reviewer
-    # finding: a "P&L is a display concern" argument justifies not
-    # aborting the trading run over this (it's a separate, later step in
-    # daily-trade.yml either way), but does not justify silence. This
-    # step's own exit code is the only thing that surfaces a snapshot
-    # failure through this project's existing alert channel (a failed
-    # step fails the job, which triggers the standard GitHub Actions
-    # failure email, same channel as every other alert here) -- catching
-    # and logging without re-raising would mean a broken bridge (a
-    # rotated key, a changed SDK response shape, a GCS outage) fails
-    # silently and gramunger.com just shows an increasingly stale
-    # snapshot with nothing paging anyone.
-    # One Alpaca read feeds both the current-snapshot JSON and the durable
-    # append-series, so the two can never disagree about the same run.
+def main() -> None:
+    """Entry point invoked by `__main__`.
+
+    Pulled out to a plain function (staff-engineer-reviewer convention,
+    M19) so the market-hours/
+    snapshot-only branching added for the intraday cron is directly unit-
+    testable, rather than locked inside an `if __name__ == "__main__":`
+    block a test can only reach via subprocess.
+
+    Deliberately NOT swallowed into a guaranteed exit 0 -- pm-reviewer
+    finding (M16): a "P&L is a display concern" argument justifies not
+    aborting the trading run over this (it's a separate, later step in
+    daily-trade.yml either way), but does not justify silence. This
+    step's own exit code is the only thing that surfaces a snapshot
+    failure through this project's existing alert channel (a failed
+    step fails the job, which triggers the standard GitHub Actions
+    failure email, same channel as every other alert here) -- catching
+    and logging without re-raising would mean a broken bridge (a
+    rotated key, a changed SDK response shape, a GCS outage) fails
+    silently and gramunger.com just shows an increasingly stale
+    snapshot with nothing paging anyone. market_is_open() shares this
+    same fail-loud posture: an unreachable clock must not quietly
+    resolve to "assume closed, skip silently."
+    """
+    if config.PNL_MARKET_HOURS_ONLY and not market_is_open():
+        # M19: pnl-snapshot.yml's own cron envelope is wider than real
+        # market hours (a fixed UTC cron can't track ET's DST shift) --
+        # this is the actual authority on whether to spend an Alpaca call
+        # and a GCS upload on this tick.
+        logger.info("Market is closed; skipping this intraday P&L tick.")
+        return
+
+    # One Alpaca read feeds both the current-snapshot JSON and (unless
+    # PNL_SNAPSHOT_ONLY) the durable append-series, so the two can never
+    # disagree about the same run.
     snapshot = generate_snapshot()
     write_snapshot(snapshot=snapshot)
-    update_history_series(snapshot)
-    logger.info(
-        "P&L snapshot written to %s; history series updated at %s",
-        config.PNL_DATA_PATH,
-        config.PNL_HISTORY_PATH,
+    if config.PNL_SNAPSHOT_ONLY:
+        # M19: the durable series is daily-trade.yml's exclusive
+        # responsibility (see config.PNL_SNAPSHOT_ONLY's own comment for
+        # why an intraday upsert here would be unsafe) -- only the
+        # current-state file refreshes on this cadence.
+        logger.info("PNL_SNAPSHOT_ONLY set; skipping the durable history upsert.")
+    else:
+        update_history_series(snapshot)
+    history_note = (
+        "" if config.PNL_SNAPSHOT_ONLY else f"; history series updated at {config.PNL_HISTORY_PATH}"
     )
+    logger.info("P&L snapshot written to %s%s", config.PNL_DATA_PATH, history_note)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    main()

@@ -84,10 +84,20 @@ def setup(monkeypatch: pytest.MonkeyPatch) -> _Setup:
 
 
 def test_client_order_id_is_deterministic(setup: _Setup) -> None:
-    assert setup.module._client_order_id("AAPL", "buy") == "2026-07-21-AAPL-buy"
+    assert setup.module._client_order_id("AAPL", "buy") == "paper-2026-07-21-AAPL-buy"
     assert setup.module._client_order_id("AAPL", "buy") == setup.module._client_order_id(
         "AAPL", "buy"
     )
+
+
+def test_client_order_id_is_tagged_live_when_paper_trading_is_false(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # M20 (DESIGN_REAL_MONEY.md §3.5): defense-in-depth so a raw
+    # client_order_id string is self-describing which account it belongs
+    # to, independent of journal.py's own account column.
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    assert setup.module._client_order_id("AAPL", "buy") == "live-2026-07-21-AAPL-buy"
 
 
 def test_limit_price_buy_is_above_last_trade(setup: _Setup) -> None:
@@ -170,7 +180,7 @@ def test_market_buy_submits_a_limit_order_with_the_band_and_client_order_id(
     assert submitted_request.notional == 500.0
     assert submitted_request.side == OrderSide.BUY
     assert submitted_request.time_in_force == TimeInForce.DAY
-    assert submitted_request.client_order_id == "2026-07-21-AAPL-buy"
+    assert submitted_request.client_order_id == "paper-2026-07-21-AAPL-buy"
     assert submitted_request.limit_price == pytest.approx(expected_limit_price, rel=1e-4)
 
 
@@ -209,7 +219,7 @@ def test_liquidate_submits_a_sell_limit_order_for_the_full_position(setup: _Setu
     assert submitted_request.qty == 7.5
     assert submitted_request.side == OrderSide.SELL
     assert submitted_request.time_in_force == TimeInForce.DAY
-    assert submitted_request.client_order_id == "2026-07-21-AAPL-sell"
+    assert submitted_request.client_order_id == "paper-2026-07-21-AAPL-sell"
     assert submitted_request.limit_price == pytest.approx(
         100.0 * (1 - config.LIMIT_PRICE_BAND_PCT), rel=1e-4
     )

@@ -23,6 +23,8 @@ def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "REPORT_DIR", tmp_path / "report")
     monkeypatch.setattr(config, "SCREEN_RESULTS_ARCHIVE_DIR", tmp_path / "archive")
     monkeypatch.setattr(config, "PNL_DATA_PATH", tmp_path / "pnl.json")
+    monkeypatch.setattr(config, "REAL_MONEY_DATA_PATH", tmp_path / "real_money.json")
+    monkeypatch.setattr(config, "LIVE_TRADING_ENABLED", False)
 
 
 def _write_screen_results(rows: str) -> None:
@@ -589,6 +591,20 @@ def test_load_pnl_snapshot_returns_the_parsed_dict() -> None:
     assert report._load_pnl_snapshot() == {"mode": "paper", "account": {"equity": 100_000.0}}
 
 
+def test_load_pnl_snapshot_reads_an_explicit_path(tmp_path: Path) -> None:
+    # M20: real-money.html loads from config.REAL_MONEY_DATA_PATH, a
+    # second, independent file -- confirms this function actually reads
+    # whatever path it's given, not always config.PNL_DATA_PATH.
+    other_path = tmp_path / "real_money.json"
+    other_path.write_text(json.dumps({"mode": "live", "account": {"equity": 5_000.0}}))
+    assert report._load_pnl_snapshot(other_path) == {
+        "mode": "live",
+        "account": {"equity": 5_000.0},
+    }
+    # The default path is untouched by this call.
+    assert report._load_pnl_snapshot() is None
+
+
 def test_render_pnl_shows_empty_state_when_no_snapshot() -> None:
     html_out = report._render_pnl(None)
     assert "No P&amp;L snapshot yet." in html_out
@@ -676,7 +692,12 @@ def test_render_pnl_shows_no_staleness_warning_for_a_fresh_snapshot() -> None:
         "positions": [],
     }
     html_out = report._render_pnl(snapshot)
-    assert "bridge from the trading job" not in html_out
+    # M19: the client-side poller's JS unconditionally embeds the same
+    # banner wording (so a stale-after-load page shows identical copy
+    # whether server-baked or client-refreshed) -- asserting the phrase is
+    # absent from the whole page would false-fail on that dead script text.
+    # The real assertion is that the *rendered* wrapper is empty.
+    assert '<div id="pnl-staleness-wrap"></div>' in html_out
 
 
 def test_render_pnl_warns_when_snapshot_is_stale() -> None:
@@ -726,6 +747,77 @@ def test_render_pnl_treats_a_timezone_naive_generated_at_as_unparseable() -> Non
     report._render_pnl(snapshot)  # must not raise
 
 
+def test_pnl_polling_script_rejects_naive_timestamps_like_the_python_side_does() -> None:
+    # staff-engineer-reviewer finding: JS's `new Date()` parses a naive
+    # (offset-less) ISO string "successfully" instead of raising the way
+    # _pnl_staleness_note's Python-side fromisoformat check does -- the
+    # client-side poller needs its own explicit offset check to treat the
+    # same string as "unparseable" the way a full page reload would, or a
+    # naive generated_at would silently compute a wrong age client-side
+    # instead of showing the warning banner. This can't run the JS itself
+    # (no node in the arm64 CI image this suite also runs in-cluster
+    # against), so it locks the guard's presence in the template source --
+    # a future edit removing it would fail this test even without a JS
+    # runtime to execute against.
+    script = report._pnl_polling_script()
+    assert r"[+-]\d{2}:\d{2}" in script  # the offset-detecting regex
+    assert "!hasOffset || isNaN(parsed.getTime())" in script
+
+
+def test_render_pnl_includes_client_side_ids_and_poller_for_a_real_snapshot() -> None:
+    # M19: pnl.html's client-side poller targets these ids by exact name --
+    # if a future edit renames/removes one without updating the JS, the
+    # page would silently stop refreshing that field while looking fine at
+    # generation time. Locks the ids and the poller's presence together.
+    snapshot: dict[str, object] = {
+        "mode": "paper",
+        "generated_at": "2026-07-27T01:27:38+00:00",
+        "account": {"equity": 100_000.0, "cash": 5_000.0, "last_equity": 99_500.0},
+        "positions": [
+            {
+                "symbol": "AAPL",
+                "qty": 10.0,
+                "avg_entry_price": 150.0,
+                "current_price": 160.0,
+                "market_value": 1_600.0,
+                "unrealized_pl": 100.0,
+                "unrealized_plpc": 0.0667,
+            }
+        ],
+    }
+
+    html_out = report._render_pnl(snapshot)
+
+    for element_id in (
+        'id="pnl-tile-equity"',
+        'id="pnl-tile-cash"',
+        'id="pnl-tile-today-value"',
+        'id="pnl-tile-today-pct"',
+        'id="pnl-tile-unrealized"',
+        'id="pnl-generated-note"',
+        'id="pnl-staleness-wrap"',
+        'id="pnl-positions"',
+    ):
+        assert element_id in html_out
+    assert "fetch('pnl.json'" in html_out
+    assert "setInterval(pollPnl," in html_out
+    # the poll interval/staleness threshold are baked in from config, not
+    # left as literal placeholder tokens
+    assert "__PNL_POLL_INTERVAL_MS__" not in html_out
+    assert "__PNL_STALENESS_MAX_HOURS__" not in html_out
+    assert str(config.PNL_CLIENT_POLL_INTERVAL_SECONDS * 1000) in html_out
+    assert str(config.PNL_STALENESS_MAX_HOURS) in html_out
+
+
+def test_render_pnl_omits_the_poller_when_there_is_no_snapshot() -> None:
+    # The empty state renders none of the tile/table ids the poller
+    # targets -- including the script there would just throw on every
+    # document.getElementById(...) call (guarded against in the JS, but
+    # there's no reason to ship a script with nothing to do).
+    html_out = report._render_pnl(None)
+    assert "pollPnl" not in html_out
+
+
 def test_disclaimer_banner_appears_on_every_page() -> None:
     # staff-engineer-reviewer finding: nothing previously locked the "not
     # investment advice" banner into all 5 pages -- a future refactor of
@@ -739,6 +831,10 @@ def test_disclaimer_banner_appears_on_every_page() -> None:
     assert marker in report._render_index(picks=[], results=results)
     assert marker in report._render_tickers(results, held_symbols=set())
     assert marker in report._render_pnl(None)
+    # M20: real-money.html reuses _render_pnl with overridden kwargs, not
+    # a separate render function -- confirms the banner survives that
+    # call shape too, not just the default (paper) one.
+    assert marker in report._render_pnl(None, heading="Real-money trading P&amp;L")
     assert marker in report._render_calendar(summaries={})
     assert marker in report._render_dashboards()
 
@@ -774,6 +870,132 @@ def test_generate_report_writes_pnl_html_from_a_real_snapshot() -> None:
     report.generate_report()
     pnl_html = (config.REPORT_DIR / "pnl.html").read_text()
     assert '<span class="mode-badge">LIVE</span>' in pnl_html
+
+
+# --- M20: real-money.html (a second, parameterized _render_pnl call) --------
+
+
+def test_render_pnl_default_kwargs_are_unchanged_from_pnl_htmls_original_output() -> None:
+    # Every keyword argument must default to pnl.html's exact original
+    # values -- this is what lets the existing call site stay untouched.
+    snapshot = {"mode": "paper", "account": {"equity": 100_000.0}, "positions": []}
+    html_out = report._render_pnl(snapshot)
+    assert "<h1>Paper trading P&amp;L" in html_out
+    assert "paper money only, not investment advice" in html_out
+    assert "<title>Munger Screener &mdash; P&amp;L</title>" in html_out
+    assert "fetch('pnl.json'" in html_out
+
+
+def test_render_pnl_overridden_kwargs_produce_a_distinct_live_page() -> None:
+    snapshot = {"mode": "live", "account": {"equity": 5_000.0}, "positions": []}
+    html_out = report._render_pnl(
+        snapshot,
+        expected_mode="live",
+        heading="Real-money trading P&amp;L",
+        account_note_html="the user's own real capital, not investment advice",
+        seo_title="Munger Screener &mdash; Real-Money Trading",
+        seo_description="Real-money description",
+        seo_slug="real-money.html",
+        snapshot_url="real_money.json",
+        nav_html='<nav><a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>',
+    )
+    assert "<h1>Real-money trading P&amp;L" in html_out
+    assert "the user's own real capital" in html_out
+    assert "<title>Munger Screener &mdash; Real-Money Trading</title>" in html_out
+    assert "fetch('real_money.json'" in html_out
+    assert '<a href="pnl.html">Paper trading P&amp;L' in html_out
+    # Proves this isn't just appending new content on top of the old --
+    # the paper-specific strings are genuinely gone from this page.
+    assert "Paper trading P&amp;L</h1>" not in html_out
+    assert "paper money only" not in html_out
+
+
+def test_render_pnl_warns_when_snapshot_mode_disagrees_with_expected_mode() -> None:
+    # staff-engineer-reviewer finding (code-push review): journal.py's
+    # account column (§3.4) defends against two accounts' *trade* data
+    # mixing up; this is the equivalent defense at the *display* layer --
+    # a snapshot uploaded to the wrong GCS path/page must not silently
+    # render under the wrong mode badge with nothing to catch it.
+    snapshot = {"mode": "paper", "account": {"equity": 100_000.0}, "positions": []}
+    html_out = report._render_pnl(snapshot, expected_mode="live")
+    assert "reports mode PAPER" in html_out
+    assert "expects LIVE" in html_out
+
+
+def test_render_pnl_shows_no_mismatch_warning_when_modes_agree() -> None:
+    snapshot = {"mode": "paper", "account": {"equity": 100_000.0}, "positions": []}
+    html_out = report._render_pnl(snapshot, expected_mode="paper")
+    assert "reports mode" not in html_out
+
+
+def test_real_money_nav_link_is_empty_when_live_trading_disabled() -> None:
+    assert report._real_money_nav_link() == ""
+
+
+def test_real_money_nav_link_appears_when_live_trading_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "LIVE_TRADING_ENABLED", True)
+    assert 'href="real-money.html"' in report._real_money_nav_link()
+
+
+def test_generate_report_omits_real_money_html_by_default() -> None:
+    report.generate_report()
+    assert not (config.REPORT_DIR / "real-money.html").exists()
+    # ...and pnl.html itself carries no dead link to a page that doesn't exist.
+    assert 'href="real-money.html"' not in (config.REPORT_DIR / "pnl.html").read_text()
+
+
+def test_generate_report_writes_real_money_html_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "LIVE_TRADING_ENABLED", True)
+    config.REAL_MONEY_DATA_PATH.write_text(
+        json.dumps({"mode": "live", "account": {"equity": 5_000.0}, "positions": []})
+    )
+    # A separate paper snapshot proves real-money.html reads its own file,
+    # not pnl.json.
+    _write_pnl_snapshot({"mode": "paper", "account": {"equity": 100_000.0}, "positions": []})
+
+    report.generate_report()
+
+    real_money_html = (config.REPORT_DIR / "real-money.html").read_text()
+    assert '<span class="mode-badge">LIVE</span>' in real_money_html
+    assert "$5,000.00" in real_money_html
+    assert "$100,000.00" not in real_money_html
+    # pnl.html links forward to it, once it exists.
+    assert 'href="real-money.html"' in (config.REPORT_DIR / "pnl.html").read_text()
+
+
+def test_generate_report_links_to_real_money_html_from_every_existing_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # staff-engineer-reviewer finding (code-push review): an earlier draft
+    # only wired the new nav link into pnl.html/real-money.html's own
+    # mutual link, leaving index.html/tickers.html/calendar.html with no
+    # path to the live page at all -- the M16 precedent for pnl.html
+    # itself (DESIGN.md §3.8 "a new nav link to it on each of
+    # index.html/tickers.html/calendar.html") was every page, not one.
+    monkeypatch.setattr(config, "LIVE_TRADING_ENABLED", True)
+    config.REAL_MONEY_DATA_PATH.write_text(
+        json.dumps({"mode": "live", "account": {"equity": 5_000.0}, "positions": []})
+    )
+    report.generate_report()
+    for filename in ("index.html", "tickers.html", "calendar.html"):
+        assert 'href="real-money.html"' in (
+            config.REPORT_DIR / filename
+        ).read_text(), f"{filename} has no link to real-money.html"
+
+
+def test_sitemap_pages_omits_real_money_html_by_default() -> None:
+    assert "real-money.html" not in report._sitemap_pages()
+
+
+def test_sitemap_pages_includes_real_money_html_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "LIVE_TRADING_ENABLED", True)
+    assert "real-money.html" in report._sitemap_pages()
 
 
 # --- M18: SEO meta, robots.txt, sitemap.xml, analytics -----------------------

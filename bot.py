@@ -35,6 +35,20 @@ def _kill_switch_active() -> bool:
     return config.KILL_SWITCH or config.KILL_SWITCH_FLAG_FILE_PATH.exists()
 
 
+def _global_kill_switch_active() -> bool:
+    """True if the account-independent master kill switch is set.
+
+    M20 (DESIGN_REAL_MONEY.md §3.2): checked before `_kill_switch_active()`
+    above, unconditionally, by both the paper and the live workflow. Unlike
+    that per-account flag file (DATA_DIR-relative, so scoped to just one
+    workflow's own runner/checkout), this one lives at a fixed path in the
+    repo checkout itself (config.BASE_DIR) -- a single commit adding this
+    file on `main` is visible to both workflows' next `actions/checkout`,
+    regardless of which account's DATA_DIR each is otherwise scoped to.
+    """
+    return config.GLOBAL_KILL_SWITCH_FLAG_FILE_PATH.exists()
+
+
 def _fetched_fraction(results: pd.DataFrame) -> float:
     """Fraction of screened tickers that got real data.
 
@@ -248,6 +262,13 @@ def run(run_date: str | None = None) -> int:
     buyable_count = int(results["buyable"].sum())
     logger.info("Screen complete: %d tickers, %d buyable.", len(results), buyable_count)
 
+    if _global_kill_switch_active():
+        logger.warning(
+            "GLOBAL_KILL_SWITCH active -- screen-only run (all accounts), "
+            "no orders will be placed."
+        )
+        return _finish(alerts)
+
     if _kill_switch_active():
         logger.warning("KILL_SWITCH active -- screen-only run, no orders will be placed.")
         return _finish(alerts)
@@ -257,8 +278,20 @@ def run(run_date: str | None = None) -> int:
 
     current_holdings = exec_module.get_current_holdings()
 
-    for warning in journal.check_reconciliation(set(current_holdings)):
+    reconciliation_warnings = journal.check_reconciliation(set(current_holdings))
+    for warning in reconciliation_warnings:
         _alert(alerts, f"Reconciliation mismatch: {warning}")
+    if reconciliation_warnings and not config.PAPER_TRADING:
+        # M20 (DESIGN_REAL_MONEY.md §3.3): a mismatch against the live
+        # account aborts rather than the warn-and-continue posture paper
+        # keeps (M10) -- decided in design review given how much thinner
+        # the rest of this system's defense-in-depth is for a genuinely
+        # new account than it is for paper, which has been running
+        # cleanly for months. The alerts above have already fired, so the
+        # mismatch is not silent; this just stops the run from also
+        # placing orders on top of a state it can't currently trust.
+        _alert(alerts, "Aborting: reconciliation mismatch against the live account")
+        return _finish(alerts)
 
     holdings_metrics = data.fetch_all_metrics(list(current_holdings), phase="holdings check")
     state = portfolio.StateTracker()

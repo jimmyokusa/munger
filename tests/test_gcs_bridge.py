@@ -19,6 +19,7 @@ import gcs_bridge
 @pytest.fixture(autouse=True)
 def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "PNL_DATA_PATH", tmp_path / "pnl.json")
+    monkeypatch.setattr(config, "REAL_MONEY_DATA_PATH", tmp_path / "real_money.json")
     monkeypatch.setattr(config, "REPORT_DIR", tmp_path / "report")
 
 
@@ -41,7 +42,11 @@ def _fake_blob(*, content: bytes | None = None, missing: bool = False) -> MagicM
 
 def _patch_client(monkeypatch: pytest.MonkeyPatch, blobs: dict[str, MagicMock]) -> None:
     bucket = MagicMock()
-    bucket.blob.side_effect = lambda name: blobs[name]
+    # Any name not explicitly given defaults to "missing" (M20 finding:
+    # every existing test predates real_money.json and shouldn't need to
+    # start naming it explicitly just to keep passing -- a missing object
+    # is bridge()'s own default-tolerated case for this file anyway).
+    bucket.blob.side_effect = lambda name: blobs.get(name, _fake_blob(missing=True))
     client = MagicMock()
     client.bucket.return_value = bucket
     # Patches the same cached google.cloud.storage module object gcs_bridge.py
@@ -76,6 +81,66 @@ def test_bridge_downloads_both_files_and_publishes_json_array(
         {"date": "2026-07-28", "equity": 100000.0},
         {"date": "2026-07-29", "equity": 100500.0},
     ]
+
+
+def test_bridge_writes_pnl_json_to_report_dir_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    # M19 (DESIGN.md 3.8.1): k3s's nginx container has no filesystem
+    # visibility outside REPORT_DIR (its volumeMount is scoped to the
+    # PVC's `report` subPath) -- unlike Cloud Run, which aliases
+    # DATA_DIR/pnl.json directly from its always-current FUSE mount, k3s
+    # needs an actual second copy inside REPORT_DIR for pnl.html's
+    # client-side poller (M19) to have anything to fetch.
+    _patch_client(
+        monkeypatch,
+        {
+            "pnl.json": _fake_blob(content=b'{"equity": 100500.0}'),
+            "pnl_history.jsonl": _fake_blob(missing=True),
+            "prices.json": _fake_blob(missing=True),
+        },
+    )
+
+    gcs_bridge.bridge()
+
+    assert config.PNL_DATA_PATH.read_text() == '{"equity": 100500.0}'
+    assert (config.REPORT_DIR / "pnl.json").read_text() == '{"equity": 100500.0}'
+
+
+def test_bridge_downloads_real_money_json_and_writes_a_report_dir_copy_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M20 (DESIGN_REAL_MONEY.md §4): same DATA_DIR-root + REPORT_DIR-copy
+    # treatment as pnl.json above, for the live account's own snapshot.
+    # pnl.json itself is required (bridge()'s always-first, fail-loud
+    # download), so it needs a real entry here too even though this test
+    # is about real_money.json specifically.
+    _patch_client(
+        monkeypatch,
+        {
+            "pnl.json": _fake_blob(content=b"{}"),
+            "real_money.json": _fake_blob(content=b'{"mode": "live", "equity": 812.34}'),
+        },
+    )
+
+    gcs_bridge.bridge()
+
+    assert config.REAL_MONEY_DATA_PATH.read_text() == '{"mode": "live", "equity": 812.34}'
+    assert (
+        config.REPORT_DIR / "real_money.json"
+    ).read_text() == '{"mode": "live", "equity": 812.34}'
+
+
+def test_bridge_tolerates_a_missing_real_money_json_as_the_expected_pre_launch_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unlike pnl.json (whose absence means the long-established bridge is
+    # broken -- fail loud), a missing real_money.json is the default state
+    # until the live trading pipeline is actually provisioned and running.
+    _patch_client(monkeypatch, {"pnl.json": _fake_blob(content=b"{}")})
+
+    gcs_bridge.bridge()  # must not raise
+
+    assert not config.REAL_MONEY_DATA_PATH.exists()
+    assert not (config.REPORT_DIR / "real_money.json").exists()
 
 
 def test_bridge_tolerates_a_missing_pnl_history_as_the_expected_first_run(

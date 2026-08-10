@@ -496,6 +496,118 @@ alone leaves the dead nav link pointing at that empty state rather than
 removing it — acceptable for a quick rollback, but reverting `report.py`
 itself is a second step if the link should disappear too.
 
+**3.8.1 Intraday refresh (M19, 2026-08-10, user request).** The design
+above generates one snapshot/day; the user noticed `pnl.html`'s Unrealized
+P&L visibly diverging from Alpaca's own live site by hundreds of dollars at
+the same moment, which is simply what "one snapshot/day" looks like
+intraday, not a bug in the number itself. Asked for continuous (5-minute)
+updates "unless that generates cost" — investigated and reported back that
+GCS/Cloud Run cost impact is negligible either way, but GitHub Actions
+minutes are the real constraint, **because that is deliberately the only
+place these credentials are allowed to run** (re-affirming, not revising,
+this section's own boundary above): the public Cloud Run/k3s report
+deployment must never hold Alpaca keys, so there is no cheaper alternative
+like having the public binary poll Alpaca directly. User chose a 30-minute
+cadence as the tradeoff. See `TASKS.md` M19 for the full cost arithmetic and
+review findings this note doesn't repeat.
+
+Three changes, layered on top of §3.8 without altering its core contract
+(`pnl.py` is still the only Alpaca-reading process; `report.py` still never
+talks to Alpaca):
+
+- **Cadence and gating.** A new standalone workflow (`pnl-snapshot.yml`),
+  not folded into `daily-trade.yml` (which stays once/day for the actual
+  trading decision — a display-refresh cadence is not a reason to run the
+  trading logic more often), with its own `concurrency:` group (mirroring
+  `daily-trade.yml`'s own, added there for the identical reason — two
+  overlapping invocations racing on shared state) so a slow tick can't
+  overlap the next scheduled one. Cron alone can't express "market hours" —
+  a fixed UTC schedule can't track ET's DST shift — so the workflow's cron
+  is a wide UTC envelope covering both offsets, and a new
+  `pnl.market_is_open()` check (Alpaca's own `/clock`) gates the actual
+  fetch: a tick inside the envelope but outside real trading hours is a
+  fast no-op, not a wasted Alpaca call + GCS write. `market_is_open()`
+  itself fails exactly like every other Alpaca read in this module (no
+  try/except — a broken `/clock` call fails the step loud, same alert
+  channel, not a silent skip) — gating on "is the market open" must not
+  quietly become "assume closed and say nothing" on an ordinary API hiccup.
+  This raises call frequency against Alpaca from ~1/day to ~13/day during
+  market hours, which meaningfully raises the odds of hitting a one-off
+  transient network blip — a single shared retry-with-backoff helper wraps
+  every Alpaca read in `pnl.py` (the clock check included, not just
+  `generate_snapshot()`) before letting a failure propagate to the existing
+  fail-loud/alert-email path (§3.8's "Staleness and failure visibility"
+  above). This reduces, not eliminates, false-positive alerts from a single
+  transient blip; a persistently broken bridge still fails loud and still
+  alerts, unchanged, after the retry is exhausted.
+- **`pnl-snapshot.yml` never touches `pnl_history.jsonl`.** §3.8's durable
+  append-series is a "one row per day" file by design (`pnl.py`'s own
+  `update_history_series` docstring) — running its read-modify-write upsert
+  13x/day would add no real value (the row just gets a fresher same-day
+  equity value each tick) while reintroducing real risk: GitHub Actions
+  runners are ephemeral, so unless a run restores the prior series from GCS
+  before upserting, `update_history_series` reseeds from only Alpaca's
+  rolling ~30-day window, and re-uploading that would permanently truncate
+  months of durable history — exactly the failure `daily-trade.yml`'s
+  existing "Download prior P&L history from GCS" step (with its own
+  first-run-vs-real-failure distinction) exists to prevent, and exactly the
+  race two independent workflows read-modify-writing the same GCS object
+  with no concurrency guard would risk if both touched it. `pnl-snapshot.yml`
+  sidesteps this entirely rather than replicating that dance: it calls only
+  `generate_snapshot()` + `write_snapshot()` (the current-state file,
+  `pnl.json`) and skips `update_history_series()` outright — the durable
+  series stays exclusively `daily-trade.yml`'s responsibility, once/day, no
+  new writer, no new race.
+- **A servable `pnl.json`.** §3.8's `PNL_DATA_PATH` was never meant to be
+  browser-reachable — it lives at `DATA_DIR` root specifically so it sits
+  alongside `journal.db`/`state.json`, outside the `REPORT_DIR` tree nginx
+  actually serves on both deployments. A more frequent upload changes
+  nothing for a viewer unless the browser can actually fetch the newer
+  file, so this milestone exposes it narrowly: a Cloud Run nginx **exact-
+  match** location block (`location = /pnl.json { alias ...; }`, not a
+  prefix alias — the distinction matters, since a prefix alias is the
+  well-known nginx footgun that can leak directory listings or sibling
+  files) serving only that one path from the FUSE mount (already always
+  current, so no new bridge step needed there), and a second `REPORT_DIR`
+  copy written by `gcs_bridge.py` for k3s, whose nginx container has no
+  filesystem visibility outside `report/` at all — an alias is not
+  possible there, only a second copy. Neither exposes the rest of
+  `DATA_DIR`; verify the exact-match syntax at implementation/code-review
+  time with the same rigor §3.8's IAM-scoping work above already models.
+  k3s's own bridge cadence moves with it (`40-gcs-reader-cronjob.yaml`),
+  including re-tuning `startingDeadlineSeconds` down from its current
+  once/day-appropriate 3600s — unchanged, a missed tick could silently
+  skip straight to the next 30-minute slot rather than catching up
+  promptly, different and less forgiving than at daily cadence.
+- **Client-side refresh, not a faster full rebuild.** `report.py` still
+  bakes `pnl.html` once/day, unchanged — rebuilding the whole static site
+  every 30 minutes to refresh one page's numbers was rejected as
+  disproportionate cost for the value. Instead `pnl.html` polls the now-
+  servable `pnl.json` client-side and updates its own already-rendered
+  tiles/table in place, the same *pattern* `_progress_polling_script`
+  already established for `progress.json` (M13) — a second live-poll
+  target, not a new mechanism — but **not** its 2-second interval: that
+  cadence is tuned for a screening run users actively watch complete in
+  minutes, and copying it here against data that only changes every 30
+  minutes would generate on the order of 1,800 requests/hour per open tab
+  for no freshness benefit, an uncosted request-volume vector the M19 cost
+  analysis (GitHub Actions minutes, GCS/FUSE cost) never examined. The
+  poll interval here is sized to the data's actual freshness (minutes, not
+  seconds).
+
+Deliberately unchanged: `_pnl_staleness_note`'s 48h threshold. It was tuned
+for a once/day cadence and is now a materially looser bound than the new
+cadence could support, but tightening it *correctly* (knowing "is the
+market supposed to be open right now") needs Alpaca's clock, which
+`report.py` still can't reach, by the same no-credentials boundary this
+whole note exists to preserve. A cheaper, cruder middle ground exists —
+flag stale if `generated_at`'s UTC calendar date isn't today's UTC date on
+a UTC weekday, which only needs the current weekday (no holiday calendar)
+and would already catch "the cron has been dead 2+ days" well inside the
+current 48h window — but even that isn't attempted this milestone. Left as
+a named gap (`TASKS.md` M19) with a cheaper option already identified for
+a future pass, not a silent one.
+
 ## 4. Scheduling and Operations
 
 **Cadence is daily** (2026-07-26 decision, superseding the original

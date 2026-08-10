@@ -139,7 +139,30 @@ REBALANCE_DRIFT_BAND_PCT = 0.10
 STRIKES_TO_LIQUIDATE = 2
 
 # --- Execution module (DESIGN.md 3.5) ---
-PAPER_TRADING = True  # live trading only after months of clean paper runs
+# M20 (DESIGN_REAL_MONEY.md §3.1): env-driven, not a bare literal, so the
+# exact same bot.py/execution.py/pnl.py binaries can run a second time
+# against a real live account (daily-trade-live.yml) with nothing but a
+# different environment -- the "one binary, env decides behavior" idiom
+# this codebase already uses everywhere else (MUNGER_DATA_DIR,
+# MUNGER_GRAFANA_URL). Defaults to "true" so daily-trade.yml's existing
+# invocation (which never sets this) is byte-for-byte unchanged behavior;
+# only the new live workflow sets MUNGER_PAPER_TRADING=false. Every read
+# site in this codebase does `import config; ...config.PAPER_TRADING`,
+# never `from config import PAPER_TRADING`, so there's no import-time
+# literal-bool binding anywhere this env-string parse would break
+# (verified in the M20 design's staff-engineer-reviewer pass, not
+# assumed).
+#
+# Parses as "anything other than exactly 'false' means paper" (staff-
+# engineer-reviewer finding, code-push review), not "anything other than
+# exactly 'true' means live" -- the original version of this line failed
+# toward the *more* dangerous mode on ambiguous input: a stray typo,
+# extra whitespace from a copy-paste into workflow YAML, or an
+# accidentally-empty value would all have silently enabled live trading.
+# This matches DESIGN.md §4's own precedent for a "matters once,
+# catastrophically" flag (the paper/live API-key mismatch assertion):
+# fail toward the safe default, not away from it.
+PAPER_TRADING = os.environ.get("MUNGER_PAPER_TRADING", "true").strip().lower() != "false"
 LIMIT_PRICE_BAND_PCT = 0.02  # +/-2% of last trade, applied to every order
 
 # --- State, audit, and observability (DESIGN.md 3.6) ---
@@ -155,6 +178,13 @@ JOURNAL_DB_PATH: Path = DATA_DIR / "journal.db"
 # deliberately never has Alpaca credentials (DESIGN.md 3.5/M14's screen-
 # only boundary) and so can never fetch this data itself.
 PNL_DATA_PATH: Path = DATA_DIR / "pnl.json"
+# M20 (DESIGN_REAL_MONEY.md §4): the live account's own current-state
+# snapshot, written by the exact same pnl.py binary as PNL_DATA_PATH
+# above, just invoked from the separate daily-trade-live.yml workflow
+# with live credentials -- deliberately a second, independent path, not a
+# parameter that could accidentally make the two accounts' snapshots
+# overwrite each other.
+REAL_MONEY_DATA_PATH: Path = DATA_DIR / "real_money.json"
 # Durable, append-only daily P&L series (M17) -- the *system of record* for the
 # "account P&L over time" dashboard, maintained by pnl.py in GitHub Actions.
 # pnl.json is a rolling ~1-month snapshot Alpaca overwrites daily; this file
@@ -175,6 +205,41 @@ PNL_GCS_BUCKET = "munger-503515-data"
 # stale past this age instead. Matches DATA_FRESHNESS_MAX_HOURS's
 # daily-cadence-appropriate tolerance (one missed run's worth of slack).
 PNL_STALENESS_MAX_HOURS = 48
+# M19: intraday P&L refresh. `pnl-snapshot.yml` sets both to opt into
+# behavior `daily-trade.yml`'s once/day `pnl.py` invocation must NOT get --
+# left unset there (both default false), that call stays exactly the full
+# snapshot-plus-durable-history run it always was.
+# MARKET_HOURS_ONLY: the intraday cron's own UTC envelope is deliberately
+# wider than real market hours (a fixed cron can't track ET's DST shift),
+# so __main__ asks Alpaca's own clock and skips the fetch/upload entirely
+# on a tick that lands inside the envelope but outside real trading hours.
+PNL_MARKET_HOURS_ONLY = os.environ.get("MUNGER_PNL_MARKET_HOURS_ONLY", "") == "1"
+# SNAPSHOT_ONLY: skips update_history_series() (the pnl_history.jsonl
+# read-modify-write upsert). That file is a one-row-per-day durable series
+# by design -- upserting it 13x/day during market hours adds no value
+# (same day's row, a fresher same-day equity value each tick) while
+# reintroducing real risk, since GitHub Actions runners are ephemeral and
+# only daily-trade.yml's own workflow restores the prior series from GCS
+# before upserting. Without that restore, an upsert reseeds from only
+# Alpaca's rolling ~30-day history and permanently truncates the durable
+# record on re-upload. The durable series stays daily-trade.yml's
+# exclusive responsibility; the intraday cron never touches it.
+PNL_SNAPSHOT_ONLY = os.environ.get("MUNGER_PNL_SNAPSHOT_ONLY", "") == "1"
+# A single short retry before letting an Alpaca read failure propagate
+# (fail closed, same as before -- see pnl.py's module docstring). Added
+# because M19 raises Alpaca call frequency from ~1/day to ~13/day during
+# market hours, meaningfully raising the odds of an ordinary transient
+# blip firing a false-positive failure-alert email for a non-incident; a
+# persistently broken bridge still fails loud after this is exhausted.
+PNL_ALPACA_RETRY_DELAY_SECONDS = 5.0
+# Client-side poll interval for pnl.html's live refresh (M19) -- a few
+# times tighter than the data's own ~30-min update cadence (a left-open
+# tab picks up a new snapshot within minutes of it landing, not up to 30),
+# but nowhere near _progress_polling_script's 2s interval (tuned for a
+# screening run users watch complete in minutes); reusing that cadence
+# here would generate ~1,800 requests/hour per open tab for data that only
+# changes twice an hour (staff-engineer-reviewer finding, DESIGN.md 3.8.1).
+PNL_CLIENT_POLL_INTERVAL_SECONDS = 300
 # Currently-held-symbol daily close prices (M17 Phase 2, DESIGN_DASHBOARDS.md
 # §3) -- feeds Graph 2 ("daily close price per owned ticker"). Written by
 # prices.py in the same GitHub Actions job as pnl.py (same Alpaca-credential
@@ -228,6 +293,19 @@ GRAFANA_BASE_URL = os.environ.get("MUNGER_GRAFANA_URL", "")
 # review: an earlier version of this feature provisioned the Grafana
 # dashboard but had no way for a user to reach it from the site at all).
 GRAFANA_PRICES_URL = os.environ.get("MUNGER_GRAFANA_PRICES_URL", "")
+# Gates whether report.py renders real-money.html/its nav link at all
+# (M20, DESIGN_REAL_MONEY.md §4). Same config-gated-off-by-default shape
+# as GRAFANA_BASE_URL above -- a deployment without the live pipeline
+# provisioned yet renders nothing new. Set MUNGER_LIVE_TRADING_ENABLED=1
+# on the daily-screen Job once the live account/workflow are ready.
+# Deliberately a manually-set flag, not literally "derived from whether
+# ALPACA_LIVE_API_KEY is configured" as an earlier design draft phrased
+# it: report.py's own deployment (Cloud Run/k3s) must never hold, read,
+# or even reference the name of an Alpaca credential at all (§1.2/M14's
+# screen-only boundary) -- that invariant is easiest to keep true, and
+# easiest to audit, if this file simply never names ALPACA_LIVE_API_KEY,
+# not even to check whether it's set.
+LIVE_TRADING_ENABLED = os.environ.get("MUNGER_LIVE_TRADING_ENABLED", "") == "1"
 
 # --- Public site metadata + SEO (M18, DESIGN_WEB_ANALYTICS_SEO.md) ---
 # Absolute origin of the public site (e.g. https://gramunger.com). One
@@ -259,6 +337,17 @@ DATA_FRESHNESS_MAX_HOURS = 48
 # --- Risk controls (DESIGN.md 5) ---
 KILL_SWITCH = False
 KILL_SWITCH_FLAG_FILE_PATH: Path = DATA_DIR / "KILL_SWITCH"
+# M20 (DESIGN_REAL_MONEY.md §3.2): an account-independent master switch,
+# checked before either account's own per-account KILL_SWITCH above.
+# Deliberately anchored at BASE_DIR (the checkout root), not DATA_DIR --
+# paper and live now run as genuinely separate GitHub Actions workflows
+# with separate checkouts/runners (§3.1), so a file written into one
+# run's local DATA_DIR is invisible to the other's. A file *committed to
+# the repo itself* (on `main`) is the one thing both workflows' fresh
+# `actions/checkout` will always see identically -- one commit stops both
+# accounts; removing it resumes both. The per-account flags above remain
+# for stopping just one account without touching the other.
+GLOBAL_KILL_SWITCH_FLAG_FILE_PATH: Path = BASE_DIR / "GLOBAL_KILL_SWITCH"
 GLOBAL_ORDER_BUDGET = 20  # max orders per run
 GLOBAL_NOTIONAL_BUDGET_PCT = 0.25  # max fraction of equity moved per run
 MIN_UNIVERSE_FETCH_FRACTION = 0.90  # abort if fewer tickers than this fetch cleanly
