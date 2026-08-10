@@ -1,0 +1,52 @@
+2026-08-10T21:24:13+0000 INFO __main__: Starting run for 2026-08-10 (paper=False)
+2026-08-10T21:25:06+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-08-10T21:25:08+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-08-10T21:25:13+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-10T21:25:13+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-10T21:25:13+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-10T21:25:13+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-10T21:25:13+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-08-10T21:25:13+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-08-10T21:25:58+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-08-10T21:25:58+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-10T21:25:58+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"Invalid Crumb"}}}
+2026-08-10T21:25:58+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-10T21:25:58+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"Invalid Crumb"}}}
+2026-08-10T21:25:58+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"User is unable to access this feature - https://bit.ly/yahoo-finance-api-feedback"}}}
+2026-08-10T21:25:58+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"Invalid Crumb"}}}
+2026-08-10T21:25:58+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"Invalid Crumb"}}}
+2026-08-10T21:25:58+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-10T21:25:58+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"User is unable to access this feature - https://bit.ly/yahoo-finance-api-feedback"}}}
+2026-08-10T21:25:58+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"User is unable to access this feature - https://bit.ly/yahoo-finance-api-feedback"}}}
+2026-08-10T21:25:58+0000 WARNING data: CWEN-A: fetch failed after 4 attempts
+Traceback (most recent call last):
+  File "/home/runner/work/munger/munger/data.py", line 357, in _fetch_metrics_inner
+    info, net_income = _fetch_raw(symbol)
+                       ^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/data.py", line 261, in _fetch_raw
+    raise ValueError(
+ValueError: no data returned for 'CWEN-A' (provider response didn't match; 1 keys returned, {'trailingPegRatio': None})
+2026-08-10T21:25:58+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-08-10T21:26:00+0000 INFO data: Waiting 42.7s for a shared yfinance rate limit to clear.
+2026-08-10T21:26:03+0000 INFO data: Waiting 40.3s for a shared yfinance rate limit to clear.
+2026-08-10T21:26:43+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-08-10T21:26:43+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-08-10T21:26:43+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-10T21:26:43+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"Invalid Crumb"}}}
+2026-08-10T21:26:43+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"Invalid Crumb"}}}
+2026-08-10T21:26:43+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"Invalid Crumb"}}}
+2026-08-10T21:26:43+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"Invalid Crumb"}}}
+2026-08-10T21:26:43+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-10T21:26:43+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"User is unable to access this feature - https://bit.ly/yahoo-finance-api-feedback"}}}
+2026-08-10T21:26:43+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"User is unable to access this feature - https://bit.ly/yahoo-finance-api-feedback"}}}
+2026-08-10T21:26:43+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"User is unable to access this feature - https://bit.ly/yahoo-finance-api-feedback"}}}
+2026-08-10T21:26:43+0000 ERROR yfinance: HTTP Error 401: {"finance":{"result":null,"error":{"code":"Unauthorized","description":"Invalid Crumb"}}}
+2026-08-10T21:26:43+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-10T21:26:45+0000 INFO data: Waiting 43.0s for a shared yfinance rate limit to clear.
+2026-08-10T21:26:48+0000 INFO data: Waiting 40.2s for a shared yfinance rate limit to clear.
+2026-08-10T21:26:52+0000 INFO data: Waiting 36.1s for a shared yfinance rate limit to clear.
+2026-08-10T21:27:28+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-08-10T21:27:28+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-08-10T21:27:44+0000 INFO screener: Screen complete: 1506 tickers, 14 buyable.
+2026-08-10T21:27:44+0000 INFO __main__: Screen complete: 1506 tickers, 14 buyable.
+2026-08-10T21:27:44+0000 WARNING __main__: KILL_SWITCH active -- screen-only run, no orders will be placed.
