@@ -497,6 +497,18 @@ def test_send_discord_alert_posts_content_to_the_configured_webhook(
 
     assert captured["url"] == "https://discord.example/webhook"
     assert captured["body"] == {"content": "test message"}
+    # Real bug found live (M22): Discord's API is behind Cloudflare, which
+    # blocks urllib's default User-Agent as a bot signature (403, error
+    # code 1010) -- silently swallowed by this function's own except
+    # clause since the day it shipped. A non-default User-Agent is
+    # required, not optional. staff-engineer-reviewer finding: comparing
+    # only against config.DISCORD_USER_AGENT itself can't catch that
+    # constant degrading to empty/default alongside a future refactor --
+    # assert a hardcoded expected literal (independent of the config
+    # value) and explicitly rule out urllib's own default UA string.
+    sent_user_agent = captured["headers"]["User-agent"]
+    assert sent_user_agent == "munger-trading-bot/1.0 (+https://gramunger.com)"
+    assert not sent_user_agent.startswith("Python-urllib")
 
 
 def test_send_discord_alert_swallows_a_failed_post(monkeypatch: pytest.MonkeyPatch) -> None:

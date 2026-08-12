@@ -272,6 +272,18 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 # unrealized_plpc, which is signed) rather than an unsigned "10" a caller
 # has to remember to negate.
 POSITION_LOSS_ALERT_THRESHOLD_PCT = -0.10
+# Real bug found live (M22, first end-to-end test of both Discord
+# integrations): Discord's API sits behind Cloudflare, and Python
+# urllib's default User-Agent ("Python-urllib/3.11") trips Cloudflare's
+# bot-fingerprint block (error code 1010) -- a 403 on every single POST,
+# silently swallowed by both webhook senders' own soft-fail except
+# clauses (HTTPError is a subclass of URLError) since the day M21 shipped.
+# Confirmed live: identical requests succeed with any non-default,
+# non-empty User-Agent; this exact value was the first one tried and
+# confirmed working, nothing more specific is required by Cloudflare's
+# rule. Shared by pnl.py's _send_discord_alert and news_update.py's
+# _post_discord_message so the fix (and its value) lives in one place.
+DISCORD_USER_AGENT = "munger-trading-bot/1.0 (+https://gramunger.com)"
 # --- Daily news/commentary digest (news_update.py, user request, M22) ---
 # Second Discord webhook, deliberately separate from DISCORD_WEBHOOK_URL
 # above: that one is a loss-threshold alert (fires rarely, only on breach);

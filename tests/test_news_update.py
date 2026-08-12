@@ -246,6 +246,7 @@ def test_post_discord_message_sends_content(monkeypatch: pytest.MonkeyPatch) -> 
     def _fake_urlopen(request: Any, timeout: float) -> _FakeResponse:
         captured["url"] = request.full_url
         captured["body"] = json.loads(request.data)
+        captured["headers"] = dict(request.header_items())
         return _FakeResponse()
 
     monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
@@ -254,6 +255,17 @@ def test_post_discord_message_sends_content(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert captured["url"] == "https://discord.example/news"
     assert captured["body"] == {"content": "hello"}
+    # Real bug found live (first end-to-end test): Discord's API is behind
+    # Cloudflare, which blocks urllib's default User-Agent as a bot
+    # signature (403, error code 1010) -- silently swallowed by run()'s
+    # own soft-fail wrapper on every single run until this was fixed.
+    # staff-engineer-reviewer finding: assert a hardcoded expected literal
+    # (independent of config.DISCORD_USER_AGENT itself, which could
+    # degrade to empty/default alongside a future refactor without this
+    # test noticing) and explicitly rule out urllib's own default UA.
+    sent_user_agent = captured["headers"]["User-agent"]
+    assert sent_user_agent == "munger-trading-bot/1.0 (+https://gramunger.com)"
+    assert not sent_user_agent.startswith("Python-urllib")
 
 
 def test_post_discord_message_truncates_long_messages(monkeypatch: pytest.MonkeyPatch) -> None:

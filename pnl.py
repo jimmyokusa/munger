@@ -344,18 +344,43 @@ def _send_discord_alert(message: str) -> None:
     snapshot generation (which fails closed by design, see the module
     docstring), a missed Discord notification is not worth failing the
     whole P&L pipeline over.
+
+    Explicit User-Agent required: real bug found live (M22) -- Discord's
+    API sits behind Cloudflare, which blocks urllib's default
+    "Python-urllib/3.x" User-Agent as a bot signature (error code 1010),
+    returning a 403 this function's own except clause was silently
+    swallowing (HTTPError is a URLError subclass) since M21 shipped. See
+    config.DISCORD_USER_AGENT's own comment for the full story.
     """
     body = json.dumps({"content": message}).encode("utf-8")
     request = urllib.request.Request(
         config.DISCORD_WEBHOOK_URL,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": config.DISCORD_USER_AGENT,
+        },
         method="POST",
     )
     try:
         with urllib.request.urlopen(request, timeout=10):
             pass
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        # pm-/staff-engineer-reviewer finding (M22): this except clause is
+        # exactly what hid the User-Agent bug above for M21's entire life
+        # -- a `logger.warning` alone lands in an ephemeral GitHub Actions
+        # log nobody opens unless they already suspect a problem. `::
+        # warning::` is a GitHub Actions workflow command: it surfaces the
+        # message directly in the run's Annotations, visible without
+        # opening the full log, for *any* future swallowed failure here
+        # (a revoked webhook, Discord-side rate limiting, a new Cloudflare
+        # rule), not just today's specific cause. Deliberately not a
+        # bigger mechanism (a persisted consecutive-failure counter with
+        # its own alert threshold) -- this is the smallest change that
+        # makes the failure mode visible at all, matching this project's
+        # established preference for the simplest thing that works over
+        # building unrequested infrastructure.
+        print(f"::warning::Discord loss alert failed to send: {exc}")
         logger.warning("Discord loss alert failed to send: %s", exc)
 
 

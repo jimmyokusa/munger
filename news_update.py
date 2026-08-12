@@ -212,6 +212,14 @@ def _post_discord_message(message: str) -> None:
     messages -- a once-daily digest running slightly long is an acceptable
     loss of the tail, not worth the added complexity of a multi-message
     send for this feature.
+
+    Explicit User-Agent required: real bug found live (first end-to-end
+    test) -- Discord's API sits behind Cloudflare, which blocks urllib's
+    default "Python-urllib/3.x" User-Agent as a bot signature (error code
+    1010), returning a 403 that run()'s soft-fail wrapper was silently
+    swallowing on every single run. See config.DISCORD_USER_AGENT's own
+    comment for the full story (pnl.py's _send_discord_alert had the
+    identical bug, fixed the same way).
     """
     if len(message) > _DISCORD_MESSAGE_CHAR_LIMIT:
         message = message[: _DISCORD_MESSAGE_CHAR_LIMIT - 1] + "…"
@@ -219,7 +227,10 @@ def _post_discord_message(message: str) -> None:
     request = urllib.request.Request(
         config.DISCORD_NEWS_WEBHOOK_URL,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": config.DISCORD_USER_AGENT,
+        },
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=10):
@@ -273,6 +284,17 @@ def run(pnl_snapshot: dict[str, object]) -> None:
         ValueError,
         AssertionError,
     ) as exc:
+        # pm-/staff-engineer-reviewer finding: a logger.warning alone lands
+        # in an ephemeral GitHub Actions log nobody opens unless they
+        # already suspect a problem -- exactly what hid the Discord
+        # User-Agent bug (see news_update._post_discord_message's own
+        # docstring) for this feature's entire life. `::warning::` is a
+        # GitHub Actions workflow command that surfaces the message in the
+        # run's Annotations directly, for any future swallowed failure
+        # here, not just today's cause. Deliberately not a bigger
+        # mechanism (a persisted consecutive-failure counter) -- the
+        # smallest change that makes the failure mode visible at all.
+        print(f"::warning::Daily news digest failed; skipping this run: {exc}")
         logger.warning("Daily news digest failed; skipping this run: %s", exc)
 
 
