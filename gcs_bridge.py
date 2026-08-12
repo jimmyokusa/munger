@@ -111,21 +111,28 @@ def bridge() -> None:
     _download_atomically(pnl_blob, config.REPORT_DIR / "pnl.json")
     logger.info("Bridged pnl.json (+ REPORT_DIR copy for the report-web nginx to serve).")
 
-    # M20 (DESIGN_REAL_MONEY.md §4): the live account's own snapshot, same
-    # DATA_DIR-root + REPORT_DIR-copy treatment as pnl.json above. Unlike
-    # pnl.json (whose absence means the core, long-established bridge is
-    # broken and should fail loud), a missing real_money.json is the
-    # expected default state until the live trading pipeline is actually
+    # M20 (DESIGN_REAL_MONEY.md §4): the live account's own snapshot.
+    # GCS source is "live/pnl.json" -- daily-trade-live.yml's actual
+    # upload path, confirmed live -- not "real_money.json" (a real bug an
+    # earlier version of this had: the local filename and the GCS object
+    # name matched each other but not what the live workflow actually
+    # writes, so this step silently found nothing to bridge on every
+    # real run until caught live during the k3s dev deploy). The
+    # REPORT_DIR copy is still flatly named "real_money.json", matching
+    # the public URL path both nginx configs serve it at. Unlike pnl.json
+    # (whose absence means the core, long-established bridge is broken
+    # and should fail loud), a missing live/pnl.json is the expected
+    # default state until the live trading pipeline is actually
     # provisioned and running -- tolerated the same way pnl_history.jsonl/
     # prices.json's "not deployed yet" case already is below.
     try:
-        real_money_blob = bucket.blob("real_money.json")
+        real_money_blob = bucket.blob("live/pnl.json")
         _download_atomically(real_money_blob, config.REAL_MONEY_DATA_PATH)
         _download_atomically(real_money_blob, config.REPORT_DIR / "real_money.json")
     except NotFound:
-        logger.info("No real_money.json in GCS yet -- skipping (live pipeline not live yet).")
+        logger.info("No live/pnl.json in GCS yet -- skipping (live pipeline not live yet).")
     else:
-        logger.info("Bridged real_money.json (+ REPORT_DIR copy for the report-web nginx).")
+        logger.info("Bridged live/pnl.json (+ REPORT_DIR copy for the report-web nginx).")
 
     history_dest = config.REPORT_DIR / "pnl_history.jsonl"
     json_dest = config.REPORT_DIR / "pnl_history.json"
@@ -142,9 +149,7 @@ def bridge() -> None:
         # on their last-good state, instead of jsonl updating while json --
         # what Grafana actually reads -- silently freezes on stale content.
         try:
-            rows = [
-                json.loads(line) for line in jsonl_tmp.read_text().splitlines() if line.strip()
-            ]
+            rows = [json.loads(line) for line in jsonl_tmp.read_text().splitlines() if line.strip()]
             json_tmp = json_dest.with_suffix(json_dest.suffix + ".tmp")
             json_tmp.write_text(json.dumps(rows))
         except BaseException:

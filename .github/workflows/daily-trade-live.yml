@@ -168,13 +168,36 @@ jobs:
           fi
           rm -f "$key_file"
 
+      # DISCORD_WEBHOOK_URL (M20, user request): pnl.py posts a Discord
+      # alert if any held position is down past
+      # config.POSITION_LOSS_ALERT_THRESHOLD_PCT -- the same webhook
+      # daily-trade.yml uses for paper, so both accounts alert to the
+      # same channel, distinguished by the LIVE/PAPER label in the
+      # message itself.
       - name: Generate P&L snapshot (live account)
         if: always()
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_LIVE_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
           MUNGER_PAPER_TRADING: "false"
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python pnl.py
+
+      # Daily Claude-written news/performance digest (M22, user request) --
+      # same webhook and Anthropic key as daily-trade.yml's own step, so
+      # both accounts' digests land in the same Discord channel, labeled
+      # LIVE/PAPER via pnl.json's own "mode" field (news_update.py reads
+      # this run's pnl.json, same as daily-trade.yml). Soft-fail posture
+      # (see news_update.py's module docstring) means this can't fail the
+      # job even if the Anthropic call is refused/rate-limited.
+      - name: Generate daily news digest (live account)
+        if: always()
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_LIVE_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DISCORD_NEWS_WEBHOOK_URL: ${{ secrets.DISCORD_NEWS_WEBHOOK_URL }}
+        run: python news_update.py
 
       # No "Generate held-symbol price history" (prices.py) step here --
       # M17 Phase 2's held-symbol daily-close chart is out of scope for

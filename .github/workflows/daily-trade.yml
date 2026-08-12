@@ -184,11 +184,18 @@ jobs:
           fi
           rm -f "$key_file"
 
+      # DISCORD_WEBHOOK_URL (M20, user request): pnl.py posts a Discord
+      # alert if any held position is down past
+      # config.POSITION_LOSS_ALERT_THRESHOLD_PCT. Only wired into this
+      # once-daily canonical run and daily-trade-live.yml's own -- not
+      # pnl-snapshot.yml's 30-min intraday cadence, which would otherwise
+      # mean up to 13 messages/day for one position that stays down.
       - name: Generate P&L snapshot
         if: always()
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python pnl.py
 
       # Held-symbol daily close prices (M17 Phase 2, DESIGN_DASHBOARDS.md
@@ -209,6 +216,23 @@ jobs:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
         run: python prices.py
+
+      # Daily Claude-written news/performance digest (M22, user request).
+      # Runs after pnl.py (reads its pnl.json for the held-symbol list,
+      # same as prices.py above) and is entirely soft-fail internally --
+      # news_update.py never raises on a broken Alpaca News call, a
+      # refused/rate-limited Anthropic call, or a Discord outage, so this
+      # step can't fail the job. `if: always()` for the same reason as the
+      # P&L/prices steps: this is a display concern, independent of
+      # whether "Run bot" succeeded or ran in screen-only mode.
+      - name: Generate daily news digest
+        if: always()
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DISCORD_NEWS_WEBHOOK_URL: ${{ secrets.DISCORD_NEWS_WEBHOOK_URL }}
+        run: python news_update.py
 
       - name: Upload P&L snapshot and history to GCS
         if: always()

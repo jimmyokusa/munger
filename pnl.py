@@ -27,6 +27,8 @@ import datetime
 import json
 import logging
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
@@ -173,9 +175,7 @@ def generate_snapshot() -> dict[str, object]:
     }
 
 
-def write_snapshot(
-    path: Path | None = None, snapshot: dict[str, object] | None = None
-) -> None:
+def write_snapshot(path: Path | None = None, snapshot: dict[str, object] | None = None) -> None:
     """Write a snapshot atomically (temp file + rename).
 
     Matches this codebase's existing atomic-write pattern (StateTracker.
@@ -253,9 +253,7 @@ def _series_rows_from_snapshot(snapshot: dict[str, object]) -> dict[str, dict[st
     return rows
 
 
-def update_history_series(
-    snapshot: dict[str, object], path: Path | None = None
-) -> None:
+def update_history_series(snapshot: dict[str, object], path: Path | None = None) -> None:
     """Upsert a snapshot's daily points into the durable append-series file.
 
     Read-modify-write (GCS objects can't be appended in place; the file is
@@ -291,6 +289,95 @@ def update_history_series(
     tmp_path = target.with_suffix(target.suffix + ".tmp")
     tmp_path.write_text("".join(json.dumps(row) + "\n" for row in ordered))
     tmp_path.replace(target)
+
+
+def _breached_positions(positions: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Positions at or below the loss-alert threshold.
+
+    config.POSITION_LOSS_ALERT_THRESHOLD_PCT, user request, M20.
+    """
+    breached = []
+    for position in positions:
+        plpc = position.get("unrealized_plpc")
+        if isinstance(plpc, int | float) and plpc <= config.POSITION_LOSS_ALERT_THRESHOLD_PCT:
+            breached.append(position)
+    return breached
+
+
+def _format_loss_alert(mode: str, breached: list[dict[str, object]]) -> str:
+    threshold_pct = abs(config.POSITION_LOSS_ALERT_THRESHOLD_PCT)
+    lines = [
+        f"\N{WARNING SIGN} **{mode.upper()} account:** {len(breached)} position(s) "
+        f"down {threshold_pct:.0%} or more:"
+    ]
+    for position in sorted(breached, key=lambda p: str(p.get("symbol") or "")):
+        symbol = position.get("symbol")
+        plpc = position.get("unrealized_plpc")
+        unrealized_pl = position.get("unrealized_pl")
+        price = position.get("current_price")
+        if (
+            isinstance(plpc, int | float)
+            and isinstance(unrealized_pl, int | float)
+            and isinstance(price, int | float)
+        ):
+            # Sign before the "$", not "$-120.00" -- matches
+            # report.py's own _format_dollars convention.
+            pl_sign = "-" if unrealized_pl < 0 else "+" if unrealized_pl > 0 else ""
+            lines.append(
+                f"• **{symbol}**: {plpc:+.1%} ({pl_sign}${abs(unrealized_pl):,.2f}) @ ${price:,.2f}"
+            )
+        else:
+            # A position with an unexpected/missing field still gets
+            # flagged (it already passed the breach check above), just
+            # without the numbers that field would have shown -- silently
+            # dropping it from the message would hide a real loss just
+            # because one of several optional fields happened to be null.
+            lines.append(f"• **{symbol}**: {plpc}")
+    return "\n".join(lines)
+
+
+def _send_discord_alert(message: str) -> None:
+    """POSTs `message` to config.DISCORD_WEBHOOK_URL.
+
+    Failure here (a network blip, Discord being down, a bad webhook URL)
+    is logged and swallowed, not raised -- unlike this module's core
+    snapshot generation (which fails closed by design, see the module
+    docstring), a missed Discord notification is not worth failing the
+    whole P&L pipeline over.
+    """
+    body = json.dumps({"content": message}).encode("utf-8")
+    request = urllib.request.Request(
+        config.DISCORD_WEBHOOK_URL,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10):
+            pass
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        logger.warning("Discord loss alert failed to send: %s", exc)
+
+
+def check_position_loss_alerts(snapshot: dict[str, object]) -> None:
+    """Sends a Discord alert if any held position is down too far.
+
+    Past config.POSITION_LOSS_ALERT_THRESHOLD_PCT (user request, M20).
+    No-op if config.DISCORD_WEBHOOK_URL is unset -- config-gated, the same
+    shape as every other optional integration in this codebase
+    (GRAFANA_BASE_URL, ANALYTICS_URL, etc.).
+    """
+    if not config.DISCORD_WEBHOOK_URL:
+        return
+    positions_raw = snapshot.get("positions")
+    positions = (
+        [p for p in positions_raw if isinstance(p, dict)] if isinstance(positions_raw, list) else []
+    )
+    breached = _breached_positions(positions)
+    if not breached:
+        return
+    mode = str(snapshot.get("mode") or "paper")
+    _send_discord_alert(_format_loss_alert(mode, breached))
 
 
 def main() -> None:
@@ -338,6 +425,13 @@ def main() -> None:
         logger.info("PNL_SNAPSHOT_ONLY set; skipping the durable history upsert.")
     else:
         update_history_series(snapshot)
+        # M20 (user request): gated on the same PNL_SNAPSHOT_ONLY check as
+        # the durable-history upsert above, for the same reason -- the
+        # intraday cron (pnl-snapshot.yml) runs every 30 min for paper;
+        # checking here too would mean up to 13 Discord messages/day for a
+        # single position that stays down, not one. Only the canonical
+        # once-daily runs (daily-trade.yml, daily-trade-live.yml) alert.
+        check_position_loss_alerts(snapshot)
     history_note = (
         "" if config.PNL_SNAPSHOT_ONLY else f"; history series updated at {config.PNL_HISTORY_PATH}"
     )

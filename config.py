@@ -184,7 +184,20 @@ PNL_DATA_PATH: Path = DATA_DIR / "pnl.json"
 # with live credentials -- deliberately a second, independent path, not a
 # parameter that could accidentally make the two accounts' snapshots
 # overwrite each other.
-REAL_MONEY_DATA_PATH: Path = DATA_DIR / "real_money.json"
+#
+# Nested under a `live/` subdirectory -- deliberately mirroring
+# daily-trade-live.yml's actual GCS upload path
+# (gs://munger-503515-data/live/pnl.json), not a flat "real_money.json"
+# name. Real bug found live during the k3s dev deploy (staff-engineer-
+# reviewer-style catch, via an actual gcs_bridge.py run, not review
+# alone): an earlier version of this constant used a flat name that
+# didn't match anything the live workflow actually writes, so the bridge
+# silently found nothing to pull every run. Cloud Run's report-web mounts
+# the GCS bucket directly via FUSE (DESIGN_DASHBOARDS.md), so this local
+# path must equal the real GCS object path exactly for that mount to work
+# with no separate copy step -- the same reason PNL_DATA_PATH above is
+# "pnl.json" flat, matching gs://.../pnl.json flat.
+REAL_MONEY_DATA_PATH: Path = DATA_DIR / "live" / "pnl.json"
 # Durable, append-only daily P&L series (M17) -- the *system of record* for the
 # "account P&L over time" dashboard, maintained by pnl.py in GitHub Actions.
 # pnl.json is a rolling ~1-month snapshot Alpaca overwrites daily; this file
@@ -240,6 +253,61 @@ PNL_ALPACA_RETRY_DELAY_SECONDS = 5.0
 # here would generate ~1,800 requests/hour per open tab for data that only
 # changes twice an hour (staff-engineer-reviewer finding, DESIGN.md 3.8.1).
 PNL_CLIENT_POLL_INTERVAL_SECONDS = 300
+# Discord webhook for "a held position is down more than X%" alerts (user
+# request, M20). Empty by default (config-gated, same shape as
+# GRAFANA_BASE_URL/ANALYTICS_URL) -- an unset webhook means the check is
+# skipped entirely, not attempted-and-failed. Deliberately NOT run from
+# pnl-snapshot.yml's 30-min intraday cadence -- pnl.py's own main() gates
+# this on `not config.PNL_SNAPSHOT_ONLY`, so it only fires from the
+# canonical once-daily runs (both daily-trade.yml and daily-trade-live.yml
+# set this webhook but neither sets PNL_SNAPSHOT_ONLY). A position that
+# stays down for a week gets one alert per day, not one every 30 minutes --
+# chosen over building real cross-run dedup state, matching the user's own
+# preference for the simplest mechanism that works (M20, over standing up
+# Prometheus/Alertmanager, which this project already evaluated and
+# dropped once for M17 for the identical cost/complexity reasons).
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
+# A position is alert-worthy once its unrealized P&L reaches -10% of cost
+# basis. Negative by construction (compared directly against
+# unrealized_plpc, which is signed) rather than an unsigned "10" a caller
+# has to remember to negate.
+POSITION_LOSS_ALERT_THRESHOLD_PCT = -0.10
+# --- Daily news/commentary digest (news_update.py, user request, M22) ---
+# Second Discord webhook, deliberately separate from DISCORD_WEBHOOK_URL
+# above: that one is a loss-threshold alert (fires rarely, only on breach);
+# this one is a daily digest (fires every run, always) -- keeping them on
+# distinct env vars/channels means a user can silence one without the
+# other. Same config-gated-off-by-default shape: an unset webhook (or
+# unset ANTHROPIC_API_KEY below) skips the whole digest, not a partial
+# attempt.
+DISCORD_NEWS_WEBHOOK_URL = os.environ.get("DISCORD_NEWS_WEBHOOK_URL", "")
+# Anthropic API key for the daily digest's news synthesis (news_update.py).
+# Not read anywhere in report.py's own deployment -- this is a GitHub
+# Actions-only secret, same posture as ALPACA_API_KEY/ALPACA_SECRET_KEY
+# above (M14's screen-only boundary is about report.py never referencing
+# an Alpaca credential name; this is a different provider entirely, but
+# the same "only the trading-workflow runner ever sees it" shape applies).
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+# User-selected model (M22) -- Claude Opus 5, chosen over the cheaper
+# Sonnet/Haiku tiers for higher-quality synthesis of news + performance
+# into investment-relevant commentary; cost is trivial at this volume
+# (once/day, a handful of held symbols, short output).
+NEWS_UPDATE_MODEL = "claude-opus-5"
+# How far back to pull news per held symbol. 24h matches the daily cadence
+# of the workflow this runs in -- older news was presumably already
+# covered by a prior day's digest.
+NEWS_LOOKBACK_HOURS = 24
+# Cap per-symbol headlines fed into the prompt -- keeps token cost/prompt
+# size bounded even for a symbol with an unusually newsy day, and avoids
+# paying for/reading headlines well past what a short daily digest can
+# usefully summarize anyway.
+NEWS_PER_SYMBOL_LIMIT = 5
+# Output budget for the digest -- a short per-symbol summary across
+# TARGET_POSITION_COUNT positions comfortably fits well under this; sized
+# with headroom rather than tightly to the expected output, consistent
+# with this skill's max_tokens guidance (truncation mid-answer is worse
+# than a slightly generous ceiling on a once-daily, low-volume call).
+NEWS_MAX_OUTPUT_TOKENS = 4096
 # Currently-held-symbol daily close prices (M17 Phase 2, DESIGN_DASHBOARDS.md
 # §3) -- feeds Graph 2 ("daily close price per owned ticker"). Written by
 # prices.py in the same GitHub Actions job as pnl.py (same Alpaca-credential

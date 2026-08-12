@@ -59,8 +59,7 @@ def test_bridge_downloads_both_files_and_publishes_json_array(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     history_jsonl = (
-        b'{"date": "2026-07-28", "equity": 100000.0}\n'
-        b'{"date": "2026-07-29", "equity": 100500.0}\n'
+        b'{"date": "2026-07-28", "equity": 100000.0}\n{"date": "2026-07-29", "equity": 100500.0}\n'
     )
     _patch_client(
         monkeypatch,
@@ -110,14 +109,20 @@ def test_bridge_downloads_real_money_json_and_writes_a_report_dir_copy_too(
 ) -> None:
     # M20 (DESIGN_REAL_MONEY.md §4): same DATA_DIR-root + REPORT_DIR-copy
     # treatment as pnl.json above, for the live account's own snapshot.
-    # pnl.json itself is required (bridge()'s always-first, fail-loud
-    # download), so it needs a real entry here too even though this test
-    # is about real_money.json specifically.
+    # GCS source is "live/pnl.json" (daily-trade-live.yml's real upload
+    # path), not "real_money.json" -- a real mismatch bug an earlier
+    # version of this had, caught live during the k3s dev deploy (this
+    # test would have kept passing throughout, since its mock used the
+    # same wrong key as the buggy code -- a reminder that a test mirroring
+    # a bug doesn't catch it; only the live run did). pnl.json itself is
+    # required (bridge()'s always-first, fail-loud download), so it needs
+    # a real entry here too even though this test is about the live
+    # snapshot specifically.
     _patch_client(
         monkeypatch,
         {
             "pnl.json": _fake_blob(content=b"{}"),
-            "real_money.json": _fake_blob(content=b'{"mode": "live", "equity": 812.34}'),
+            "live/pnl.json": _fake_blob(content=b'{"mode": "live", "equity": 812.34}'),
         },
     )
 

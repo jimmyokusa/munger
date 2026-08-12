@@ -49,14 +49,26 @@ spec:
                 - name: MUNGER_DATA_DIR
                   value: /data
                 # M17: embeds the durable P&L history dashboard
-                # (deploy/k8s/50-grafana.yaml, NodePort 30030) into
-                # dashboards.html in place of the legacy calendar.html --
-                # report.py forks on this being set (config.GRAFANA_BASE_URL).
-                # Any node's IP works (NodePort exposes on all four); pi4 is
-                # the control-plane node, least likely to be
-                # rebuilt/relabeled.
+                # (deploy/k8s/50-grafana.yaml) into dashboards.html in
+                # place of the legacy calendar.html -- report.py forks on
+                # this being set (config.GRAFANA_BASE_URL).
+                #
+                # M20 (user request): moved from the bare NodePort IP
+                # (http://10.0.20.10:30030/...) to a real hostname/HTTPS,
+                # via a Traefik Ingress (munger-grafana-ingress) + a
+                # dedicated cert-manager Certificate scoped to just this
+                # one hostname (not the cluster's shared default
+                # *.k8s.blocksmashers.com wildcard, which belongs to an
+                # unrelated home-monitoring Grafana instance on this same
+                # cluster -- confirmed live, not assumed: that hostname
+                # now correctly answers with a *different* Grafana). DNS
+                # (grafana.k8s.gramunger.com -> 10.0.20.10, DNS-only, not
+                # proxied -- Cloudflare Access/proxying is irrelevant for
+                # a LAN-only address) lives on the gramunger.com zone, not
+                # blocksmashers.com, matching the domain this dashboard's
+                # data is actually about.
                 - name: MUNGER_GRAFANA_URL
-                  value: "http://10.0.20.10:30030/d/munger-account-pnl/account-pandl-over-time?kiosk"
+                  value: "https://grafana.k8s.gramunger.com/d/munger-account-pnl/account-pandl-over-time?kiosk"
                 # M17 Phase 2: the Prices dashboard (50-grafana.yaml's
                 # separate munger-grafana-dashboard-prices ConfigMap/mount).
                 # A distinct env var, not derived from MUNGER_GRAFANA_URL
@@ -64,9 +76,17 @@ spec:
                 # dashboard was fully provisioned with no way for a site
                 # visitor to ever reach it, since dashboards.html only
                 # embedded MUNGER_GRAFANA_URL. config.GRAFANA_PRICES_URL
-                # gates a second, independent iframe section.
+                # gates a second, independent iframe section. Same
+                # hostname move as MUNGER_GRAFANA_URL above.
                 - name: MUNGER_GRAFANA_PRICES_URL
-                  value: "http://10.0.20.10:30030/d/munger-prices/held-symbol-daily-close-prices?kiosk"
+                  value: "https://grafana.k8s.gramunger.com/d/munger-prices/held-symbol-daily-close-prices?kiosk"
+                # M20a (DESIGN_REAL_MONEY.md §4): gates real-money.html/its
+                # nav link. Set here first (k3s dev, LAN-only NodePort) to
+                # actually test the live-account page rendering against
+                # real data before promoting to Cloud Run prod -- per this
+                # project's own staging-before-prod convention.
+                - name: MUNGER_LIVE_TRADING_ENABLED
+                  value: "1"
               volumeMounts:
                 - name: data
                   mountPath: /data

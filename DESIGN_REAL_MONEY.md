@@ -541,20 +541,54 @@ something this doc can respond to in advance.
 
 `DESIGN.md` §3.8 required this exact decision to be re-made before any
 paper→live flip: does the public site showing real financial data change
-anything about its exposure? Answered here, explicitly:
+anything about its exposure?
 
-- **Yes, real numbers go public, deliberately** — the whole premise of
+**Superseded (2026-08-10, user decision, after the page was already live
+and verified working):** the original answer here was "yes, real numbers
+go public, deliberately" — reasonable when the funding model was still
+public donations (§0.1's now-dropped M20b) and transparency was the
+entire point. With M20b dropped and the account self-funded, that
+rationale no longer applies, and the user decided `real-money.html`
+should be gated behind a login instead. Original reasoning kept below for
+the historical record.
+
+**New mechanism: Cloudflare Access (Zero Trust), not application-level
+auth.** Chosen over the two alternatives considered (HTTP Basic Auth at
+nginx; a real app-level login page) specifically because it requires
+**zero code changes to this app** — Access sits entirely at Cloudflare's
+edge and intercepts the request before it ever reaches Cloud Run, so
+`report.py`/nginx stay exactly as designed (§1.1's static-site-only
+constraint is preserved, not worked around). It also sidesteps the
+standing Cloudflare subdomain-publishing bug (`TASKS.md`, "Cloudflare
+`gramunger.com` zone silently refuses new subdomains") entirely, since an
+Access Application gates a *path* on the existing `gramunger.com`
+hostname, not a new subdomain.
+
+**One real gotcha, not obvious from the file layout:** `real-money.html`
+(hyphen) and `real_money.json` (underscore) don't share a path prefix.
+The Access Application must explicitly cover *both* paths — gating only
+`/real-money.html` would leave `/real_money.json` fetchable directly
+(and thus the live account's real numbers still readable) by anyone who
+knew or guessed the filename, even with the HTML page itself locked
+down.
+
+**Blocked on the same standing infra issue this doc's own §0.1 legal
+memo never touched:** the Cloudflare API token saved in this repo's
+`.env` is confirmed still invalid (`TASKS.md`'s pre-existing finding,
+re-confirmed live 2026-08-10 via `/user/tokens/verify`) — Access
+configuration for this milestone was done manually in the Cloudflare
+dashboard, not via this repo's tooling.
+
+**Original reasoning (superseded above, kept for the record):**
+
+- "Yes, real numbers go public, deliberately" — the whole premise of
   this feature is a transparent, publicly-visible real-money track record
-  funded by public gifts. This is an informed choice, not an oversight.
-- **The exposure is informational only, not a control/credential
-  risk.** Same as the paper page today: the public deployment never holds
-  Alpaca credentials (§1.2) and the page is read-only-rendered from a
-  snapshot file. Someone reading `real-money.html` learns the account's
-  balance and positions; they cannot act on the account through anything
-  this site exposes. This is a real but bounded privacy/disclosure
-  tradeoff (competitors, bad-faith actors, or just unwanted attention
-  knowing the account's real size), worth the user's own explicit
-  sign-off, not a security vulnerability in the usual sense.
+  funded by public gifts. This was an informed choice, not an oversight,
+  at the time it was made.
+- The exposure was informational only, not a control/credential risk —
+  the public deployment never holds Alpaca credentials (§1.2) and the
+  page is read-only-rendered from a snapshot file; nothing on the site
+  ever let a reader act on the account.
 
 ---
 

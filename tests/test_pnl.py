@@ -412,6 +412,173 @@ def test_main_default_flags_run_the_full_flow_unaffected(
     history_mock.assert_called_once_with(fixed_snapshot)
 
 
+# --- M20: Discord loss alerts (user request) ---
+
+
+def _position(symbol: str, plpc: float | None, **overrides: Any) -> dict[str, object]:
+    base: dict[str, object] = {
+        "symbol": symbol,
+        "qty": 10.0,
+        "avg_entry_price": 100.0,
+        "current_price": 90.0,
+        "market_value": 900.0,
+        "cost_basis": 1_000.0,
+        "unrealized_pl": -100.0,
+        "unrealized_plpc": plpc,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_breached_positions_filters_at_or_below_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "POSITION_LOSS_ALERT_THRESHOLD_PCT", -0.10)
+    positions = [
+        _position("DOWN_BAD", -0.15),
+        _position("DOWN_EXACTLY", -0.10),  # at, not just past, the threshold
+        _position("DOWN_MILD", -0.05),
+        _position("UP", 0.05),
+    ]
+
+    breached = pnl._breached_positions(positions)
+
+    assert {p["symbol"] for p in breached} == {"DOWN_BAD", "DOWN_EXACTLY"}
+
+
+def test_breached_positions_ignores_missing_or_non_numeric_plpc() -> None:
+    # A position with no unrealized_plpc yet (e.g. a corner case in the
+    # snapshot) must not crash the comparison or be silently treated as a
+    # breach.
+    positions = [_position("NO_DATA", None)]
+    assert pnl._breached_positions(positions) == []
+
+
+def test_format_loss_alert_includes_symbol_pct_dollars_and_price() -> None:
+    breached = [_position("AAPL", -0.12, unrealized_pl=-120.0, current_price=88.0)]
+    message = pnl._format_loss_alert("live", breached)
+    assert "LIVE" in message
+    assert "AAPL" in message
+    assert "-12.0%" in message
+    assert "-$120.00" in message
+    assert "$88.00" in message
+
+
+def test_format_loss_alert_sorts_by_symbol() -> None:
+    breached = [_position("ZZZZ", -0.20), _position("AAAA", -0.15)]
+    message = pnl._format_loss_alert("paper", breached)
+    assert message.index("AAAA") < message.index("ZZZZ")
+
+
+def test_send_discord_alert_posts_content_to_the_configured_webhook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "DISCORD_WEBHOOK_URL", "https://discord.example/webhook")
+    captured: dict[str, Any] = {}
+
+    class _FakeResponse:
+        def __enter__(self) -> _FakeResponse:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def _fake_urlopen(request: Any, timeout: float) -> _FakeResponse:
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data)
+        captured["headers"] = dict(request.header_items())
+        return _FakeResponse()
+
+    monkeypatch.setattr(pnl.urllib.request, "urlopen", _fake_urlopen)
+
+    pnl._send_discord_alert("test message")
+
+    assert captured["url"] == "https://discord.example/webhook"
+    assert captured["body"] == {"content": "test message"}
+
+
+def test_send_discord_alert_swallows_a_failed_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A Discord/network hiccup must not crash the whole P&L pipeline over
+    # a missed notification -- unlike this module's core snapshot
+    # generation, which does fail closed by design.
+    monkeypatch.setattr(config, "DISCORD_WEBHOOK_URL", "https://discord.example/webhook")
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise TimeoutError("simulated network blip")
+
+    monkeypatch.setattr(pnl.urllib.request, "urlopen", _raise)
+
+    pnl._send_discord_alert("test message")  # must not raise
+
+
+def test_check_position_loss_alerts_noop_when_webhook_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "DISCORD_WEBHOOK_URL", "")
+    sent: list[str] = []
+    monkeypatch.setattr(pnl, "_send_discord_alert", lambda message: sent.append(message))
+
+    pnl.check_position_loss_alerts({"mode": "paper", "positions": [_position("AAPL", -0.50)]})
+
+    assert sent == []
+
+
+def test_check_position_loss_alerts_noop_when_nothing_breached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "DISCORD_WEBHOOK_URL", "https://discord.example/webhook")
+    sent: list[str] = []
+    monkeypatch.setattr(pnl, "_send_discord_alert", lambda message: sent.append(message))
+
+    pnl.check_position_loss_alerts({"mode": "paper", "positions": [_position("AAPL", -0.01)]})
+
+    assert sent == []
+
+
+def test_check_position_loss_alerts_sends_when_breached(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DISCORD_WEBHOOK_URL", "https://discord.example/webhook")
+    sent: list[str] = []
+    monkeypatch.setattr(pnl, "_send_discord_alert", lambda message: sent.append(message))
+
+    pnl.check_position_loss_alerts({"mode": "live", "positions": [_position("AAPL", -0.50)]})
+
+    assert len(sent) == 1
+    assert "AAPL" in sent[0]
+
+
+def test_main_skips_loss_alert_check_when_snapshot_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    # M20: the intraday cron (pnl-snapshot.yml) sets PNL_SNAPSHOT_ONLY and
+    # runs every 30 min for paper -- checking there too would mean up to
+    # 13 Discord messages/day for one position that stays down.
+    monkeypatch.setattr(config, "PNL_MARKET_HOURS_ONLY", False)
+    monkeypatch.setattr(config, "PNL_SNAPSHOT_ONLY", True)
+    fixed_snapshot = {"mode": "paper", "account": {}, "positions": [], "history": {}}
+    monkeypatch.setattr(pnl, "generate_snapshot", lambda: fixed_snapshot)
+    monkeypatch.setattr(pnl, "write_snapshot", MagicMock())
+
+    def _fail(snapshot: dict[str, object]) -> None:
+        pytest.fail("check_position_loss_alerts called despite PNL_SNAPSHOT_ONLY")
+
+    monkeypatch.setattr(pnl, "check_position_loss_alerts", _fail)
+
+    pnl.main()  # must not raise -- proves the alert check was never called
+
+
+def test_main_runs_loss_alert_check_on_canonical_daily_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PNL_MARKET_HOURS_ONLY", False)
+    monkeypatch.setattr(config, "PNL_SNAPSHOT_ONLY", False)
+    fixed_snapshot = {"mode": "live", "account": {}, "positions": [], "history": {}}
+    monkeypatch.setattr(pnl, "generate_snapshot", lambda: fixed_snapshot)
+    monkeypatch.setattr(pnl, "write_snapshot", MagicMock())
+    monkeypatch.setattr(pnl, "update_history_series", MagicMock())
+    checked: list[dict[str, object]] = []
+    monkeypatch.setattr(pnl, "check_position_loss_alerts", checked.append)
+
+    pnl.main()
+
+    assert checked == [fixed_snapshot]
+
+
 # --- Durable P&L append-series (M17, DESIGN_DASHBOARDS.md 2.1) ---
 
 
