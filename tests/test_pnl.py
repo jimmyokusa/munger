@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import datetime
 import json
+import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -242,7 +244,7 @@ def _no_real_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     # Every retry test below deliberately triggers pnl._with_retry's sleep
     # -- patched to a no-op globally so the suite doesn't actually wait
     # config.PNL_ALPACA_RETRY_DELAY_SECONDS on every one of them.
-    monkeypatch.setattr(pnl.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
 
 
 def _fake_clock(is_open: bool) -> MagicMock:
@@ -335,7 +337,9 @@ def test_generate_snapshot_retries_a_transient_get_account_failure(
 
     snapshot = pnl.generate_snapshot()
 
-    assert snapshot["account"]["equity"] == 100_000.0
+    account = snapshot["account"]
+    assert isinstance(account, dict)
+    assert account["equity"] == 100_000.0
     assert trading_mock.get_account.call_count == 2
 
 
@@ -487,7 +491,7 @@ def test_send_discord_alert_posts_content_to_the_configured_webhook(
         captured["headers"] = dict(request.header_items())
         return _FakeResponse()
 
-    monkeypatch.setattr(pnl.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
 
     pnl._send_discord_alert("test message")
 
@@ -504,7 +508,7 @@ def test_send_discord_alert_swallows_a_failed_post(monkeypatch: pytest.MonkeyPat
     def _raise(*args: object, **kwargs: object) -> None:
         raise TimeoutError("simulated network blip")
 
-    monkeypatch.setattr(pnl.urllib.request, "urlopen", _raise)
+    monkeypatch.setattr(urllib.request, "urlopen", _raise)
 
     pnl._send_discord_alert("test message")  # must not raise
 

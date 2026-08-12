@@ -2,6 +2,7 @@
 
 import importlib
 import math
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ import config
 
 
 @pytest.fixture
-def _reload_config_after() -> None:
+def _reload_config_after() -> Iterator[None]:
     # M20's PAPER_TRADING/LIVE_TRADING_ENABLED are computed at import time
     # from os.environ -- verifying the env-driven parsing means actually
     # reloading the module under a patched env, which mutates the shared

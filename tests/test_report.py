@@ -878,7 +878,11 @@ def test_generate_report_writes_pnl_html_from_a_real_snapshot() -> None:
 def test_render_pnl_default_kwargs_are_unchanged_from_pnl_htmls_original_output() -> None:
     # Every keyword argument must default to pnl.html's exact original
     # values -- this is what lets the existing call site stay untouched.
-    snapshot = {"mode": "paper", "account": {"equity": 100_000.0}, "positions": []}
+    snapshot: dict[str, object] = {
+        "mode": "paper",
+        "account": {"equity": 100_000.0},
+        "positions": [],
+    }
     html_out = report._render_pnl(snapshot)
     assert "<h1>Paper trading P&amp;L" in html_out
     assert "paper money only, not investment advice" in html_out
@@ -887,7 +891,7 @@ def test_render_pnl_default_kwargs_are_unchanged_from_pnl_htmls_original_output(
 
 
 def test_render_pnl_overridden_kwargs_produce_a_distinct_live_page() -> None:
-    snapshot = {"mode": "live", "account": {"equity": 5_000.0}, "positions": []}
+    snapshot: dict[str, object] = {"mode": "live", "account": {"equity": 5_000.0}, "positions": []}
     html_out = report._render_pnl(
         snapshot,
         expected_mode="live",
@@ -916,14 +920,22 @@ def test_render_pnl_warns_when_snapshot_mode_disagrees_with_expected_mode() -> N
     # mixing up; this is the equivalent defense at the *display* layer --
     # a snapshot uploaded to the wrong GCS path/page must not silently
     # render under the wrong mode badge with nothing to catch it.
-    snapshot = {"mode": "paper", "account": {"equity": 100_000.0}, "positions": []}
+    snapshot: dict[str, object] = {
+        "mode": "paper",
+        "account": {"equity": 100_000.0},
+        "positions": [],
+    }
     html_out = report._render_pnl(snapshot, expected_mode="live")
     assert "reports mode PAPER" in html_out
     assert "expects LIVE" in html_out
 
 
 def test_render_pnl_shows_no_mismatch_warning_when_modes_agree() -> None:
-    snapshot = {"mode": "paper", "account": {"equity": 100_000.0}, "positions": []}
+    snapshot: dict[str, object] = {
+        "mode": "paper",
+        "account": {"equity": 100_000.0},
+        "positions": [],
+    }
     html_out = report._render_pnl(snapshot, expected_mode="paper")
     assert "reports mode" not in html_out
 

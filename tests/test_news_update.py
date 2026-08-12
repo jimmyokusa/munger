@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.request
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -191,7 +192,7 @@ def _fake_anthropic_client(text: str, stop_reason: str = "end_turn") -> MagicMoc
 
 def test_generate_digest_returns_stripped_text(monkeypatch: pytest.MonkeyPatch) -> None:
     client_mock = _fake_anthropic_client("  Digest text.  ")
-    monkeypatch.setattr(news_update.anthropic, "Anthropic", lambda **kwargs: client_mock)
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kwargs: client_mock)
 
     result = news_update.generate_digest("paper", [_position("AAPL")], {"AAPL": []})
 
@@ -203,7 +204,7 @@ def test_generate_digest_returns_stripped_text(monkeypatch: pytest.MonkeyPatch) 
 
 def test_generate_digest_raises_on_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
     client_mock = _fake_anthropic_client("", stop_reason="refusal")
-    monkeypatch.setattr(news_update.anthropic, "Anthropic", lambda **kwargs: client_mock)
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kwargs: client_mock)
 
     with pytest.raises(ValueError, match="refusal"):
         news_update.generate_digest("paper", [_position("AAPL")], {"AAPL": []})
@@ -211,7 +212,7 @@ def test_generate_digest_raises_on_refusal(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_generate_digest_notes_truncation_on_max_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     client_mock = _fake_anthropic_client("Cut off mid-sen", stop_reason="max_tokens")
-    monkeypatch.setattr(news_update.anthropic, "Anthropic", lambda **kwargs: client_mock)
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kwargs: client_mock)
 
     result = news_update.generate_digest("paper", [_position("AAPL")], {"AAPL": []})
 
@@ -247,7 +248,7 @@ def test_post_discord_message_sends_content(monkeypatch: pytest.MonkeyPatch) -> 
         captured["body"] = json.loads(request.data)
         return _FakeResponse()
 
-    monkeypatch.setattr(news_update.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
 
     news_update._post_discord_message("hello")
 
@@ -269,7 +270,7 @@ def test_post_discord_message_truncates_long_messages(monkeypatch: pytest.Monkey
         captured["body"] = json.loads(request.data)
         return _FakeResponse()
 
-    monkeypatch.setattr(news_update.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
 
     news_update._post_discord_message("x" * 5000)
 
@@ -324,7 +325,7 @@ def test_run_posts_digest_with_mode_header(monkeypatch: pytest.MonkeyPatch) -> N
 @pytest.mark.parametrize(
     "exc",
     [
-        AlpacaAPIError("simulated"),
+        AlpacaAPIError("simulated"),  # type: ignore[no-untyped-call]
         anthropic.APIConnectionError(request=MagicMock()),
         urllib.error.URLError("simulated"),
         TimeoutError("simulated"),
