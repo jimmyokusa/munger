@@ -4,9 +4,11 @@ available in this environment)."""
 
 from __future__ import annotations
 
+import datetime
 import json
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -18,13 +20,32 @@ from alpaca.data.models.news import NewsSet
 import config
 import news_update
 
+# Captured before _isolate_config's autouse fixture below monkeypatches
+# news_update._should_run_today to an always-True stub -- the
+# _should_run_today/_load_last_posted_month/_record_posted_month unit
+# tests need the real functions, not that stub.
+_real_should_run_today = news_update._should_run_today
+
 
 @pytest.fixture(autouse=True)
-def _isolate_config(monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "DISCORD_NEWS_WEBHOOK_URL", "https://discord.example/news")
     monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "fake-key")
     monkeypatch.setattr(config, "NEWS_PER_SYMBOL_LIMIT", 5)
-    monkeypatch.setattr(config, "NEWS_LOOKBACK_HOURS", 24)
+    monkeypatch.setattr(config, "NEWS_LOOKBACK_HOURS", 24 * 30)
+    monkeypatch.setattr(config, "NEWS_UPDATE_FORCE_RUN", False)
+    # A fresh, non-existent-by-default path per test -- never the repo's
+    # own real news_digest_state.json (which shouldn't exist in a test
+    # environment anyway, but this makes it structurally impossible for a
+    # stray local file to leak into a test's "already posted?" check).
+    monkeypatch.setattr(config, "NEWS_DIGEST_STATE_PATH", tmp_path / "news_digest_state.json")
+    # M23's monthly-cadence gate is real wall-clock-date-dependent
+    # behavior (_should_run_today() with no args) -- default it to "always
+    # eligible to run" here so every other test in this file isn't
+    # coupled to which day of the month CI happens to run on. The gate's
+    # own behavior is tested explicitly below, with the real function
+    # restored.
+    monkeypatch.setattr(news_update, "_should_run_today", lambda: True)
 
 
 def _fake_article(headline: str, summary: str, source: str, symbols: list[str]) -> MagicMock:
@@ -227,7 +248,8 @@ def test_format_user_message_includes_symbol_and_no_news_note() -> None:
 
     assert "AAPL" in message
     assert "+12.3%" in message
-    assert "No news in the last day." in message
+    # config.NEWS_LOOKBACK_HOURS is fixed at 24*30 by _isolate_config above.
+    assert "No news in the last 30 days." in message
 
 
 # --- _post_discord_message ---
@@ -289,7 +311,83 @@ def test_post_discord_message_truncates_long_messages(monkeypatch: pytest.Monkey
     assert len(captured["body"]["content"]) == news_update._DISCORD_MESSAGE_CHAR_LIMIT
 
 
+# --- _should_run_today (M23) ---
+
+
+def test_should_run_today_true_on_trigger_day() -> None:
+    assert config.NEWS_UPDATE_DAY_OF_MONTH == 1
+    assert _real_should_run_today(datetime.date(2026, 9, 1)) is True
+
+
+def test_should_run_today_true_within_grace_window() -> None:
+    # config.NEWS_UPDATE_GRACE_DAYS == 1 -> window is [day 1, day 2],
+    # catching a day-1 GitHub Actions schedule trigger that ran late or
+    # didn't fire at all.
+    assert config.NEWS_UPDATE_GRACE_DAYS == 1
+    assert _real_should_run_today(datetime.date(2026, 9, 2)) is True
+
+
+def test_should_run_today_false_outside_the_grace_window() -> None:
+    assert _real_should_run_today(datetime.date(2026, 9, 3)) is False
+    assert _real_should_run_today(datetime.date(2026, 9, 30)) is False
+
+
+def test_should_run_today_false_when_already_posted_this_month() -> None:
+    # The grace window alone would fire on both day 1 and day 2 in the
+    # common case (day 1 succeeds); the "already posted this month" marker
+    # is what makes widening that window safe instead of a guaranteed
+    # near-monthly duplicate.
+    news_update._record_posted_month(datetime.date(2026, 9, 1))
+
+    assert _real_should_run_today(datetime.date(2026, 9, 2)) is False
+    # A later month is unaffected.
+    assert _real_should_run_today(datetime.date(2026, 10, 1)) is True
+
+
+def test_load_last_posted_month_handles_missing_and_malformed_state() -> None:
+    assert news_update._load_last_posted_month() is None  # file doesn't exist yet
+
+    config.NEWS_DIGEST_STATE_PATH.write_text("not json")
+    assert news_update._load_last_posted_month() is None
+
+    config.NEWS_DIGEST_STATE_PATH.write_text(json.dumps({"last_posted_month": 42}))
+    assert news_update._load_last_posted_month() is None  # wrong type, not a string
+
+
+def test_record_posted_month_writes_the_month_key() -> None:
+    news_update._record_posted_month(datetime.date(2026, 9, 1))
+
+    assert news_update._load_last_posted_month() == "2026-09"
+
+
 # --- run() ---
+
+
+def test_run_noop_when_not_trigger_day_and_not_forced(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(news_update, "_should_run_today", lambda: False)
+    monkeypatch.setattr(
+        news_update, "fetch_recent_news", lambda symbols: pytest.fail("should not be called")
+    )
+
+    news_update.run({"mode": "paper", "positions": [_position("AAPL")]})  # must not raise
+
+
+def test_run_proceeds_when_forced_despite_not_trigger_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    # NEWS_UPDATE_FORCE_RUN (workflow_dispatch's force_news_digest input) is
+    # the escape hatch for spot-checking digest content quality without
+    # waiting up to a month for NEWS_UPDATE_DAY_OF_MONTH to come around.
+    monkeypatch.setattr(news_update, "_should_run_today", lambda: False)
+    monkeypatch.setattr(config, "NEWS_UPDATE_FORCE_RUN", True)
+    monkeypatch.setattr(news_update, "fetch_recent_news", lambda symbols: {"AAPL": []})
+    monkeypatch.setattr(
+        news_update, "generate_digest", lambda mode, positions, news_by_symbol: "The digest."
+    )
+    posted: list[str] = []
+    monkeypatch.setattr(news_update, "_post_discord_message", posted.append)
+
+    news_update.run({"mode": "paper", "positions": [_position("AAPL")]})
+
+    assert len(posted) == 1
 
 
 def test_run_noop_when_webhook_unset(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -331,7 +429,12 @@ def test_run_posts_digest_with_mode_header(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert len(posted) == 1
     assert "LIVE" in posted[0]
+    assert "monthly update" in posted[0]  # M23: was "daily update"
     assert "The digest." in posted[0]
+    # A successful post must record this month as posted -- otherwise the
+    # grace window (day 1 and day 2) would double-post in the common case
+    # where day 1 already succeeded.
+    assert news_update._load_last_posted_month() is not None
 
 
 @pytest.mark.parametrize(
@@ -353,6 +456,11 @@ def test_run_swallows_errors_from_any_stage(
     monkeypatch.setattr(news_update, "fetch_recent_news", _raise)
 
     news_update.run({"mode": "paper", "positions": [_position("AAPL")]})  # must not raise
+
+    # A soft-failed run must NOT record this month as posted -- doing so
+    # would defeat the grace window's entire purpose (giving day 2 a real
+    # second chance after a day-1 failure).
+    assert news_update._load_last_posted_month() is None
 
 
 def test_run_swallows_a_malformed_positions_shape(monkeypatch: pytest.MonkeyPatch) -> None:

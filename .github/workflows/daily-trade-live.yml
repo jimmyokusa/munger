@@ -37,6 +37,10 @@ on:
         description: "Force KILL_SWITCH (screen-only, no broker calls) for this manual run"
         type: boolean
         default: true
+      force_news_digest:
+        description: "Force the monthly news digest to run regardless of day-of-month (for spot-checking content quality)"
+        type: boolean
+        default: false
 
 # Independent from daily-trade.yml's own "daily-trade" group -- these are
 # two different accounts/workflows and must never block each other, only
@@ -73,7 +77,7 @@ jobs:
             git -C ../bot-state-wt checkout --orphan bot-state-live
             git -C ../bot-state-wt rm -rf . >/dev/null 2>&1 || true
           fi
-          for f in state.json journal.db munger.log; do
+          for f in state.json journal.db munger.log news_digest_state.json; do
             if [ -f "../bot-state-wt/$f" ]; then
               cp "../bot-state-wt/$f" .
               echo "Restored $f from bot-state-live branch."
@@ -183,21 +187,45 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python pnl.py
 
-      # Daily Claude-written news/performance digest (M22, user request) --
-      # same webhook and Anthropic key as daily-trade.yml's own step, so
-      # both accounts' digests land in the same Discord channel, labeled
-      # LIVE/PAPER via pnl.json's own "mode" field (news_update.py reads
-      # this run's pnl.json, same as daily-trade.yml). Soft-fail posture
-      # (see news_update.py's module docstring) means this can't fail the
-      # job even if the Anthropic call is refused/rate-limited.
-      - name: Generate daily news digest (live account)
+      # Claude-written news/performance digest (M22, user request; cadence
+      # changed daily -> monthly, M23, user request) -- same webhook and
+      # Anthropic key as daily-trade.yml's own step, so both accounts'
+      # digests land in the same Discord channel, labeled LIVE/PAPER via
+      # pnl.json's own "mode" field (news_update.py reads this run's
+      # pnl.json, same as daily-trade.yml). Soft-fail posture (see
+      # news_update.py's module docstring) means this can't fail the job
+      # even if the Anthropic call is refused/rate-limited. This step
+      # itself still runs every day; the monthly cadence is enforced
+      # inside news_update.py's run() (config.NEWS_UPDATE_DAY_OF_MONTH),
+      # same as daily-trade.yml's own step -- see that step's comment for
+      # the full reasoning, including the force_news_digest override.
+      - name: Generate monthly news digest (live account)
         if: always()
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_LIVE_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DISCORD_NEWS_WEBHOOK_URL: ${{ secrets.DISCORD_NEWS_WEBHOOK_URL }}
+          NEWS_UPDATE_FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.force_news_digest && 'true' || '' }}
         run: python news_update.py
+
+      # M23, same reasoning as daily-trade.yml's own "Persist news digest
+      # state" step: news_digest_state.json is only written by the step
+      # directly above, which runs after "Persist bot-state-live" already
+      # committed/pushed further up this job -- a separate, later persist
+      # step is required to actually persist it, not a change to that
+      # earlier step's timing.
+      - name: Persist news digest state
+        if: always()
+        run: |
+          set -e
+          git config user.name "munger-bot-live"
+          git config user.email "munger-bot@users.noreply.github.com"
+          [ -f news_digest_state.json ] && cp news_digest_state.json ../bot-state-wt/
+          cd ../bot-state-wt
+          git add -A
+          git commit -q -m "News digest state from run ${{ github.run_id }}" --allow-empty
+          git push origin HEAD:bot-state-live
 
       # No "Generate held-symbol price history" (prices.py) step here --
       # M17 Phase 2's held-symbol daily-close chart is out of scope for

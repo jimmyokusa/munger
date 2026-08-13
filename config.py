@@ -284,17 +284,17 @@ POSITION_LOSS_ALERT_THRESHOLD_PCT = -0.10
 # rule. Shared by pnl.py's _send_discord_alert and news_update.py's
 # _post_discord_message so the fix (and its value) lives in one place.
 DISCORD_USER_AGENT = "munger-trading-bot/1.0 (+https://gramunger.com)"
-# --- Daily news/commentary digest (news_update.py, user request, M22) ---
+# --- News/commentary digest (news_update.py, user request, M22; cadence
+# changed daily -> monthly, user request, M23) ---
 # Second Discord webhook, deliberately separate from DISCORD_WEBHOOK_URL
 # above: that one is a loss-threshold alert (fires rarely, only on breach);
-# this one is a daily digest (fires every run, always) -- keeping them on
-# distinct env vars/channels means a user can silence one without the
-# other. Same config-gated-off-by-default shape: an unset webhook (or
-# unset ANTHROPIC_API_KEY below) skips the whole digest, not a partial
-# attempt.
+# this one is a periodic digest -- keeping them on distinct env vars/
+# channels means a user can silence one without the other. Same
+# config-gated-off-by-default shape: an unset webhook (or unset
+# ANTHROPIC_API_KEY below) skips the whole digest, not a partial attempt.
 DISCORD_NEWS_WEBHOOK_URL = os.environ.get("DISCORD_NEWS_WEBHOOK_URL", "")
-# Anthropic API key for the daily digest's news synthesis (news_update.py).
-# Not read anywhere in report.py's own deployment -- this is a GitHub
+# Anthropic API key for the digest's news synthesis (news_update.py). Not
+# read anywhere in report.py's own deployment -- this is a GitHub
 # Actions-only secret, same posture as ALPACA_API_KEY/ALPACA_SECRET_KEY
 # above (M14's screen-only boundary is about report.py never referencing
 # an Alpaca credential name; this is a different provider entirely, but
@@ -303,22 +303,75 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 # User-selected model (M22) -- Claude Opus 5, chosen over the cheaper
 # Sonnet/Haiku tiers for higher-quality synthesis of news + performance
 # into investment-relevant commentary; cost is trivial at this volume
-# (once/day, a handful of held symbols, short output).
+# (once/month per account, a handful of held symbols, short output).
 NEWS_UPDATE_MODEL = "claude-opus-5"
-# How far back to pull news per held symbol. 24h matches the daily cadence
-# of the workflow this runs in -- older news was presumably already
-# covered by a prior day's digest.
-NEWS_LOOKBACK_HOURS = 24
+# M23 (user request): daily digests were too much noise, changed to
+# monthly. daily-trade.yml/daily-trade-live.yml still run every calendar
+# day (unconditionally, "0 14 * * *"/"30 14 * * *") for the actual
+# trading/pnl.py/prices.py steps -- news_update.py's own run() is what
+# turns that into a once-a-month digest (see _should_run_today()), the
+# same "gate from Python, not a second cron schedule" shape as
+# PNL_SNAPSHOT_ONLY above. Day 1 always occurs exactly once per calendar
+# month regardless of weekends/holidays, since the workflow is not
+# trading-day-gated -- no "last Friday of the month"-style edge cases to
+# handle.
+NEWS_UPDATE_DAY_OF_MONTH = 1
+# staff-engineer-reviewer finding (M23): under daily cadence, a missed
+# trigger self-healed the next day for free; under monthly cadence, a
+# trigger that never fires (GitHub's schedule can run late or, rarely,
+# not at all under platform load) or a run whose digest generation itself
+# soft-fails drops that whole month's news with nothing recoverable next
+# cycle. This widens the trigger window to
+# [NEWS_UPDATE_DAY_OF_MONTH, NEWS_UPDATE_DAY_OF_MONTH + this] so a late
+# day-1 trigger still gets caught on day 2 -- paired with
+# NEWS_DIGEST_STATE_PATH's own "already posted this month" marker below,
+# so widening this window can never produce two real digests in one
+# month, only catch a genuinely missed one.
+NEWS_UPDATE_GRACE_DAYS = 1
+# Keep NEWS_UPDATE_DAY_OF_MONTH + NEWS_UPDATE_GRACE_DAYS <= 28 if either
+# is ever changed: _should_run_today()'s window check is a plain integer
+# day-of-month comparison, not month-length-aware. A window reaching past
+# a given month's actual last day doesn't roll into next month -- it just
+# silently never matches on those overflow days, quietly shrinking the
+# effective grace period with no error.
+# Escape hatch for spot-checking digest content quality (TASKS.md's own
+# M22 follow-up task) without waiting up to a month for
+# NEWS_UPDATE_DAY_OF_MONTH to come around -- set by daily-trade.yml's/
+# daily-trade-live.yml's `force_news_digest` workflow_dispatch input.
+# Never set by the scheduled (cron) trigger, only a manual run. A forced
+# run still calls _record_posted_month() on success like any other real
+# post -- if a human happens to force-run within the same month's
+# trigger window (days 1-2 by default), that intentionally counts as
+# "this month's digest," and the genuine scheduled run that month is
+# correctly skipped rather than double-posting.
+NEWS_UPDATE_FORCE_RUN = os.environ.get("NEWS_UPDATE_FORCE_RUN", "") == "true"
+# "YYYY-MM" of the last calendar month a digest was actually posted
+# (M23) -- what makes NEWS_UPDATE_GRACE_DAYS safe to widen without ever
+# double-posting in one month. Deliberately NOT in the GCS-backed
+# pnl.json/pnl_history.jsonl family (those are data artifacts); this is a
+# small idempotency marker, the same *kind* of thing state.json already
+# is for bot.py -- so it's persisted the same way: daily-trade.yml's/
+# daily-trade-live.yml's existing "Prepare/Persist bot-state[-live]
+# branch" steps restore/save it alongside state.json/journal.db, no new
+# persistence mechanism introduced for this.
+NEWS_DIGEST_STATE_PATH: Path = DATA_DIR / "news_digest_state.json"
+# How far back to pull news per held symbol. Sized to a full calendar
+# month with headroom (31 days) now that the digest itself is monthly
+# (M23) -- older news was presumably already covered by a prior month's
+# digest.
+NEWS_LOOKBACK_HOURS = 24 * 31
 # Cap per-symbol headlines fed into the prompt -- keeps token cost/prompt
-# size bounded even for a symbol with an unusually newsy day, and avoids
-# paying for/reading headlines well past what a short daily digest can
-# usefully summarize anyway.
-NEWS_PER_SYMBOL_LIMIT = 5
+# size bounded even for a symbol with an unusually newsy month, and avoids
+# paying for/reading headlines well past what a short digest can usefully
+# summarize anyway. Raised 5 -> 15 alongside the M23 cadence change (a
+# month accumulates meaningfully more news per symbol than a day did) --
+# not a precise derivation, just scaled up with the lookback window.
+NEWS_PER_SYMBOL_LIMIT = 15
 # Output budget for the digest -- a short per-symbol summary across
 # TARGET_POSITION_COUNT positions comfortably fits well under this; sized
 # with headroom rather than tightly to the expected output, consistent
 # with this skill's max_tokens guidance (truncation mid-answer is worse
-# than a slightly generous ceiling on a once-daily, low-volume call).
+# than a slightly generous ceiling on a once-a-month, low-volume call).
 NEWS_MAX_OUTPUT_TOKENS = 4096
 # Currently-held-symbol daily close prices (M17 Phase 2, DESIGN_DASHBOARDS.md
 # §3) -- feeds Graph 2 ("daily close price per owned ticker"). Written by

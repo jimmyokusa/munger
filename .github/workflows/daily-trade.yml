@@ -18,6 +18,10 @@ on:
         description: "Force KILL_SWITCH (screen-only, no broker calls) for this manual run"
         type: boolean
         default: true
+      force_news_digest:
+        description: "Force the monthly news digest to run regardless of day-of-month (for spot-checking content quality)"
+        type: boolean
+        default: false
 
 # Staff-engineer-reviewer finding (M10 review): nothing prevented two
 # overlapping bot.py invocations (an overrun run plus its next scheduled
@@ -54,10 +58,21 @@ jobs:
       # both load-bearing for correctness, not just logs -- losing them
       # every run would silently reset the two-strike sell discipline and
       # make every real holding look like an unexpected reconciliation
-      # mismatch. Persisted here via a dedicated `bot-state` branch (git
-      # itself as the durable store) rather than actions/cache -- daily
-      # runs now fit inside actions/cache's 7-day eviction window, but a
-      # git branch has no eviction window at all (a missed weekend/outage
+      # mismatch. news_digest_state.json (M23) is restored here too (it's
+      # the "already posted this month" marker news_update.py's
+      # grace-window gate depends on to avoid ever double-posting a
+      # digest) but is deliberately NOT written back by the "Persist bot
+      # state" step below -- that step runs before news_update.py ever
+      # executes, so committing it there would only ever push the PRIOR
+      # run's stale marker (staff-engineer-reviewer finding: caught before
+      # this shipped -- would have silently defeated the whole
+      # grace-window design). See "Persist news digest state" further
+      # down, which runs after news_update.py and owns writing this file
+      # back. Persisted via a dedicated `bot-state` branch (git itself as
+      # the durable store) rather than
+      # actions/cache -- daily runs now fit inside actions/cache's 7-day
+      # eviction window, but a git branch has no eviction window at all
+      # (a missed weekend/outage
       # of any length can't silently lose state) and the mechanism was
       # already built, so there's no reason to switch.
       - name: Prepare persisted bot-state branch
@@ -72,7 +87,7 @@ jobs:
             git -C ../bot-state-wt checkout --orphan bot-state
             git -C ../bot-state-wt rm -rf . >/dev/null 2>&1 || true
           fi
-          for f in state.json journal.db munger.log; do
+          for f in state.json journal.db munger.log news_digest_state.json; do
             if [ -f "../bot-state-wt/$f" ]; then
               cp "../bot-state-wt/$f" .
               echo "Restored $f from bot-state branch."
@@ -217,22 +232,53 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
         run: python prices.py
 
-      # Daily Claude-written news/performance digest (M22, user request).
-      # Runs after pnl.py (reads its pnl.json for the held-symbol list,
-      # same as prices.py above) and is entirely soft-fail internally --
-      # news_update.py never raises on a broken Alpaca News call, a
-      # refused/rate-limited Anthropic call, or a Discord outage, so this
-      # step can't fail the job. `if: always()` for the same reason as the
-      # P&L/prices steps: this is a display concern, independent of
-      # whether "Run bot" succeeded or ran in screen-only mode.
-      - name: Generate daily news digest
+      # Claude-written news/performance digest (M22, user request; cadence
+      # changed daily -> monthly, M23, user request). Runs after pnl.py
+      # (reads its pnl.json for the held-symbol list, same as prices.py
+      # above) and is entirely soft-fail internally -- news_update.py
+      # never raises on a broken Alpaca News call, a refused/rate-limited
+      # Anthropic call, or a Discord outage, so this step can't fail the
+      # job. `if: always()` for the same reason as the P&L/prices steps:
+      # this is a display concern, independent of whether "Run bot"
+      # succeeded or ran in screen-only mode. This step itself still runs
+      # every day (the workflow's own daily cron is unchanged) -- the
+      # monthly cadence is enforced inside news_update.py's run()
+      # (config.NEWS_UPDATE_DAY_OF_MONTH), not here, so every non-trigger
+      # day is a fast no-op. NEWS_UPDATE_FORCE_RUN lets a manual
+      # workflow_dispatch bypass that gate for spot-checking content
+      # quality without waiting for the 1st of the month.
+      - name: Generate monthly news digest
         if: always()
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DISCORD_NEWS_WEBHOOK_URL: ${{ secrets.DISCORD_NEWS_WEBHOOK_URL }}
+          NEWS_UPDATE_FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.force_news_digest && 'true' || '' }}
         run: python news_update.py
+
+      # M23, staff-engineer-reviewer finding: news_digest_state.json is
+      # only written (by _record_posted_month(), on a successful post) by
+      # the step directly above -- which runs after "Persist bot state"
+      # already committed/pushed further up this job. A separate, later
+      # persist step is required, not a change to that earlier step's
+      # timing (which is correctly scoped to right-after-"Run bot" for
+      # bot.py's own state.json/journal.db). Same bot-state branch,
+      # mirrors that step's own git commands. `if: always()` for the same
+      # reason as every other display-concern step here; `--allow-empty`
+      # (matching "Persist bot state") means a no-op day still succeeds
+      # even though nothing changed.
+      - name: Persist news digest state
+        if: always()
+        run: |
+          set -e
+          git config user.name "munger-bot"
+          git config user.email "munger-bot@users.noreply.github.com"
+          [ -f news_digest_state.json ] && cp news_digest_state.json ../bot-state-wt/
+          cd ../bot-state-wt
+          git add -A
+          git commit -q -m "News digest state from run ${{ github.run_id }}" --allow-empty
+          git push origin HEAD:bot-state
 
       - name: Upload P&L snapshot and history to GCS
         if: always()
