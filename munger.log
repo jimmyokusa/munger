@@ -3867,3 +3867,116 @@ ValueError: no data returned for 'CWEN-A' (provider response didn't match; 1 key
 2026-08-21T14:50:26+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
 2026-08-21T14:50:26+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
 2026-08-21T14:50:27+0000 INFO __main__: Run complete: 0 liquidations, 0 buys planned.
+2026-08-22T14:28:11+0000 INFO __main__: Starting run for 2026-08-22 (paper=True)
+2026-08-22T14:28:49+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:28:49+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:28:49+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:28:49+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:28:49+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-08-22T14:28:49+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-08-22T14:29:34+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:29:34+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:29:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:29:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:29:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:29:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:29:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:29:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:30:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:30:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:30:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:30:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:30:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:30:29+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:30:29+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:30:29+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:30:29+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:30:30+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:30:30+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:31:14+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:31:14+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:31:14+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:31:14+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:31:15+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:31:15+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:31:15+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:31:15+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:31:15+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:31:15+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:00+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:00+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:00+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:00+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:00+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:10+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-08-22T14:32:10+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:10+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:10+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:10+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:10+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:12+0000 INFO data: Waiting 42.7s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:55+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:55+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:55+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:55+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:55+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:55+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:55+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:55+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:32:55+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:33:40+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:33:40+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:33:40+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:33:40+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:33:40+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:33:40+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-08-22T14:33:49+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-08-22T14:33:49+0000 WARNING data: CWEN-A: fetch failed after 4 attempts
+Traceback (most recent call last):
+  File "/home/runner/work/munger/munger/data.py", line 357, in _fetch_metrics_inner
+    info, net_income = _fetch_raw(symbol)
+                       ^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/data.py", line 261, in _fetch_raw
+    raise ValueError(
+ValueError: no data returned for 'CWEN-A' (provider response didn't match; 1 keys returned, {'trailingPegRatio': None})
+2026-08-22T14:33:52+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:33:52+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:33:52+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:33:52+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:33:52+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:33:52+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-08-22T14:34:37+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:34:37+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:34:37+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:34:37+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:34:37+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:34:37+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:34:37+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:34:37+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:35:22+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:35:22+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:35:22+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:35:22+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:35:22+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:35:33+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:35:33+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:35:33+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:35:33+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:35:33+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:35:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:36:18+0000 INFO data: Waiting 0.2s for a shared yfinance rate limit to clear.
+2026-08-22T14:36:18+0000 INFO data: Waiting 0.2s for a shared yfinance rate limit to clear.
+2026-08-22T14:36:18+0000 INFO data: Waiting 0.2s for a shared yfinance rate limit to clear.
+2026-08-22T14:36:18+0000 INFO data: Waiting 0.2s for a shared yfinance rate limit to clear.
+2026-08-22T14:36:18+0000 INFO data: Waiting 0.2s for a shared yfinance rate limit to clear.
+2026-08-22T14:36:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:36:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:36:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:36:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:36:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:36:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:37:04+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:37:04+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-22T14:37:06+0000 INFO screener: Screen complete: 1506 tickers, 14 buyable.
+2026-08-22T14:37:06+0000 INFO __main__: Screen complete: 1506 tickers, 14 buyable.
+2026-08-22T14:37:08+0000 INFO __main__: Run complete: 0 liquidations, 0 buys planned.
