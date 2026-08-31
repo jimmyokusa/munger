@@ -4862,3 +4862,127 @@ Traceback (most recent call last):
     raise APIError(error, http_error)
 alpaca.common.exceptions.APIError: {"message": "unauthorized."}
 
+2026-08-31T19:54:35+0000 INFO __main__: Starting run for 2026-08-31 (paper=True)
+2026-08-31T19:55:26+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:55:26+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:55:26+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:55:26+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-08-31T19:55:26+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-08-31T19:55:26+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-08-31T19:56:11+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:56:11+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:56:11+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:56:11+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:56:11+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:56:12+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:56:56+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-08-31T19:56:56+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-08-31T19:56:56+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-08-31T19:56:56+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-08-31T19:56:56+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:14+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:14+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:14+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:14+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:14+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:14+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:59+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:59+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:59+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:59+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:59+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:59+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:59+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:59+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:59+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:57:59+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:58:44+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:58:44+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:58:44+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:58:44+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:58:44+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:58:56+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-08-31T19:58:58+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-08-31T19:59:01+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:01+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:01+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:01+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:01+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:03+0000 INFO data: Waiting 43.2s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:46+0000 INFO data: Waiting 0.2s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:46+0000 INFO data: Waiting 0.2s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:46+0000 INFO data: Waiting 0.2s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:46+0000 INFO data: Waiting 0.2s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:46+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:46+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:46+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:46+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:46+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T19:59:46+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:00:31+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:00:31+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:00:31+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:00:31+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:00:31+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:00:31+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-08-31T20:00:31+0000 WARNING data: CWEN-A: fetch failed after 4 attempts
+Traceback (most recent call last):
+  File "/home/runner/work/munger/munger/data.py", line 357, in _fetch_metrics_inner
+    info, net_income = _fetch_raw(symbol)
+                       ^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/data.py", line 261, in _fetch_raw
+    raise ValueError(
+ValueError: no data returned for 'CWEN-A' (provider response didn't match; 1 keys returned, {'trailingPegRatio': None})
+2026-08-31T20:00:48+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:00:48+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:00:48+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:00:48+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:00:48+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:00:48+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-08-31T20:01:33+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:01:33+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:01:33+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:01:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:01:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:01:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:01:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:01:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:01:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:02:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:02:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:02:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:02:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:02:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-08-31T20:02:33+0000 INFO screener: Screen complete: 1506 tickers, 13 buyable.
+2026-08-31T20:02:33+0000 INFO __main__: Screen complete: 1506 tickers, 13 buyable.
+2026-08-31T20:02:33+0000 ERROR __main__: Run crashed with an unhandled exception
+Traceback (most recent call last):
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 198, in _one_request
+    response.raise_for_status()
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 401 Client Error: Unauthorized for url: https://paper-api.alpaca.markets/v2/account
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/runner/work/munger/munger/bot.py", line 355, in <module>
+    sys.exit(run())
+             ^^^^^
+  File "/home/runner/work/munger/munger/bot.py", line 277, in run
+    exec_module.verify_account_access()
+  File "/home/runner/work/munger/munger/execution.py", line 126, in verify_account_access
+    self._trading.get_account()
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/trading/client.py", line 474, in get_account
+    response = self.get("/account")
+               ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 225, in get
+    return self._request("GET", path, data, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 131, in _request
+    return self._one_request(method, url, opts, retry)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 207, in _one_request
+    raise APIError(error, http_error)
+alpaca.common.exceptions.APIError: {"message": "unauthorized."}
+
