@@ -849,12 +849,18 @@ Goal: Implement the "two-strike" rule and target weight logic.
 time. Implement `portfolio.py` and `journal.py`. Create the `StateTracker`
 class that reads and writes **only the strike counters** to `state.json`
 (atomic writes: temp file + rename) — it is never the source of truth for
-current holdings. `process_sells(current_holdings, new_market_data)` takes
-`current_holdings` as fetched live from the broker at the start of the run
-(see §3.4), checks them against quality floors, increments strike counts
-for failures, and returns a list of tickers to liquidate if strikes reach
-2. If the live holdings diverge from what the previous run's journal
-expected, log a reconciliation warning.
+current holdings. `process_sells(current_holdings, new_market_data, state)`
+takes `current_holdings` as fetched live from the broker at the start of
+the run (see §3.4), checks them against quality floors, increments strike
+counts for failures, and returns `(to_liquidate, unresolved)` --
+`to_liquidate` once a streak reaches `config.STRIKES_TO_LIQUIDATE`
+(retuned 2 -> 10 at M24, once the actual daily cadence made 2 too
+trigger-happy against yfinance's own field-level flakiness), and
+`unresolved` for any holding `new_market_data` returned no data for at
+all (M24: a data gap is not evidence of a quality failure, so it's
+surfaced separately rather than struck). If the live holdings diverge
+from what the previous run's journal expected, log a reconciliation
+warning.
 
 **Deliverable 3.2: Target Construction** — Buying and weighting logic.
 Update `portfolio.py`. Implement `generate_buy_queue(current_holdings,

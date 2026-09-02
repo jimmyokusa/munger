@@ -1000,3 +1000,184 @@ which now states the actual lookback period
 | **Accepted tradeoff: an unforced duplicate post is now structurally prevented; a `force_news_digest` re-run can still intentionally post twice** | noted | 2026-08-12 — the state marker above means a normal (non-forced) re-run on the same day now correctly no-ops. The only way to get two real digests in one month is deliberately: `force_news_digest` bypasses both the window and the already-posted check by design (that's the whole point of the escape hatch — spot-checking shouldn't be blocked by "already posted this month"). Accepted as intentional, not a gap. |
 | **Live-verify the persist-timing fix itself, not just the unit tests** | done | 2026-08-12 — dispatched `daily-trade.yml` (paper, `screen_only=true`, `force_news_digest=true`; run `31658584996`). All steps green, no `::warning::` annotation anywhere in the run (the swallowed-failure signal `run()`'s soft-fail wrapper would have emitted), and the Anthropic call logged a real `200 OK`. **The load-bearing check, not just "step succeeded":** fetched `origin/bot-state` directly and read `news_digest_state.json` off it with `git show` — `{"last_posted_month": "2026-08"}`, exactly what `_record_posted_month()` should have written and pushed via the new "Persist news digest state" step (commit `51c94fb`, correctly ordered after "Generate monthly news digest" this time, unlike the buggy first draft). This is the concrete, direct proof the persist-timing bug is actually fixed in production, not just in the diff. **Deliberately not run a second dispatch to exercise the "already-posted suppresses a natural trigger" half** — that logic is pure Python with no YAML/persistence risk and is already covered by real (non-mocked) unit tests (`test_should_run_today_false_when_already_posted_this_month`); the one thing unit tests structurally couldn't catch (YAML step ordering) is exactly what this live dispatch just proved. Not run against `daily-trade-live.yml`/`bot-state-live` separately — identical code path and identical YAML fix in both workflow files, so the paper-account confirmation is the load-bearing evidence; re-verify live-side only if something about that workflow's own persistence ever looks different in practice. **Still open:** user's own visual confirmation that the actual Discord message landed and reads correctly (this run's own digest, not a future one) — the run's logs prove generation and the persist step's success, not that a human has seen the result. |
 | Spot-check that a digest actually lands each month, not just the first few | todo | Extends M22's original "first 3 real digests" content-quality check (still open, now easier to run via `force_news_digest` without waiting a month). **Made concrete per pm-reviewer finding (was too passive to reliably catch a miss):** check within the first week of each calendar month that a digest landed around the 1st-2nd (both accounts); if it didn't, don't wait for next month's automatic trigger to "fix" it (it only covers its own ~31-day window, it won't backfill the gap) — run `force_news_digest` immediately instead. The grace window now makes an actual miss rarer, but doesn't make this check unnecessary — it only helps once, and this project has no backstop if the check itself gets skipped for a stretch. |
+
+## M24 — Live-trading bug fixes: buy/sell gate integrity (added 2026-09-02)
+
+Reimplemented from a review doc ("munger — Live-Trading Bug Fixes", authored
+2026-08-27, found in Google Drive) written against a prior session's
+`fix/live-trading-safety` patch that isn't reachable from this session (not
+committed, not attached here) -- the doc's description of each fix is
+precise enough (function names, exact logic, reasoning, test names) to
+rebuild faithfully against current `main` (`dda9554`) rather than wait for
+the original patch file to resurface. A temporary `GLOBAL_KILL_SWITCH` file
+was committed straight to `main` first (commit `6b8edb1`), ahead of any of
+this milestone's own review gates, specifically because the two bugs below
+were confirmed to be live and unprotected -- `daily-trade-live.yml` runs on
+a real daily cron with no kill switch present and `LIVE_TRADING_ENABLED`
+gating nothing in `bot.py` (see Fix 4). That stopgap trades off against this
+project's normal "don't commit ahead of review" discipline deliberately;
+removing it is this milestone's own last step, once the real fix is
+reviewed, tested, and merged -- not before.
+
+**This is a rebuild from a description, not a recovered-and-verified
+patch.** The original `.patch` never resurfaced. If it does later, it
+should be diffed against what actually shipped here rather than assumed
+identical -- not expected to matter (the doc was detailed enough to
+reconstruct faithfully, and this section will be updated if a real
+divergence turns up), but named so it isn't silently assumed away
+(pm-reviewer finding).
+
+**Retroactive check on the live account, before assuming "unprotected"
+meant "already harmed": pulled the real `bot-state-live` git branch
+(`origin/bot-state-live`) and read both `journal.db` (0 rows, ever) and
+`munger.log` directly** (pm-reviewer finding -- this milestone was
+otherwise purely forward-looking). Every single live run since M20 went
+live (2026-08-16 through 2026-09-01, 13 runs) logged
+`Run complete: 0 liquidations, 0 buys planned` -- the live account has
+never held a position and never placed an order. **Neither bug actually
+fired in production**; both were live-but-dormant, not live-and-harmful.
+This doesn't reduce the urgency of fixing them before the account
+actually gets funded/positioned, but it does mean there is no bad trade
+to unwind or investigate as part of this milestone.
+
+**Fix 1 -- top-ups bypassed the Graham entry gates (`portfolio.py::generate_buy_queue`).**
+The top-up loop iterated `current_holdings` without consulting
+`screen_results`, so it could add to a position the current screen
+explicitly refuses to open -- averaging down into a deteriorating position
+at any price, the exact thing the margin-of-safety gates exist to prevent.
+Fix: build a `buyable_now` set from `screen_results["buyable"]` and skip
+any holding not in it (logged, not silently dropped). A holding absent
+from the screen entirely (delisting, symbol change) is conservatively
+treated the same way -- not toppable, since buyability can't be confirmed
+for a ticker the screen can't see. **Disposition (pm-reviewer finding):**
+a skipped holding only logs at `INFO`, not an alert -- deliberate, since a
+holding drifting out of buyability while still owned is the system's
+normal, expected DESIGN.md §3.4 behavior ("growing out of cheap is
+success"), not an anomaly; alerting on it daily would be alert fatigue
+for routine operation, unlike Fix 2's `unresolved` case below, which is
+genuinely anomalous. The position isn't silently stuck forever either --
+it stays a normal HOLD and is topped up again automatically the next run
+it re-qualifies as buyable.
+
+**Fix 2 -- a data gap on a held position triggered false liquidation
+(`portfolio.py::process_sells`, `bot.py`).** `fetch_metrics` returning
+`None` was struck identically whether the cause was a genuine quality
+failure, a delisting, a symbol change, an acquisition close, or a
+transient yfinance failure -- and the existing fetch-fraction guard
+doesn't catch a single bad ticker among many holdings (one miss among 15
+is 93.3%, comfortably past the 90% floor). Fix: unreadable holdings are
+collected separately as `unresolved`, hold their existing strike streak
+steady (neither incremented nor reset -- absence of data is not evidence
+either way), and surface via alert/non-zero exit rather than being struck.
+Contract change: `process_sells` now returns `(to_liquidate, unresolved)`;
+`_process_sells_if_data_is_healthy` propagates the tuple on all exit paths.
+**Disposition path for `unresolved` (pm-reviewer finding -- not stated
+originally):** the alert triggers `bot.run`'s existing non-zero exit,
+which fails the GitHub Actions run and surfaces the failure notification
+-- the same mechanism M20 already established for a reconciliation
+mismatch (see that milestone's row above). No automatic action beyond
+the alert: a ticker recurs as `unresolved` every run until either
+yfinance data resolves on its own (transient failure, self-heals) or a
+human investigates the named ticker and acts manually (confirms a
+delisting/acquisition and closes the position by hand, or determines it
+was transient and no action is needed). Its strike streak stays frozen
+throughout, so it can't be auto-liquidated by attrition while stuck. This
+matches the project's existing fail-loud/act-manually posture rather than
+inventing a new auto-resolution path -- deliberately, since auto-acting
+on ambiguous data is the exact failure mode this fix removes.
+
+**Fix 3 -- strike cadence was calibrated for the wrong trading cadence
+(`config.py`).** `STRIKES_TO_LIQUIDATE = 2` was sized for the quarterly
+cadence `DESIGN.md` originally assumed; at the actual daily cadence it
+means two consecutive daily yfinance reads is enough to force a real
+liquidation, against yfinance's own acknowledged field-level flakiness.
+`REBALANCE_DRIFT_BAND_PCT` already solves the equivalent buy-side noise
+problem; nothing solved it sell-side. Fix per the review doc: retune to
+`STRIKES_TO_LIQUIDATE = 10` (~2 trading weeks) as the smallest change that
+stops the hair-trigger -- explicitly flagged by the doc's own author as a
+judgment call, not a clean bug fix, with the more structurally faithful
+fix (decoupling sell-evaluation cadence from the daily screen entirely,
+onto its own weekly/monthly tick) left as an open design question for the
+user rather than decided unilaterally here. Not deciding that larger
+question is this milestone's own scope boundary, not an oversight.
+**Explicit bundling decision (pm-reviewer finding -- was implicit):**
+shipping Fix 3 in the same commit/review/merge cycle as the three
+confirmed bugs, rather than splitting it into its own milestone, on the
+grounds that the kill switch already gates *all four* fixes identically
+until a human explicitly removes it and re-enables `LIVE_TRADING_ENABLED`
+(Fix 4) -- bundling doesn't let a judgment call slip into production any
+faster or any less visibly than shipping it alone would, since nothing
+here auto-resumes live trading regardless. Splitting it out would mean a
+second full review/test/push cycle for one three-line config change with
+no offsetting safety benefit.
+
+**Fix 4 -- `LIVE_TRADING_ENABLED` gated a webpage, not live trading
+(`bot.py`).** `config.LIVE_TRADING_ENABLED` was referenced only in
+`report.py`, to decide whether to render `real-money.html`. It reads like
+a trading safety gate; it wasn't one -- the live workflow could place real
+orders whenever Alpaca secrets were populated and no kill switch was set,
+regardless of this flag. Fix: enforced in `bot.run`, after both kill-switch
+checks and before `ExecutionModule` is constructed -- if
+`not config.PAPER_TRADING and not config.LIVE_TRADING_ENABLED`, alert and
+return screen-only, broker client never even constructed. Paper is
+unaffected (the check only fires when `PAPER_TRADING` is false). Note:
+`daily-trade-live.yml` does not currently set `MUNGER_LIVE_TRADING_ENABLED`
+-- after this merges, the live workflow is screen-only until that env var
+is added deliberately, on top of removing the kill switch. Both steps are
+required to resume live trading, not just one.
+
+**Deliberately not fixed this milestone** (per the review doc, carried
+forward rather than silently dropped): `MAX_SINGLE_POSITION_WEIGHT` is
+dead code (equal-weight 6.67% never reaches the 12% cap); no sector
+constraint exists anywhere in `screener.py`/`portfolio.py`
+(`EXCLUDED_SECTORS = ()`); the filing-analysis agent (EDGAR/XBRL) was
+never implemented, so the single-product/litigation failure mode it would
+catch is fully unmitigated; ROE at 30% score weight rewards buybacks
+mechanically (shrinking equity raises ROE) with no ROIC/ROA cross-check.
+Changing any of these is a position-sizing/scoring-thesis decision, not a
+drive-by in a bug-fix milestone -- warrants its own milestone with a
+`warren-buffett` pass if pursued.
+
+**Still open per the review doc, carried forward as follow-up items, not
+in this milestone's scope:** whether Alpaca actually accepts notional on
+LIMIT orders is unverified against a real order (`execution.market_buy`'s
+own docstring notes Alpaca's docs contradict themselves; if rejected,
+`_submit_and_check` returns `None` and the run reports success with zero
+fills -- a silent no-op); the live P&L upload's IAM condition doesn't
+cover the `live/` prefix and 403s every run; the score's benchmark and
+evaluation horizon are undefined, so nothing establishes the composite
+score's 40%-ROE/8%-FCF-yield weighting predicts anything.
+
+**Success criteria beyond tests+review+CI (pm-reviewer finding, against
+M20's own row-784 precedent of dry-running safety mechanisms before
+trusting them unattended):** unit tests prove the logic in isolation but
+not that the real run wires it correctly end to end. Before the kill
+switch comes off, this milestone also needs a screen-only `workflow_dispatch`
+of `daily-trade-live.yml` (kill switch still on, so no orders regardless)
+confirming from the real logs that: (1) a currently-non-buyable holding
+(if any exist once the account is funded) logs the new "not topping up"
+line rather than silently vanishing from consideration; (2) the run
+completes with the new `LIVE_TRADING_ENABLED` check visibly evaluated
+(log line or alert, not just "no crash"). A genuinely live-fire test of
+Fix 2's `unresolved` path (a real held ticker returning no data) isn't
+practical to force on demand -- covered by the real (non-mocked) unit
+tests instead, same reasoning M23 used for its own unforceable half.
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| Temporary `GLOBAL_KILL_SWITCH` committed to `main`, both accounts halted | done | 2026-09-02 -- commit `6b8edb1`, ahead of this milestone's own review gates, given confirmed live exposure (see milestone intro). User explicitly confirmed adding it before it was pushed. |
+| `pm-reviewer` pass on this section | done | 2026-09-02 -- findings folded in directly above (rebuild-vs-recovered-patch caveat, retroactive live-journal check, disposition paths for Fix 1/Fix 2, explicit Fix 3 bundling decision, live-verification success criteria). |
+| Retroactive check: did either bug already cause a real bad trade on the live account? | done | 2026-09-02 -- checked directly, not assumed: `origin/bot-state-live`'s `journal.db` has 0 rows ever, and `munger.log` shows `0 liquidations, 0 buys planned` on all 13 live runs since 2026-08-16. Both bugs were live but dormant -- no bad trade occurred. |
+| Fix 1: buy queue respects the current screen's `buyable` gate | done | 2026-09-02 -- `portfolio.generate_buy_queue`; 3 new tests. |
+| Fix 2: `process_sells` splits liquidation from unresolved data gaps | done | 2026-09-02 -- contract change to `(to_liquidate, unresolved)`, propagated through `bot._process_sells_if_data_is_healthy` and `bot.run`; 2 tests inverted (not deleted), 2 new tests. |
+| Fix 3: `STRIKES_TO_LIQUIDATE` retuned 2 -> 10 | done | 2026-09-02 -- config-driven test assertions (`config.STRIKES_TO_LIQUIDATE`, not hardcoded) so they survive the next retune. |
+| Fix 4: `LIVE_TRADING_ENABLED` actually gates live order placement | done | 2026-09-02 -- gate placed in `bot.run` after both kill-switch checks, before `ExecutionModule` construction; 2 new tests (refuses without the flag, proceeds with it). |
+| Tests (new + two inverted from asserting the old buggy behavior) | done | 2026-09-02 -- suite went 398 -> 406 passing. |
+| `staff-engineer-reviewer` pass on the full diff | done | 2026-09-02 -- all four fixes confirmed correct against the real `screener.py` schema and every call/return path; two real findings, both addressed below rather than filed as accepted tradeoffs. |
+| **staff-engineer-reviewer finding, fixed: the degraded-holdings-fetch abort silently exited 0** | done | 2026-09-02 -- `_process_sells_if_data_is_healthy`'s abort (>=10% of held tickers unreadable) only `logger.error()`'d, never called `_alert()` -- backwards relative to Fix 2's own goal, since a systemically bad fetch (arguably worse signal than one `unresolved` ticker) produced *weaker* operator-facing signal than a single unresolved ticker does. Fixed: now takes `alerts` and calls `_alert()`, exit 1. `test_run_skips_sell_evaluation_when_holdings_data_mostly_missing` updated from asserting `exit_code == 0` to `== 1`. |
+| **staff-engineer-reviewer finding, noted not fixed: crash-recovery window between strike-reset and actual liquidation order** | noted | 2026-09-02 -- `process_sells` resets a liquidated ticker's strike streak to 0 and saves state *before* `bot.run` ever calls `exec_module.liquidate()`; a crash/kill in that narrow window loses all memory that a liquidation was decided, and the position's strike streak restarts from zero. Pre-existing (predates M24 -- the "reset now" logic is original M6/M7 design), but Fix 3 makes the consequence materially worse: re-detection of a genuinely quality-failing position now costs up to ~2 trading weeks (`STRIKES_TO_LIQUIDATE=10`) instead of ~2 days. Not fixed here: closing it properly means moving the strike-reset/save to *after* `exec_module.liquidate()` confirms, which changes the `portfolio.py`/`bot.py` boundary this milestone didn't otherwise touch -- a real fix, not a bug-fix-milestone drive-by. Fails conservatively (toward inaction, not double-selling), and `execution.py`'s own `client_order_id` idempotency check already prevents the more dangerous duplicate-order failure mode in the same crash window. Follow-up, not blocking this milestone. |
+| **staff-engineer-reviewer finding, fixed: `DESIGN.md` §3.1 described the old contract** | done | 2026-09-02 -- still said `process_sells(current_holdings, new_market_data)` returns "a list of tickers to liquidate if strikes reach 2." Updated to the real `(to_liquidate, unresolved)` tuple, the `state` parameter, and `STRIKES_TO_LIQUIDATE=10`. `portfolio.py`'s own docstring was already accurate; this was doc-only drift. |
+| Full suite green, `ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` clean | done | 2026-09-02 -- 406 passing, ruff check clean, mypy clean. `ruff format --check` flags 3 pre-existing files (`report.py`, `tests/test_config.py`, `tests/test_report.py`), none touched by this milestone -- matches the review doc's own note that this predates M24 and isn't in CI today. |
+| Push, PR opened | done | 2026-09-02 -- branch `fix/live-trading-safety` (commit `66ff1c8`), PR [#2](https://github.com/jimmyokusa/munger/pull/2). User chose branch+PR, matching the source doc's own original plan, over this project's more common recent pattern (M19-M23) of pushing bug-fix milestones straight to `main`. Note: this repo's `ci.yml` triggers only on push to `main`, not on pull requests -- there's no PR-side CI check here; the 406/ruff/mypy numbers above were run locally against the exact CI commands as the substitute. |
+| Live-verification `workflow_dispatch` of `daily-trade-live.yml` (kill switch still on) before it comes off | todo | User confirmed this should run before the kill switch comes off (see "Success criteria" above -- confirms the new code paths actually execute in the real run, not just in unit tests). Do after merge, once the branch's code is on `main`. |
+| Add `MUNGER_LIVE_TRADING_ENABLED` to `daily-trade-live.yml` and remove `GLOBAL_KILL_SWITCH` to actually resume live trading | todo | Two separate deliberate steps, not one -- see Fix 4. User decision, not automatic on merge. |
