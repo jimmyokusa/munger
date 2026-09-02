@@ -77,16 +77,27 @@ class StateTracker:
 
 def process_sells(
     current_holdings: Holdings, new_market_data: dict[str, data.Metrics | None], state: StateTracker
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Re-check every current holding against the Munger quality floors only.
 
     Graham's entry gates (P/E, P/E x P/B, size) deliberately do NOT apply
     here -- a stock growing out of "cheap" is success, not a sell signal
     (DESIGN.md 3.4). A hard-failing check earns a strike; a clean check
-    resets the streak; a ticker missing from new_market_data (delisting,
-    data failure) counts as a strike, conservatively. Two consecutive
-    strikes means liquidate. Mutates and saves `state` as a side effect;
-    returns the list of tickers to liquidate.
+    resets the streak. `config.STRIKES_TO_LIQUIDATE` consecutive strikes
+    means liquidate. Mutates and saves `state` as a side effect; returns
+    `(to_liquidate, unresolved)`.
+
+    A ticker missing from `new_market_data` is NOT struck. `fetch_metrics`
+    returns None identically for a genuine quality-relevant data problem
+    and for a delisting, symbol change, or acquisition close -- absence of
+    data is not evidence of failing quality, and striking it as if it were
+    can liquidate a position that was never actually re-evaluated (M24
+    fix: reproduced against a real acquisition-close scenario, where two
+    consecutive unreadable checks alone -- no quality read at all --
+    liquidated the position). Unreadable holdings are collected separately
+    as `unresolved`; their strike streak is held steady (neither
+    incremented nor reset -- an unreadable check is no evidence either
+    way), and the caller is expected to alert on them for manual review.
 
     Reconciliation against the previous run's journal-expected holdings
     (DESIGN.md 3.4/3.6) is not implemented here -- it depends on the
@@ -101,9 +112,18 @@ def process_sells(
     exclude `to_liquidate` tickers from the buy queue's inputs.
     """
     to_liquidate = []
+    unresolved = []
     for ticker in current_holdings:
         metrics = new_market_data.get(ticker)
-        passed = metrics is not None and screener.pass_munger_quality_floors(metrics)[0]
+        if metrics is None:
+            unresolved.append(ticker)
+            logger.error(
+                "%s: held position returned no data -- not striking; "
+                "needs manual review (delisting/symbol change/acquisition?)",
+                ticker,
+            )
+            continue
+        passed = screener.pass_munger_quality_floors(metrics)[0]
         if passed:
             state.reset_strikes(ticker)
         else:
@@ -117,7 +137,7 @@ def process_sells(
             # bad check instead of two.
             state.reset_strikes(ticker)
     state.save()
-    return to_liquidate
+    return to_liquidate, unresolved
 
 
 def generate_buy_queue(
@@ -149,7 +169,23 @@ def generate_buy_queue(
     run's `to_liquidate` list, the caller must exclude it from
     `current_holdings` here -- otherwise a position slated for sale
     could get topped up in the same run it's about to be closed.
+
+    A top-up is a purchase, not a hold: unlike process_sells (where
+    Graham's entry gates deliberately don't apply -- a stock growing out
+    of "cheap" is success, not a sell signal), a top-up must still pass
+    the current screen's buyability gate. Without this, the loop below
+    would add to a position the current screen explicitly refuses to
+    open, compounding into averaging down into a deteriorating position
+    at any price under a daily cadence -- the exact behavior the
+    margin-of-safety gates exist to prevent (M24 fix, reproduced against
+    the real function: a holding failing graham_pe/graham_pe_times_pb
+    still received a top-up order before this check existed). A holding
+    absent from screen_results entirely (delisting, symbol change) has no
+    row and is therefore also not in buyable_now -- conservatively not
+    topped up, since buyability can't be confirmed for a ticker the
+    screen can't see.
     """
+    buyable_now = set(screen_results.loc[screen_results["buyable"], "symbol"].astype(str))
     portfolio_value = available_cash + sum(current_holdings.values())
     buffer = portfolio_value * config.CASH_BUFFER_PCT
     deployable_cash = max(0.0, available_cash - buffer)
@@ -165,6 +201,12 @@ def generate_buy_queue(
     for ticker in sorted(current_holdings):
         if deployable_cash < config.MIN_ORDER_NOTIONAL:
             break
+        if ticker not in buyable_now:
+            logger.info(
+                "%s: holding not buyable in the current screen -- holding, not topping up",
+                ticker,
+            )
+            continue
         gap = per_position_cap - current_holdings[ticker]
         if gap < drift_threshold:
             continue  # within the daily-noise tolerance band, not real drift

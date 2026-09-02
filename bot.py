@@ -64,30 +64,39 @@ def _process_sells_if_data_is_healthy(
     current_holdings: portfolio.Holdings,
     holdings_metrics: dict[str, data.Metrics | None],
     state: portfolio.StateTracker,
-) -> list[str]:
+    alerts: list[str],
+) -> tuple[list[str], list[str]]:
     """Run process_sells, unless too much of the holdings' data is missing.
 
     The universe-wide fetch-fraction abort (_fetched_fraction) only
     covers the buy-side screen; this second, independent fetch for
-    currently-held tickers feeds process_sells's strike logic directly,
-    where a missing ticker counts as a strike. A degraded fetch here
-    (e.g. the same yfinance rate-limit cooldown from the first fetch
-    still in effect) would otherwise silently strike real holdings
-    toward liquidation with no distinguishing signal from a genuine
-    quality failure (staff-engineer-reviewer finding).
+    currently-held tickers feeds process_sells's strike logic directly.
+    Since M24, a missing ticker is not struck by process_sells itself
+    (see its docstring), but a badly degraded fetch here (e.g. the same
+    yfinance rate-limit cooldown from the first fetch still in effect)
+    would otherwise flood every holding into `unresolved` at once --
+    still worth aborting on rather than alerting on every single holding
+    (staff-engineer-reviewer finding, pre-M24).
+
+    M24 fix (staff-engineer-reviewer finding): this used to only
+    logger.error() on the abort path, never call _alert() -- so a
+    systemically degraded holdings fetch (arguably a worse signal than
+    one unresolved ticker) silently exited 0 with no GH Actions
+    annotation, while a single unresolved ticker (see process_sells)
+    correctly alerts. Takes `alerts` now specifically to close that gap.
     """
     if not current_holdings:
-        return []
+        return [], []
     fetched = sum(1 for m in holdings_metrics.values() if m is not None)
     fraction = fetched / len(current_holdings)
     if fraction < config.MIN_UNIVERSE_FETCH_FRACTION:
-        logger.error(
-            "Skipping sell evaluation: only %.1f%% of held tickers' data fetched cleanly "
-            "(need >= %.1f%%) -- treating as a data problem, not a quality failure",
-            fraction * 100,
-            config.MIN_UNIVERSE_FETCH_FRACTION * 100,
+        _alert(
+            alerts,
+            f"Skipping sell evaluation: only {fraction:.1%} of held tickers' data fetched "
+            f"cleanly (need >= {config.MIN_UNIVERSE_FETCH_FRACTION:.1%}) -- treating as a "
+            "data problem, not a quality failure",
         )
-        return []
+        return [], []
     return portfolio.process_sells(current_holdings, holdings_metrics, state)
 
 
@@ -264,13 +273,26 @@ def run(run_date: str | None = None) -> int:
 
     if _global_kill_switch_active():
         logger.warning(
-            "GLOBAL_KILL_SWITCH active -- screen-only run (all accounts), "
-            "no orders will be placed."
+            "GLOBAL_KILL_SWITCH active -- screen-only run (all accounts), no orders will be placed."
         )
         return _finish(alerts)
 
     if _kill_switch_active():
         logger.warning("KILL_SWITCH active -- screen-only run, no orders will be placed.")
+        return _finish(alerts)
+
+    # M24 fix: config.LIVE_TRADING_ENABLED previously gated only
+    # report.py's real-money.html rendering -- it read like a live-
+    # trading safety gate but wasn't one. The live workflow could place
+    # real orders whenever Alpaca secrets were populated and neither
+    # kill switch above was set, regardless of this flag. Paper is
+    # unaffected: this only fires when PAPER_TRADING is false.
+    if not config.PAPER_TRADING and not config.LIVE_TRADING_ENABLED:
+        _alert(
+            alerts,
+            "Live mode requested but MUNGER_LIVE_TRADING_ENABLED is not set -- "
+            "screen-only run, no orders placed.",
+        )
         return _finish(alerts)
 
     exec_module = execution.ExecutionModule(run_date)
@@ -295,9 +317,21 @@ def run(run_date: str | None = None) -> int:
 
     holdings_metrics = data.fetch_all_metrics(list(current_holdings), phase="holdings check")
     state = portfolio.StateTracker()
-    to_liquidate = _process_sells_if_data_is_healthy(current_holdings, holdings_metrics, state)
+    to_liquidate, unresolved = _process_sells_if_data_is_healthy(
+        current_holdings, holdings_metrics, state, alerts
+    )
     if to_liquidate:
         _alert(alerts, f"Liquidation(s) this run: {', '.join(sorted(to_liquidate))}")
+    if unresolved:
+        # M24 fix: these holdings returned no data at all -- not struck,
+        # not liquidated, but real enough to need a human look (see
+        # process_sells's docstring for why data absence isn't treated
+        # as a quality failure).
+        _alert(
+            alerts,
+            f"Held position(s) returned no data, needs manual review: "
+            f"{', '.join(sorted(unresolved))}",
+        )
 
     # Caller contract from the M6/M7 review: a ticker slated for
     # liquidation this run must not also be topped up by the buy queue.

@@ -136,7 +136,22 @@ MIN_ORDER_NOTIONAL = 50.0  # orders below this are skipped as dust
 # target is never trimmed to rebalance down (DESIGN.md 3.4: this module
 # never sells to buy, and a rally is success, not a sell signal).
 REBALANCE_DRIFT_BAND_PCT = 0.10
-STRIKES_TO_LIQUIDATE = 2
+# M24 fix: this counts runs, and runs are daily -- 2 was sized for the
+# quarterly cadence DESIGN.md originally assumed (roughly six months of
+# sustained deterioration), but at the actual daily cadence it meant two
+# consecutive daily yfinance reads was enough to force a real
+# liquidation, against yfinance's own acknowledged field-level flakiness
+# (the system's weakest input). REBALANCE_DRIFT_BAND_PCT above already
+# solves the equivalent buy-side noise problem; nothing solved it
+# sell-side until now. 10 (~2 trading weeks of uninterrupted quality
+# failure; any single clean check resets the streak to zero) is the
+# smallest change that stops the hair-trigger, not a precise derivation
+# -- still well short of the ~2 quarters DESIGN.md's philosophy implies.
+# The more faithful fix is decoupling sell evaluation onto its own
+# weekly/monthly tick while the screen keeps running daily; that's a
+# structural change to the run loop deliberately left as an open design
+# question rather than folded into this retune.
+STRIKES_TO_LIQUIDATE = 10
 
 # --- Execution module (DESIGN.md 3.5) ---
 # M20 (DESIGN_REAL_MONEY.md §3.1): env-driven, not a bare literal, so the
