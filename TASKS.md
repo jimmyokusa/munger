@@ -1182,3 +1182,162 @@ tests instead, same reasoning M23 used for its own unforceable half.
 | Live-verification `workflow_dispatch` of `daily-trade-live.yml` (kill switch still on) before it comes off | done, with a caveat | 2026-09-02 -- run [33641705798](https://github.com/jimmyokusa/munger/actions/runs/33641705798), all steps green, 9m58s, `screen_only=true` (belt-and-suspenders on top of `GLOBAL_KILL_SWITCH`). **Correction on what this actually proved:** the run correctly stopped at `GLOBAL_KILL_SWITCH active` (logged `2026-09-02T14:32:55Z WARNING ... GLOBAL_KILL_SWITCH active`) -- which fires *before* `_kill_switch_active()` and Fix 4's own `LIVE_TRADING_ENABLED` gate in `bot.run`'s check order. So this confirmed the merged M24 code runs end-to-end without errors (screen completes, state persists, no crash/import break), but did **not** actually exercise Fix 4's new gate or Fix 1's buyable-skip log line -- both are structurally unreachable while `GLOBAL_KILL_SWITCH` is present, which is every dispatch made "before the kill switch comes off" by construction. The "Success criteria" row above overclaimed what was achievable here; Fix 4 is verified by its two dedicated unit tests (`test_run_refuses_to_trade_live_without_the_live_trading_flag`, `test_run_trades_live_when_the_live_trading_flag_is_set`) instead, same reasoning M23 used for its own unforceable half (a live-fire test of Fix 4 structurally requires removing the kill switch first, which defeats the point of testing it beforehand). |
 | Add `MUNGER_LIVE_TRADING_ENABLED` to `daily-trade-live.yml` and remove `GLOBAL_KILL_SWITCH` to actually resume live trading | todo | Two separate deliberate steps, not one -- see Fix 4. User decision, not automatic on merge -- not done as part of this session. |
 | **GCP prod deploy: `daily-screen` Cloud Run Job rebuilt and repinned to the merged M24 code, verified live** | done | 2026-09-02 -- user request ("keep going until the full, new, fixed version is deployed and running on GCP"), independent of the GitHub Actions trading path (M24's actual fixes live in `bot.py`/`portfolio.py`, which `daily_screen.py` never imports for trading -- it's screen-only by construction, per DESIGN.md's split), but the shared image ships the whole repo, so this keeps GCP prod current with `main`. Used the existing `deploy/cloudrun/deploy.sh daily-screen --verify` (built via Cloud Build with `DOCKER_BUILDKIT=1`, pinned to digest `sha256:0ee20a04...`, not a bare `:latest` tag -- see that script's own header for why both matter). Verification execution `daily-screen-gvfv8` succeeded (`succeededCount=1`, ~14.7 min). Confirmed live, not just "job succeeded": `gramunger.com` returns `HTTP 200` and its rendered page shows today's date (2026-09-02), proving the new image's output actually reached the public site through the GCS FUSE mount, not just that the Job ran. `report-web` itself was not rebuilt -- correctly so, per its own Dockerfile's header comment: it bakes in no report content, only nginx config, which M24 didn't touch. |
+
+## Ops — Paper-account Alpaca credential rotation + full reset (2026-09-02)
+
+Two related account-hygiene actions taken mid-session, adjacent to M24
+but not part of that milestone's own scope -- recorded separately so
+they're not lost between M24's fix work and the Design v2.2 doc below.
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| Paper-account Alpaca key/secret rotated in GitHub Actions secrets | done, with gaps noted (pm-reviewer finding) | 2026-09-02 -- user provided the new key/secret pair directly in chat; `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` updated via `gh secret set` (piped via stdin, never written to a file or echoed back in full). **Verified live, not assumed:** a direct `TradingClient.get_account()` call against the new credentials returned `status: ACTIVE`. Live-account secrets (`ALPACA_LIVE_API_KEY`/`ALPACA_LIVE_SECRET_KEY`) confirmed untouched -- only the two paper-account secret names were written. **Not confirmed:** why the rotation happened (routine replacement vs. a suspected leak was never stated, and wasn't asked), and whether the *old* key/secret pair was revoked on Alpaca's own side -- only that the new pair authenticates. If the old key leaked, it may still be live at Alpaca regardless of what's in GitHub secrets. No stated rollback path either, beyond re-requesting credentials from the user, if the new pair later turns out wrong. Low-stakes for a paper account specifically, but this touches the same secrets machinery the live-account path uses -- worth asking the user directly next time this comes up, not assuming routine. |
+| User manually liquidated all paper-account positions | done | 2026-09-02 -- user's own action, taken directly on Alpaca, not through this codebase. Confirmed via the Alpaca API: paper account shows 0 open positions, $102,334.49 cash. |
+| `state.json` on `bot-state` reset to `{}` | done, verified live | 2026-09-02 -- the persisted strike counters (`{"FOX": 1, "LPG": 1}`) were stale against the now-empty account (FOX/LPG were closed by hand, outside `process_sells`, so nothing reset their counters the normal way). Reset directly via a `git worktree` against `bot-state`, committed as `d218720`, pushed. **Verified live, not just committed (pm-reviewer finding: the other two rows in this table confirm live via a direct API check; this one initially only cited the commit):** `git fetch origin bot-state` + `git show origin/bot-state:state.json` read back `{}` directly off `origin`, same session, after the push. `journal.db` deliberately left untouched (out of this action's stated scope) -- the next paper run may log a harmless M10-standard reconciliation warning (expected holdings vs. an emptied broker account), which is existing, correct, non-fatal behavior, not a new bug. **Note for Design v2.2's own M25** ("reconcile the FOX/LPG divergence by hand"): this action likely already *is* that reconciliation for the `state.json` half of it -- before scheduling M25 as a fresh task, check this row and `DESIGN_V2.md`'s own M25 caveat first; both already flag the overlap, so treat "M25 not yet started" as the default assumption to verify, not the default fact. |
+
+## Design v2.2 — authored, reviewed, and merged to `main` (added 2026-09-02, user request)
+
+Not a code milestone -- a design document landing on `main`
+(`DESIGN_V2.md`, 1152 lines), meant to supersede `DESIGN.md` once its
+own forward milestone plan (M24-M49, continuing this file's own
+numbering) is actually executed. Recorded here as its own section,
+distinct from M24 and from the Ops section above, since it's a
+substantial, independently-reviewable unit of work in its own right.
+
+**Origin.** User pointed at a Google Doc ("munger — Design v2.2") that
+wasn't written in this session -- it's a post-mortem written against a
+real production trade journal from four weeks of paper trading
+(2026-07-27 to 2026-08-10), diagnosing seven structural root causes
+(one shared cadence for three jobs, collapsed no-data/bad-data/
+bad-business states, open-loop execution, an unvalidated data source, no
+falsification criteria, no durability/moat measure, no between-filings
+event monitoring) and proposing a revised architecture, a moat-
+persistence scoring component, a validation framework, and a tiered
+material-event monitor. Pulled via the Google Drive connector, cleaned
+from the Docs export into proper GFM (de-escaped, tables and the JSON
+event-record example reconstructed), and committed to a new branch,
+`design/v2.2`, off `main` post-M24.
+
+**Full review round.** User asked for "all our agents" -- ran
+`staff-engineer-reviewer`, `pm-reviewer`, and `warren-buffett` in
+parallel against the imported doc, each explicitly instructed to give a
+fresh independent read rather than defer to the doc's own embedded §4
+review. All three surfaced real findings; results synthesized into an
+Artifact
+([design/v2.2 review round](https://claude.ai/code/artifact/22ae843e-db26-4a37-8661-bf2eec1a9075))
+before any fix was applied, so the findings were visible before being
+acted on. Highest-confidence convergent findings (independently reached
+by 2+ reviewers): the doc was already stale against `main` (M24 listed
+as pending, already merged; a stale `ruff format` count); the settlement
+pass's "idempotent and blocking" language was policy, not a spec; Tier-2
+qualitative flags auto-halved a live position's weight on a model's
+judgment with no per-instance human sign-off, cutting against the doc's
+own "veto or flag, never boost" framing (pm-reviewer and warren-buffett
+converged on this independently, from process and investment-thesis
+angles respectively); acceptance gates (XBRL/yfinance tolerance,
+filing-agent precision/recall) were named with no threshold; M26 and
+M29 were each several milestones bundled into one, contradicting the
+doc's own "urgent and small" framing; the paper-restart baseline was
+sequenced to have its process changed out from under it mid-validation;
+and several new external dependencies (EDGAR/XBRL volume, a corporate-
+action data source, the Tier-2 event-retrieval mechanism) were
+unconfirmed, unlike this project's own D0-gate precedent for exactly
+this kind of dependency.
+
+**Fixes integrated.** Every concrete finding folded directly into
+`DESIGN_V2.md` on the `design/v2.2` branch: currency corrections;
+the settlement pass specified into five concrete rules (partial-fill
+handling, query-failure-vs-genuinely-pending, reuse of the existing
+`KILL_SWITCH` mechanism instead of new blocking behavior, a stale-block
+escalation alert, idempotent re-run semantics); `state.json`'s lossy
+integer-to-period migration given an explicit policy (reset in-flight
+streaks to empty, don't synthesize a fabricated period) and a versioned
+schema; the "evaluate touches broker: No" self-contradiction fixed to
+"read-only"; two previously-unconfirmed dependencies given a concrete
+candidate mechanism using infrastructure this project already has
+(Alpaca's Assets API for corporate-action detection, Alpaca's News
+API -- already integrated in `news_update.py` -- for Tier-2 event
+retrieval). **Correction (pm-reviewer finding, this TASKS.md entry
+originally said these were "closed" -- overstated):** reusing an
+existing integration point is not the same as confirming it meets the
+new use case. `DESIGN_V2.md`'s own milestone table already reflects
+this correctly -- M29b tests corporate-action detection only against a
+synthetic fixture, and M36 still requires EDGAR volume to be "measured
+directly" before switchover -- so the design doc itself doesn't
+overclaim here; this summary did, and is fixed above. Numeric thresholds
+added everywhere a gate was named without one; and the Tier-2 split
+that closes the auto-halving gap -- routine flags still auto-halve,
+structural-threat flags (the GNTX class: a disclosed, dated, specific
+threat to the core product category) now hold the position at its last
+decision and route to a logged human call instead.
+
+**PM planning pass.** A dedicated `pm-reviewer` planning pass (not a
+review -- asked to produce an actual revised plan) split M26 into 5
+independently-shippable milestones and M29 into 3, each sized against
+this document's own M44-M47 granularity for calibration. It also caught
+a real internal inconsistency: §3.7 gates the paper restart on §3.1-3.3
+landing, but the milestone table sequenced the restart (Epic B) in
+Tranche 1, *ahead of* Epic C (§3.1) -- contradicting the design's own
+stated gate. Fixed by resequencing Epic D (data integrity) to run in
+parallel with Epic A (the two touch disjoint modules -- `screener.py`/
+`data.py` vs. `portfolio.py`/`execution.py`/`journal.py` -- with no real
+dependency between them) and moving the restart itself into a new
+Tranche 3, gated on Epic A + Epic C + Epic D all complete, so the paper
+record takes one clean discontinuity, not two. Tranche count went from
+3 to 4 as a mechanical result (the qualitative layer, unchanged in
+content, is now Tranche 4). The original "roughly six months" estimate
+was also re-derived from this project's own demonstrated milestone
+velocity (`TASKS.md`'s own M20-M23 history) rather than re-asserted --
+lands at the same rough magnitude (~5-6 months to the live-trading gate)
+but for a stated, checkable reason: not because the work is large, but
+because M33's own exit criterion requires a full fiscal quarter of
+hand-verified data after the restart, a structural calendar floor no
+amount of engineering speed shortens.
+
+**Merged.** `design/v2.2` merged into `main` via a `--no-ff` merge
+commit (`2147830`), preserving the branch's own commit history rather
+than squashing it, since each commit on the branch (import, content
+fixes, planning-pass restructure) documents a distinct stage of review
+that's worth being able to `git log` back to individually. Branch
+deleted locally and on `origin` after merge. `DESIGN_V2.md` is on `main`
+now; its own M24-M49 are a forward plan, not started -- no corresponding
+`TASKS.md` milestone rows exist yet for M25 onward (Design v2.2's own),
+since none of that work has actually begun this session.
+
+**Process gap, named plainly rather than smoothed over (pm-reviewer
+finding):** the entire review -- three subagents, findings synthesis,
+fix integration, the planning-pass restructure -- was agent-driven, and
+the merge to `main` went directly (`git merge`), not through a PR the
+way M24 went through PR #2. For a code change that's a minor process
+variance; for a 1152-line document that will govern real judgment calls
+later (moat-scoring weights, which Tier-2 flags count as
+"structural-threat," a ~5-6 month sequencing commitment), it means
+there's no PR thread for a future reader to audit, and nothing in this
+record confirms the user read the final merged content end to end
+before it landed, only that the user directed each step (review,
+integrate, plan, merge) and saw the interim summaries along the way.
+Mitigating factor: merging the doc changed no code and no running
+behavior -- `DESIGN_V2.md` only starts to matter once M25 onward
+actually begins, so there's a natural checkpoint before any of this
+becomes consequential. Not fixed retroactively (redoing the merge
+through a PR after the fact wouldn't add real review, just paperwork);
+recorded so a future session doesn't assume this went through the same
+human-reviewed-PR gate M24 did. If it matters, a read-through before
+starting M25 closes the gap for real.
+
+**No stated re-review trigger (pm-reviewer finding).** The doc has a
+success bar for itself as a plan (authored, reviewed, merged) but no
+stated condition for when it should be revisited mid-execution rather
+than only at the ~5-6 month live-trading gate -- e.g. if M27's
+regression coverage reveals the settlement-pass design in §3.3 doesn't
+hold up, or if M40's GNTX-outranks-HRMY acceptance test fails. Not
+resolved here; worth deciding explicitly once M25 actually starts,
+rather than assuming the plan is right until the very end.
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| Import + clean the source Google Doc into `DESIGN_V2.md` | done | 2026-09-02 -- branch `design/v2.2`, commit `9182816`. |
+| Full review round: `staff-engineer-reviewer`, `pm-reviewer`, `warren-buffett` | done | 2026-09-02 -- run in parallel, each an independent fresh read; synthesized into an Artifact before any fix applied. |
+| Integrate the review round's fixes into `DESIGN_V2.md` | done | 2026-09-02 -- commit `404b3ba`. |
+| `pm-reviewer` planning pass: split M26/M29, resequence Epic D, fix the restart-gate inconsistency, re-derive the time estimate | done | 2026-09-02 -- commit `06e1cfb`. |
+| Merge `design/v2.2` into `main` | done | 2026-09-02 -- `--no-ff` merge commit `2147830`; branch deleted. |
