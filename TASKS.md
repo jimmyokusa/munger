@@ -1415,7 +1415,7 @@ to M27+ (real findings, all fixed, not just noted):**
 | M28: TOP_UP vs NEW_POSITION derived correctly | done | 2026-09-02 |
 | `staff-engineer-reviewer` pass + all findings fixed | done | 2026-09-02 -- 5 findings, 4 fixed, 1 accepted tradeoff (see table above). |
 | Full suite green, `ruff check`/`ruff format`/`mypy . --config-file mypy.ini` clean | done | 2026-09-02 -- 439 passing (was 406 pre-M26). |
-| Push to `main` and GCP redeploy | todo | Landing together with M29-M30/M36 below in one push; see that section's push/redeploy row. |
+| Push to `main` and GCP redeploy | done | 2026-09-03 -- commit `8d82826` pushed to `main`; `deploy/cloudrun/deploy.sh daily-screen --verify` rebuilt/redeployed the daily-screen Cloud Run Job to the new image digest (`sha256:1c74c030...`) and a live verification execution (`daily-screen-2msvw`) succeeded against real GCP infrastructure. |
 
 ## Design v2.2 execution: M29a-c, M30 (added 2026-09-03, continuing the same `/goal` -- "all milestones are implemented and pushed into GCP")
 
@@ -1504,7 +1504,7 @@ before the combined push (real findings, all fixed):**
 | 3rd `staff-engineer-reviewer` pass (full M26-M30/M36 diff) + all 3 findings fixed | done | 2026-09-03 -- `record_order` idempotency, ADV last-trade-price estimate, `xbrl.py` docstring overstatement (see table above). |
 | `pm-reviewer` pass on this TASKS.md write-up + findings corrected | done | 2026-09-03 -- M27/M29c/M36 "done" rows corrected to accurately reflect the design doc's own exit criteria; see each section's write-up. |
 | Full suite green, `ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` clean | done | 2026-09-03 -- 479 passing (was 474 pre-3rd-review). |
-| Push M26-M30 to `main` and GCP redeploy | todo | Next step this session. Landing all three sections (M26-M30, M36) as one combined push -- see the note below M36's table for why. |
+| Push M26-M30 to `main` and GCP redeploy | done | 2026-09-03 -- see M36's push row below for the same commit/deploy/verify details (one combined push covers all three sections). |
 
 ## Design v2.2 execution: M36 -- XBRL shadow mode (added 2026-09-03, Epic D start)
 
@@ -1563,7 +1563,7 @@ follow-up, and is M37's actual prerequisite, not merely its neighbor.
 | Real-fixture regression tests for both data-correctness bugs found | done | 2026-09-03 -- `tests/test_xbrl.py`, 21 tests. |
 | `ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` clean | done | 2026-09-03 |
 | Wire `shadow_compare` into a real run, accumulate + hand-review a full-universe disagreement report | todo | Owner: whoever continues Design v2.2 execution next (this session, if the `/goal` directive is still standing when work resumes) -- scheduled as the immediate next Epic D item after this push, not an indefinitely-deferred gap. The "hand-review" step specifically needs the user, not an agent, since it's the human checkpoint the design doc puts in front of making XBRL authoritative. |
-| Push to `main` and GCP redeploy | todo | Next step this session -- landing together with M26-M30 (see note below). |
+| Push to `main` and GCP redeploy | done | 2026-09-03 -- commit `8d82826` pushed to `main`. Redeployed via `deploy/cloudrun/deploy.sh daily-screen --verify`: image rebuilt and pushed to Artifact Registry, the Cloud Run Job pinned to the new digest (`sha256:1c74c030937e5c1b21726e66fb8e939e01c2427de6b7d06ab3c741a42eeed7dd`), and a live verification execution (`daily-screen-2msvw`) ran to completion successfully (`succeededCount=1 failedCount=0`) against real GCP infrastructure -- this is the same run that would have caught an import-time break or a startup crash from any of M26-M30/M36's changes; it did not surface one. Note `xbrl.py` still isn't called from this execution path (M36's own stated remaining scope, see above), so this verifies the rest of the batch runs cleanly in production, not that shadow-mode has executed live. |
 | M37: switch XBRL to primary + resolve GNTX margin discrepancy | todo | Blocked on the disagreement-report row above, not just sequentially next. |
 
 **Why M26-M30 and M36 land as one combined push** (`pm-reviewer`
