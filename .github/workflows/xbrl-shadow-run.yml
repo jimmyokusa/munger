@@ -1,0 +1,72 @@
+name: XBRL shadow-comparison run (M37 prerequisite, manual)
+
+# Design v2.2 §3.4 / M36-M37: runs xbrl_shadow.py -- a full-universe
+# comparison of SEC EDGAR's XBRL companyfacts against yfinance's own
+# figures, writing every per-field disagreement found to a CSV artifact
+# for a human to review by hand. That review, not this workflow, is
+# what actually gates M37's switchover to XBRL as the primary
+# fundamentals source.
+#
+# Deliberately dispatch-only (no `schedule:` trigger) and deliberately
+# receives NO Alpaca secrets at all -- xbrl_shadow.py never imports
+# execution.py (same architectural guarantee daily_screen.py makes), so
+# omitting the credentials here is defense in depth on top of that, not
+# the only thing preventing a trade. This is a one-time (or occasional,
+# re-run-on-demand) validation cycle, not a recurring production job --
+# unlike daily-screen.yml/daily-trade.yml, it has no persisted git
+# branch to restore from or write back to; every run starts fresh and
+# its only output is the uploaded report artifact.
+#
+# AVOID MANUALLY DISPATCHING NEAR 14:00/14:30 UTC (staff-engineer-
+# reviewer finding): daily-trade.yml (cron 0 14 * * *) and
+# daily-trade-live.yml (cron 30 14 * * *) both run material_events.py's
+# own SEC EDGAR polling as part of their run. xbrl_shadow.py's rate
+# limiter (xbrl.throttled_get) only serializes requests *within this
+# process* -- a concurrent dispatch during one of those crons means two
+# independently-throttled processes each pacing at
+# config.SEC_EDGAR_MAX_REQUESTS_PER_SECOND, whose combined real request
+# rate against SEC EDGAR could exceed the fair-access ceiling both
+# self-throttle to respect individually. A true cross-workflow lock
+# isn't built for this (an occasional, human-triggered diagnostic run
+# doesn't justify the complexity) -- avoiding the overlap window by hand
+# is the accepted mitigation.
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: xbrl-shadow-run
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # A full ~1500-ticker universe pass against EDGAR at
+    # config.SEC_EDGAR_MAX_REQUESTS_PER_SECOND (8 req/s, shared with
+    # the CIK-index and companyfacts fetches) plus yfinance's own full
+    # universe fetch -- generous headroom over the two combined
+    # (daily-screen.yml's own yfinance-only pass budgets 30).
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run XBRL shadow comparison (no broker access, no Alpaca keys)
+        run: python xbrl_shadow.py
+
+      - name: Upload disagreement report for hand review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xbrl-shadow-report-${{ github.run_id }}
+          path: |
+            xbrl_shadow_report.csv
+            munger.log
+          if-no-files-found: warn
+          retention-days: 400

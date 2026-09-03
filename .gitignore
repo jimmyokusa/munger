@@ -5,6 +5,7 @@ screen_results*.csv
 screen_results_archive/
 munger.log
 pnl.json
+xbrl_shadow_report.csv
 
 # Generated static report (report.py) -- regenerated from screen_results.csv
 # and journal.db, not a permanent artifact

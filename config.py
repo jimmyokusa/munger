@@ -365,6 +365,14 @@ SEC_EDGAR_REQUEST_TIMEOUT_SECONDS = 15
 # yet (see DESIGN_V2.md §3.4's own note on this).
 XBRL_DISAGREEMENT_RELATIVE_TOLERANCE = 0.05
 XBRL_DISAGREEMENT_ABSOLUTE_TOLERANCE_PP = 0.01
+
+# xbrl_shadow.py's full-universe disagreement report (M37's prerequisite
+# hand-review artifact, §3.4). Under DATA_DIR like every other persisted
+# output, though this one is a diagnostic report rather than production
+# state -- xbrl_shadow.py's own dispatched workflow uploads it as a
+# GitHub Actions artifact rather than persisting it to a git branch, so
+# this path only needs to exist for the duration of one run.
+XBRL_SHADOW_REPORT_PATH: Path = DATA_DIR / "xbrl_shadow_report.csv"
 # --- News/commentary digest (news_update.py, user request, M22; cadence
 # changed daily -> monthly, user request, M23) ---
 # Second Discord webhook, deliberately separate from DISCORD_WEBHOOK_URL

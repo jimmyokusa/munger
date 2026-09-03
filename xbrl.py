@@ -148,36 +148,66 @@ def get_cik(ticker: str, cik_lookup: dict[str, str] | None = None) -> str | None
     return lookup.get(ticker.upper())
 
 
-def fetch_company_facts(cik: str) -> dict[str, object] | None:
-    """Raw companyfacts JSON for one CIK, or None on any fetch failure.
+@dataclasses.dataclass(frozen=True)
+class CompanyFactsResult:
+    """The outcome of one companyfacts fetch, with the 404 case distinguished (M37 prereq).
 
-    Fails soft (returns None, logs), matching data.py's fetch_metrics
-    convention for this same class of problem: a single ticker's fetch
-    failing must never abort the whole screen. A 404 specifically means
-    EDGAR has no XBRL data for this filer (a foreign private issuer on
-    20-F, a very new listing that hasn't filed yet) -- also None, same
-    as any other failure, since the caller's response (fall back to
-    yfinance, or flag as unresolved) is identical either way.
+    `fetch_company_facts` (below) collapses every failure mode to a
+    bare `None` -- correct for its own callers, where a 404 (EDGAR
+    genuinely has no XBRL data for this filer) and a transient fetch
+    failure (network/timeout/JSON error, worth a retry) call for the
+    identical response. `xbrl_shadow.py`'s coverage report needs the
+    two told apart: a hand reviewer judging how complete a shadow cycle
+    was can't tell "SEC doesn't track this filer" from "SEC failed to
+    answer this run" if both show up as one undifferentiated gap
+    (staff-engineer-reviewer finding, `xbrl_shadow.py`'s own review).
+    """
+
+    facts: dict[str, object] | None
+    not_found: bool  # True only for a confirmed 404; False for every other case
+
+
+def fetch_company_facts_detailed(cik: str) -> CompanyFactsResult:
+    """Raw companyfacts JSON for one CIK, with the 404-vs-other-failure distinction kept.
+
+    Fails soft (never raises) on every path -- matching data.py's
+    fetch_metrics convention for this same class of problem: a single
+    ticker's fetch failing must never abort the whole screen.
     """
     try:
         body = throttled_get(_COMPANYFACTS_URL_TEMPLATE.format(cik=cik))
     except urllib.error.HTTPError as e:
         if e.code == 404:
             logger.info("CIK %s: no XBRL companyfacts on EDGAR (404)", cik)
-        else:
-            logger.error("CIK %s: companyfacts fetch failed (HTTP %d)", cik, e.code)
-        return None
+            return CompanyFactsResult(facts=None, not_found=True)
+        logger.error("CIK %s: companyfacts fetch failed (HTTP %d)", cik, e.code)
+        return CompanyFactsResult(facts=None, not_found=False)
     except (urllib.error.URLError, TimeoutError, OSError):
         logger.error("CIK %s: companyfacts fetch failed", cik, exc_info=True)
-        return None
+        return CompanyFactsResult(facts=None, not_found=False)
     try:
         parsed = json.loads(body)
     except json.JSONDecodeError:
         logger.error("CIK %s: companyfacts response was not valid JSON", cik)
-        return None
+        return CompanyFactsResult(facts=None, not_found=False)
     if not isinstance(parsed, dict):
-        return None
-    return parsed
+        return CompanyFactsResult(facts=None, not_found=False)
+    return CompanyFactsResult(facts=parsed, not_found=False)
+
+
+def fetch_company_facts(cik: str) -> dict[str, object] | None:
+    """Raw companyfacts JSON for one CIK, or None on any fetch failure.
+
+    Thin wrapper over `fetch_company_facts_detailed` for every caller
+    that doesn't need the 404-vs-other-failure distinction -- same
+    contract, same behavior, as before that function existed. A 404
+    specifically means EDGAR has no XBRL data for this filer (a foreign
+    private issuer on 20-F, a very new listing that hasn't filed yet) --
+    also None here, same as any other failure, since this contract's
+    caller's response (fall back to yfinance, or flag as unresolved) is
+    identical either way.
+    """
+    return fetch_company_facts_detailed(cik).facts
 
 
 @dataclasses.dataclass(frozen=True)

@@ -1629,7 +1629,7 @@ follow-up, and is M37's actual prerequisite, not merely its neighbor.
 | Live rate-limit verification against real SEC EDGAR API | done | 2026-09-03 -- confirmed sustainable for a full universe pass at the configured rate. |
 | Real-fixture regression tests for both data-correctness bugs found | done | 2026-09-03 -- `tests/test_xbrl.py`, 21 tests. |
 | `ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` clean | done | 2026-09-03 |
-| Wire `shadow_compare` into a real run, accumulate + hand-review a full-universe disagreement report | todo | Owner: whoever continues Design v2.2 execution next (this session, if the `/goal` directive is still standing when work resumes) -- scheduled as the immediate next Epic D item after this push, not an indefinitely-deferred gap. The "hand-review" step specifically needs the user, not an agent, since it's the human checkpoint the design doc puts in front of making XBRL authoritative. |
+| Wire `shadow_compare` into a real run, accumulate + hand-review a full-universe disagreement report | partially done | 2026-09-03 -- the wiring/accumulation half shipped; see the new "M36 completion" section below. The hand-review half is still `todo`, unchanged -- it needs the user specifically, not an agent. |
 | Push to `main` and GCP redeploy | done | 2026-09-03 -- commit `8d82826` pushed to `main`. Redeployed via `deploy/cloudrun/deploy.sh daily-screen --verify`: image rebuilt and pushed to Artifact Registry, the Cloud Run Job pinned to the new digest (`sha256:1c74c030937e5c1b21726e66fb8e939e01c2427de6b7d06ab3c741a42eeed7dd`), and a live verification execution (`daily-screen-2msvw`) ran to completion successfully (`succeededCount=1 failedCount=0`) against real GCP infrastructure -- this is the same run that would have caught an import-time break or a startup crash from any of M26-M30/M36's changes; it did not surface one. Note `xbrl.py` still isn't called from this execution path (M36's own stated remaining scope, see above), so this verifies the rest of the batch runs cleanly in production, not that shadow-mode has executed live. |
 | M37: switch XBRL to primary + resolve GNTX margin discrepancy | todo | Blocked on the disagreement-report row above, not just sequentially next. |
 
@@ -2110,3 +2110,83 @@ None of these three block *this* push -- they're preconditions for the
 separate, later, human decision to remove `GLOBAL_KILL_SWITCH` itself,
 named here as an explicit checklist instead of requiring that decision
 to be reconstructed by scanning this section's individual mentions.
+
+## Design v2.2 execution: M36 completion -- wiring `shadow_compare` into a real run (added 2026-09-03, Epic D continued, continuing the same `/goal`)
+
+Closes M36's own stated remaining scope (see that section above: "the
+client/extraction/comparison mechanism is real, correct... and tested;
+wiring it into an actual run and producing the hand-reviewed
+disagreement report is real remaining work"). This section does the
+wiring and accumulation half of that; the hand review itself -- and
+M37's actual switchover decision -- is explicitly **not** done here,
+since §3.4 puts a human checkpoint in front of making XBRL authoritative
+and that checkpoint needs the user specifically, not an agent. Picked
+up as the next autonomous-appropriate item under the standing `/goal`
+directive, since TASKS.md's own M36 section already named this exact
+row as "scheduled... not an indefinitely-deferred gap" with an owner of
+"whoever continues Design v2.2 execution next."
+
+**New module: `xbrl_shadow.py`.** A full-universe run: fetches every
+universe ticker's yfinance metrics (`data.fetch_all_metrics`, same as
+`daily_screen.py`) and, per ticker, its SEC EDGAR CIK and XBRL
+companyfacts, then runs `xbrl.shadow_compare` and writes every
+disagreement found to a CSV (`config.XBRL_SHADOW_REPORT_PATH`, atomic
+temp-file-plus-rename write, worst-disagreement-first) for the user to
+review by hand. Deliberately **not** wired into any recurring cadence
+(`daily_screen.py`, `evaluate.py`, `execute_trades.py`) -- §3.4 calls
+for one full validation cycle before the M37 switchover, not a
+permanent daily addition to production's own EDGAR request budget, so
+it ships as its own `workflow_dispatch`-only GitHub Actions workflow
+(`.github/workflows/xbrl-shadow-run.yml`, no Alpaca secrets, matching
+`daily_screen.py`'s broker-free posture) that uploads the CSV as a
+build artifact rather than persisting it to a git branch. Sequential
+(not thread-pooled) over tickers -- `xbrl.throttled_get`'s rate limiter
+is already process-shared, and at `config.SEC_EDGAR_MAX_REQUESTS_PER_SECOND`
+a full ~1500-ticker pass finishes in single-digit minutes, well inside
+the workflow's 45-minute timeout.
+
+**`staff-engineer-reviewer` -- four review rounds. Round 1 (the initial
+pass) found 4 real findings in one review; round 2 (a confirmation pass
+on round 1's two code fixes) found 1 more; round 3 (confirming round
+2's fix) found nothing further, approved clean; round 4 (the final
+pre-push gate review, against the complete diff as it would actually
+land, including the TASKS.md changes) found 2 more, both fixed before
+push. 7 findings total across the 4 rounds; every one that called for a
+code fix got one, and the two that didn't (documented as accepted
+tradeoffs instead) are labeled as such below, not silently counted
+alongside the code fixes as "all fixed":**
+
+| Finding | Resolution |
+|---|---|
+| **Round 1.** `xbrl.fetch_company_facts` collapsed "SEC confirms no XBRL data for this filer" (404, expected structural non-coverage) and "this run failed to fetch it" (network/timeout/malformed response, a real fetch-mechanics problem) into the identical `None` -- a hand reviewer couldn't tell the two apart from the coverage counts, undermining the completeness judgment the summary exists to support. | **Code fix.** New `xbrl.CompanyFactsResult`/`fetch_company_facts_detailed` distinguishing `not_found` from every other failure mode; `fetch_company_facts` is now a thin, behavior-identical wrapper over it (verified against its own existing 4 tests in `tests/test_xbrl.py`, all still pass unchanged). `xbrl_shadow.py` tracks `xbrl_not_found`/`xbrl_fetch_failed` as separate counts. |
+| **Round 1.** No coverage-floor gate analogous to `daily_screen.py`'s own precedent (`MIN_UNIVERSE_FETCH_FRACTION`/non-zero exit on a degraded run) -- a bad yfinance or CIK-index fetch would still write a "successful," possibly near-empty report and exit 0. | **Code fix.** New `ShadowRunSummary.degraded: bool`, reusing `config.MIN_UNIVERSE_FETCH_FRACTION` (not a new threshold). `__main__` exits 1 when degraded, matching `daily_screen.py`'s exit-code-as-alert-channel convention. |
+| **Round 1.** The shared-rate-limiter reasoning for skipping thread-pool concurrency ("`xbrl.throttled_get` already serializes every request") is only true *within one process* -- `material_events.py`'s own EDGAR polling runs inside `daily-trade.yml`/`daily-trade-live.yml`'s separate cron jobs, so a manual dispatch of this new workflow during that cron window means two independently-throttled processes each pacing at the configured rate, whose combined real rate against SEC EDGAR could exceed the fair-access ceiling. | **Documentation fix, not a structural lock.** Both `xbrl_shadow.py`'s own docstring and the workflow YAML now name the exact cron times (14:00/14:30 UTC) to avoid manually dispatching around, with the reasoning for not building a true cross-workflow lock (an occasional, human-triggered diagnostic run doesn't justify the complexity) stated explicitly rather than left implicit. |
+| **Round 1.** No partial-progress persistence -- the CSV is written once, after the entire sequential pass completes; a mid-run failure (timeout, a stretch of slow/failing EDGAR responses) loses all completed work with no checkpoint to resume from. | **Not a code fix -- disclosed as an accepted tradeoff.** Named directly in `xbrl_shadow.py`'s own docstring: acceptable for an occasional diagnostic script: "if this becomes a recurring pain in practice, that's the signal to add it, not a reason to build it preemptively here." |
+| **Round 2** (after round 1's two code fixes landed): the new `degraded` check only looked at `yfinance_fetched`/`cik_matched` -- it excluded `xbrl_fetch_failed` with no stated rationale, meaning a genuine EDGAR-side outage on the companyfacts endpoint mid-run (yfinance and CIK matching both fine, but most companyfacts requests failing) would leave `degraded` False and the run exiting 0, undetected by the very mechanism built to catch exactly that. | **Code fix.** Added a third condition: the fraction of CIK-matched tickers EDGAR actually *resolved* (`facts_fetched + not_found`, i.e. answered either with data or a confirmed 404) against the same floor. A confirmed-404-heavy run stays correctly un-degraded (expected non-coverage); a fetch-failure-heavy run now correctly trips `degraded`. New test (`test_run_degraded_when_edgar_fetches_mostly_fail_not_404`) pins the distinction directly. Round 3 confirmed the fix's arithmetic, the guard against division-by-zero, and the new test's fidelity to the actual failure scenario, with no further findings. |
+| **Round 4** (the pre-push gate review, run against the full diff as it would actually land): the `degraded` check's `universe_size > 0 and (...)` guard meant a totally empty universe (every S&P index scrape *and* the static fallback failing at once) short-circuited straight to `degraded=False` -- the one total-failure scenario this gate exists to catch was exactly the input it was guaranteed to call "clean." Contradicted the module's own cited precedent, `daily_screen.py`'s `fetched_fraction`, which correctly treats a zero-length result as `0.0` rather than trivially healthy. | **Code fix.** `degraded` now also fires directly on `universe_size == 0`, as a fourth, independent condition alongside the three fetch-mechanics fractions (`degraded = universe_size == 0 or (...)`). Test `test_run_handles_an_empty_universe` updated: was asserting `degraded is False`, now asserts `degraded is True`, with an updated comment explaining why. |
+| **Round 4, second finding** (same pass): `config.XBRL_SHADOW_REPORT_PATH` (`xbrl_shadow_report.csv`, at `DATA_DIR`/repo root by default) was the one generated runtime artifact in this codebase not covered by `.gitignore` -- every sibling artifact (`state.json`, `journal.db`, `screen_results*.csv`, `munger.log`, `pnl.json`, `data_cache/`, `report/`) is explicitly ignored; this one wasn't, so a routine local `git add -A` after a manual `python xbrl_shadow.py` run could have swept a ticker-level financial comparison report into the repo. | **Code fix.** `xbrl_shadow_report.csv` added to `.gitignore`. Round 4 found nothing else beyond these two; diff approved for push. |
+
+622 tests passing (was 610 before this batch, matching the M35
+section's own recorded total above -- +12 net, matching
+`tests/test_xbrl_shadow.py`'s 12 tests exactly, with `tests/test_xbrl.py`'s
+own 21 unchanged).
+`ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` all
+clean, scoped to tracked files (the repo's working tree also carries
+unrelated untracked debris from a separate task that a bare `ruff
+check .`/`mypy .` would otherwise wrongly flag -- confirmed via `git ls-
+files '*.py'` scoping, same pattern used earlier this session for the
+mypy CI-regression fix).
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| `xbrl.CompanyFactsResult`/`fetch_company_facts_detailed`: 404-vs-fetch-failure distinction | done | 2026-09-03 -- `fetch_company_facts` kept as a behavior-identical thin wrapper; its own existing tests unchanged and still passing. |
+| `xbrl_shadow.py`: full-universe run, coverage counts, atomic CSV report | done | 2026-09-03 |
+| `ShadowRunSummary.degraded` coverage-floor gate (4 conditions: yfinance, CIK-matching, EDGAR-reachability, empty universe) | done | 2026-09-03 -- see the review-findings table above for how the third and fourth conditions were each found and added, in review rounds 2 and 4 respectively. |
+| `.github/workflows/xbrl-shadow-run.yml` (dispatch-only, no Alpaca secrets, cron-overlap risk documented) | done | 2026-09-03 |
+| `tests/test_xbrl_shadow.py` (12 tests) | done | 2026-09-03 |
+| `staff-engineer-reviewer`: 4 review rounds (initial pass, 2 confirmation passes, 1 final pre-push gate review), 7 findings total, every one addressed (code fix, documentation fix, or explicitly disclosed as an accepted tradeoff) | done | 2026-09-03 -- see table above. |
+| `ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` clean | done | 2026-09-03 |
+| **Full-universe shadow run actually executed against real GCP/GitHub Actions infrastructure, producing a real disagreement-report artifact** | todo | Not run yet as of this write-up -- the mechanism is built and tested against mocked/fixture data, but `xbrl-shadow-run.yml` hasn't actually been dispatched. Owner: whoever continues Design v2.2 execution next; a low-risk, read-only, broker-free dispatch (same category of action as this session's other GCP redeploys) that doesn't need to wait on the CI-runner-offline gap noted in M35's section (this runs on GitHub-hosted `ubuntu-latest`, not the offline self-hosted pi4 runner). |
+| **Hand review of the disagreement report** | todo, needs the user | Blocked on the row above (need a real report to review), and even once one exists, this step is explicitly reserved for the user per §3.4's own human-checkpoint requirement -- not something an agent should do unilaterally, regardless of how mechanically simple reading a CSV might seem. This is M37's actual prerequisite, unchanged from M36's own section. |
+| Push to `main` and GCP redeploy | todo | Next step this session. **Scope note:** this is new code (`xbrl_shadow.py`, `xbrl.py`'s new function, one new config constant, one new GitHub Actions workflow file) but doesn't touch `bot.py`/`evaluate.py`/`execute_trades.py`/`daily_screen.py`'s existing behavior at all -- a GCP `daily-screen` redeploy verifies the rest of the image still builds and runs cleanly with this new module present, not that `xbrl_shadow.py` itself has executed (it isn't called from `daily_screen.py`'s own path), matching the same scope caveat this session has applied to every other push. |
+| M37: switch XBRL to primary + resolve GNTX margin discrepancy | todo | Still blocked on both rows above (a real run, then its hand review) -- unchanged from M36's own section. |
