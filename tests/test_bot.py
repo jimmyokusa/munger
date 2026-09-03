@@ -806,6 +806,26 @@ def test_reset_stale_strikes_clears_a_tracked_ticker_no_longer_held(tmp_path: Pa
     assert reloaded.get_strikes("GONE") == 0  # persisted, not just in-memory
 
 
+def test_reset_stale_strikes_also_clears_a_healthy_holding_state_no_longer_held(
+    tmp_path: Path,
+) -> None:
+    # M29c follow-up: a HEALTHY holding has zero strikes, so it never
+    # appears in tracked_tickers() -- but its recorded HoldingState still
+    # needs clearing once sold, or report.py would keep showing a
+    # now-closed position as "Healthy" forever. Uses
+    # tracked_holding_state_tickers() instead, which the strikes-only
+    # reconciliation above doesn't touch.
+    state = portfolio.StateTracker(path=tmp_path / "state.json")
+    state.record_holding_state("SOLD_OFF", portfolio.HoldingState.HEALTHY)
+    state.record_holding_state("STILL_HELD", portfolio.HoldingState.DETERIORATING)
+    state.save()
+
+    bot._reset_stale_strikes_for_tickers_no_longer_held(state, {"STILL_HELD": 1000.0})
+
+    assert state.get_holding_state("SOLD_OFF") is None
+    assert state.get_holding_state("STILL_HELD") is portfolio.HoldingState.DETERIORATING
+
+
 def test_run_escalates_to_critical_when_a_stale_settlement_block_persists(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

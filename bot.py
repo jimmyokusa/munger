@@ -110,7 +110,7 @@ def _process_sells_if_data_is_healthy(
 def _reset_stale_strikes_for_tickers_no_longer_held(
     state: portfolio.StateTracker, current_holdings: portfolio.Holdings
 ) -> None:
-    """Reset strikes for any tracked ticker the broker no longer reports held.
+    """Reset strikes and clear recorded holding state for any ticker no longer held.
 
     Staff-engineer-reviewer finding on M26c: strikes now reset only on a
     *confirmed* fill, but this run's synchronous settlement check can
@@ -126,10 +126,20 @@ def _reset_stale_strikes_for_tickers_no_longer_held(
     module's own long-standing rule), so a tracked ticker's absence from
     it is itself real, broker-confirmed evidence the position is gone --
     whatever Alpaca's order-status API says, or fails to say, about why.
+
+    M29c follow-up: also clears a stale recorded HoldingState the same
+    way, over the broader tracked_holding_state_tickers() list rather
+    than tracked_tickers() -- a HEALTHY holding has zero strikes, so it
+    would never appear in the strikes-only list, but its recorded state
+    still needs clearing once sold, or report.py would keep showing a
+    now-closed position as "Healthy" forever.
     """
     for ticker in state.tracked_tickers():
         if ticker not in current_holdings:
             state.reset_strikes(ticker)
+    for ticker in state.tracked_holding_state_tickers():
+        if ticker not in current_holdings:
+            state.clear_holding_state(ticker)
     state.save()
 
 

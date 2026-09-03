@@ -29,6 +29,7 @@ import pandas as pd
 
 import config
 import journal
+import portfolio
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +231,20 @@ table.metrics td:first-child { opacity: 0.65; cursor: help; }
 .badge-neutral {
   color: light-dark(#3f3f46, #d4d4d8);
   background: light-dark(rgba(113, 113, 122, 0.15), rgba(161, 161, 170, 0.2));
+}
+/* M29c (Design v2.2 §3.2): the two warning/alert tiers _render_badges
+   didn't need before a per-position holding-state badge existed --
+   amber for "deteriorating, on strike N" (a warning, not yet a
+   liquidation), red for "corporate action, needs manual review" (the
+   one state that's never auto-traded). Same shape as .badge-green/
+   -blue above, just a different hue pair. */
+.badge-amber {
+  color: light-dark(#92400e, #fcd34d);
+  background: light-dark(rgba(245, 158, 11, 0.15), rgba(245, 158, 11, 0.2));
+}
+.badge-red {
+  color: light-dark(#991b1b, #fca5a5);
+  background: light-dark(rgba(220, 38, 38, 0.15), rgba(220, 38, 38, 0.2));
 }
 
 /* P&L page (user request): gain/loss color convention, reusing .badge-
@@ -624,6 +639,35 @@ def _render_badges(metrics_row: pd.Series | None) -> str:
     return "".join(badges)
 
 
+# M29c (Design v2.2 §3.2): all four HoldingState values, so the site page
+# can distinguish every one of them, not just the states that already had
+# some other visible side effect (a strike count for DETERIORATING, an
+# alert for CORPORATE_ACTION). HEALTHY gets a badge too, deliberately --
+# "no badge" would be ambiguous with "never classified yet" (a fresh buy,
+# or a state.json predating this milestone), which is exactly the
+# distinction _render_holding_state_badge's None case exists to preserve.
+_HOLDING_STATE_BADGES: dict[portfolio.HoldingState, tuple[str, str]] = {
+    portfolio.HoldingState.HEALTHY: ("Healthy", "badge-green"),
+    portfolio.HoldingState.DETERIORATING: ("Deteriorating", "badge-amber"),
+    portfolio.HoldingState.UNREADABLE: ("Data unavailable", "badge-neutral"),
+    portfolio.HoldingState.CORPORATE_ACTION: ("Corporate action", "badge-red"),
+}
+
+
+def _render_holding_state_badge(holding_state: portfolio.HoldingState | None) -> str:
+    """One badge naming a held position's most recently classified state.
+
+    Silent (empty string) when the state isn't known -- same "a badge is
+    a bonus signal, never a placeholder" convention _render_badges above
+    already uses -- covering both a fresh buy that hasn't been through a
+    sell-evaluation pass yet and a state.json written before M29c.
+    """
+    if holding_state is None:
+        return ""
+    label, css_class = _HOLDING_STATE_BADGES[holding_state]
+    return f'<span class="badge {css_class}">{label}</span>'
+
+
 def _render_methodology_drawer() -> str:
     """The "How scoring & screening works" section (user request).
 
@@ -699,7 +743,12 @@ def _render_research_links(symbol: str) -> str:
     )
 
 
-def _render_pick(symbol: str, journal_row: dict[str, object] | None, results: pd.DataFrame) -> str:
+def _render_pick(
+    symbol: str,
+    journal_row: dict[str, object] | None,
+    results: pd.DataFrame,
+    holding_state: portfolio.HoldingState | None = None,
+) -> str:
     esc_symbol = html.escape(symbol)
     matches = results[results["symbol"] == symbol]
     metrics_row = matches.iloc[0] if len(matches) > 0 else None
@@ -714,7 +763,11 @@ def _render_pick(symbol: str, journal_row: dict[str, object] | None, results: pd
         else "—"
     )
     metrics_html = _render_metrics_table(metrics_row) if metrics_row is not None else ""
-    badges_html = _render_badges(metrics_row)
+    # M29c: the holding-state badge first, so it reads before the
+    # quality-highlight badges -- a corporate-action/deteriorating flag
+    # is the more decision-relevant signal for a held position than a
+    # "Zero debt" highlight.
+    badges_html = _render_holding_state_badge(holding_state) + _render_badges(metrics_row)
 
     return f"""<details class="pick glass">
   <summary><span class="symbol">{esc_symbol}</span>
@@ -1007,9 +1060,17 @@ def _render_export_controls(rows: list[dict[str, object]]) -> str:
 </script>"""
 
 
-def _render_index(picks: list[dict[str, object]], results: pd.DataFrame) -> str:
+def _render_index(
+    picks: list[dict[str, object]],
+    results: pd.DataFrame,
+    holding_states: dict[str, portfolio.HoldingState] | None = None,
+) -> str:
+    holding_states = holding_states or {}
     if picks:
-        body = "\n".join(_render_pick(str(p["symbol"]), p, results) for p in picks)
+        body = "\n".join(
+            _render_pick(str(p["symbol"]), p, results, holding_states.get(str(p["symbol"])))
+            for p in picks
+        )
     else:
         body = _render_candidates_or_empty(results)
     export_controls = _render_export_controls(_export_rows(picks, results))
@@ -1943,9 +2004,23 @@ def generate_report() -> None:
         results = _load_screen_results()
         picks = journal.get_holdings_detail()
         held_symbols = {str(p["symbol"]) for p in picks}
+        # M29c (Design v2.2 §3.2): read-only use of StateTracker -- this
+        # process never calls .save(), so a concurrent bot.py write (see
+        # this function's own docstring on that race) is read, not
+        # clobbered; state.json's own atomic-write pattern is what keeps
+        # a read here from ever seeing a torn/partial file. `path=` passed
+        # explicitly, read fresh here rather than relying on
+        # StateTracker's default parameter -- that default is bound once,
+        # at class-definition time, not re-read per call, so a bare
+        # StateTracker() would silently ignore a config.STATE_FILE_PATH
+        # changed after import (every test that isolates config.*_PATH
+        # into tmp_path relies on exactly this call-time read).
+        holding_states = portfolio.StateTracker(path=config.STATE_FILE_PATH).all_holding_states()
 
         config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        _write_text_atomically(config.REPORT_DIR / "index.html", _render_index(picks, results))
+        _write_text_atomically(
+            config.REPORT_DIR / "index.html", _render_index(picks, results, holding_states)
+        )
         _write_text_atomically(
             config.REPORT_DIR / "tickers.html", _render_tickers(results, held_symbols)
         )

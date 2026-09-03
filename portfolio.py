@@ -10,7 +10,11 @@ functions with no shared state beyond StateTracker's strike counters.
 Current holdings are always represented as ticker -> current market value
 (dollars), fetched live from the broker by the caller (M8) at the start of
 every run -- this module never reads holdings from local state. state.json
-holds only the strike-streak counters, nothing else (DESIGN.md 3.6).
+holds the strike-streak counters (DESIGN.md 3.6) and, since M29c (Design
+v2.2 §3.2), each held ticker's most recently classified HoldingState, so
+report.py can display it -- both are cheap, small, and change together at
+the same call site (process_sells), so one file continues to hold both
+rather than splitting into a second persisted store for one more field.
 """
 
 from __future__ import annotations
@@ -75,29 +79,54 @@ def classify_holding_state(metrics: data.Metrics | None, is_corporate_action: bo
 
 
 class StateTracker:
-    """Reads/writes only the strike-streak counters to state.json.
+    """Reads/writes the strike-streak counters and per-ticker holding state to state.json.
 
     Never the source of truth for current holdings -- those are always
     fetched live from the broker (DESIGN.md 3.4). Writes are atomic
     (temp file + rename) so a crash mid-write can't corrupt the file.
+
+    Schema (M29c, Design v2.2 §3.2): `{"strikes": {ticker: int, ...},
+    "holding_states": {ticker: "healthy"|"deteriorating"|"unreadable"|
+    "corporate_action", ...}}`. Every real state.json written before this
+    milestone is the pre-M29c legacy format instead -- a bare flat
+    `{ticker: int}` dict, no wrapper keys at all. `_load` distinguishes
+    the two by checking for the new format's two wrapper keys explicitly
+    (both must be present and both must be dicts); it doesn't just check
+    for "strikes" alone, since misreading a legacy file with an
+    unlikely-but-possible real ticker literally named "STRIKES" as the
+    new format would silently drop every other real ticker's strike
+    count. `save()` always writes the new format -- every write migrates
+    a legacy file forward, matching journal.py's own migration
+    precedent of writing the new shape going forward rather than a
+    separate one-time migration step.
     """
 
     def __init__(self, path: Path = config.STATE_FILE_PATH) -> None:
-        """Load existing strike counters from `path`, if any."""
+        """Load existing strike counters and holding states from `path`, if any."""
         self._path = path
-        self._strikes: dict[str, int] = self._load()
+        self._strikes: dict[str, int]
+        self._holding_states: dict[str, str]
+        self._strikes, self._holding_states = self._load()
 
-    def _load(self) -> dict[str, int]:
+    def _load(self) -> tuple[dict[str, int], dict[str, str]]:
         if not self._path.exists():
-            return {}
+            return {}, {}
         try:
             loaded = json.loads(self._path.read_text())
-            return {str(k): int(v) for k, v in loaded.items()}
-        except (json.JSONDecodeError, OSError, ValueError, TypeError):
+            if isinstance(loaded.get("strikes"), dict) and isinstance(
+                loaded.get("holding_states"), dict
+            ):
+                strikes = {str(k): int(v) for k, v in loaded["strikes"].items()}
+                holding_states = {str(k): str(v) for k, v in loaded["holding_states"].items()}
+                return strikes, holding_states
+            # Legacy pre-M29c format: the whole file is a flat
+            # {ticker: strike_count} dict with no wrapper keys.
+            return {str(k): int(v) for k, v in loaded.items()}, {}
+        except (json.JSONDecodeError, OSError, ValueError, TypeError, AttributeError):
             logger.error(
-                "%s unreadable/corrupt; starting from empty strike state", self._path, exc_info=True
+                "%s unreadable/corrupt; starting from empty state", self._path, exc_info=True
             )
-            return {}
+            return {}, {}
 
     def get_strikes(self, ticker: str) -> int:
         """Current consecutive-strike count for `ticker` (0 if none)."""
@@ -130,10 +159,77 @@ class StateTracker:
         """
         return list(self._strikes.keys())
 
+    def record_holding_state(self, ticker: str, holding_state: HoldingState) -> None:
+        """Record `ticker`'s most recently classified HoldingState (M29c, §3.2)."""
+        self._holding_states[ticker] = holding_state.value
+
+    def get_holding_state(self, ticker: str) -> HoldingState | None:
+        """`ticker`'s last recorded HoldingState, or None if never classified/unrecognized.
+
+        None covers a genuinely fresh position (bought but not yet
+        through a sell-evaluation pass), a state.json predating M29c,
+        and (staff-engineer-reviewer finding) a value this running
+        code's HoldingState enum doesn't recognize -- report.py treats
+        all three the same way: no badge, not a guess, and NOT a raised
+        exception. A version mismatch between the code and a persisted
+        state.json (a rollback, a staged deploy reading an older/newer
+        file, a hand edit) must degrade one ticker's badge, not take
+        down report.py's entire `try/except: raise` in generate_report,
+        which would otherwise abort index.html/tickers.html/pnl.html
+        together over one bad field -- the same "one bad thing can't
+        take everything else down" rule _load_pnl_snapshot already
+        applies to a malformed P&L file.
+        """
+        raw = self._holding_states.get(ticker)
+        if raw is None:
+            return None
+        try:
+            return HoldingState(raw)
+        except ValueError:
+            logger.error(
+                "%s: unrecognized holding state %r in state.json -- treating as unknown",
+                ticker,
+                raw,
+            )
+            return None
+
+    def all_holding_states(self) -> dict[str, HoldingState]:
+        """Every ticker with a *recognized* recorded HoldingState right now.
+
+        A ticker with an unrecognized value (see get_holding_state) is
+        silently omitted here, not raised -- report.py's read path
+        (all_holding_states) must degrade one ticker's badge, never
+        abort the whole report.
+        """
+        result: dict[str, HoldingState] = {}
+        for ticker in self._holding_states:
+            state = self.get_holding_state(ticker)
+            if state is not None:
+                result[ticker] = state
+        return result
+
+    def clear_holding_state(self, ticker: str) -> None:
+        """Drop `ticker`'s recorded HoldingState (paired with reset_strikes for a sold ticker)."""
+        self._holding_states.pop(ticker, None)
+
+    def tracked_holding_state_tickers(self) -> list[str]:
+        """Every ticker with a recorded HoldingState right now.
+
+        Deliberately separate from tracked_tickers(): a HEALTHY holding
+        has a recorded state but zero strikes, so it would never appear
+        in tracked_tickers()'s nonzero-strikes-only list -- the caller
+        (bot.run) needs this broader list too, to know which recorded
+        states to reconcile against current_holdings once a HEALTHY
+        position is sold.
+        """
+        return list(self._holding_states.keys())
+
     def save(self) -> None:
-        """Atomically write the current strike counters to disk (temp file + rename)."""
+        """Atomically write strikes + holding states to disk (temp file + rename)."""
         tmp_path = self._path.with_suffix(self._path.suffix + ".tmp")
-        tmp_path.write_text(json.dumps(self._strikes))
+        tmp_path.write_text(
+            json.dumps({"strikes": self._strikes, "holding_states": self._holding_states})
+        )
         tmp_path.replace(self._path)
 
 
@@ -200,6 +296,13 @@ def process_sells(
     (`bot.run`) resets a `to_liquidate` ticker's strikes only after
     `settlement.settle_order` confirms the corresponding order actually
     filled.
+
+    M29c (Design v2.2 §3.2): every ticker's classified HoldingState is
+    recorded via `state.record_holding_state`, regardless of which
+    branch below it takes -- this is what lets report.py display all
+    four states, not just the two (DETERIORATING via strikes,
+    CORPORATE_ACTION via the alert) that already had some other visible
+    side effect before this milestone.
     """
     to_liquidate = []
     unresolved = []
@@ -208,6 +311,7 @@ def process_sells(
         metrics = new_market_data.get(ticker)
         is_corp_action = corporate_action_check(ticker) if corporate_action_check else False
         holding_state = classify_holding_state(metrics, is_corp_action)
+        state.record_holding_state(ticker, holding_state)
 
         if holding_state is HoldingState.CORPORATE_ACTION:
             corporate_action.append(ticker)

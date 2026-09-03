@@ -1387,6 +1387,28 @@ pattern M24 itself used) has not been built. Recorded here as
 outstanding, not silently marked complete -- do before treating M27 as
 fully meeting its own stated bar.
 
+**Scoping note on how to close this safely** (considered, not yet
+built): M24's own live-verification run already found that a real
+`workflow_dispatch` of `daily-trade-live.yml`/`daily-trade.yml` today
+can't actually reach the reconciliation-abort code path at all --
+`GLOBAL_KILL_SWITCH` stops execution earlier in `bot.run`'s check order
+than reconciliation runs, by construction, for every dispatch made
+while the switch is present. So the two live options are: (a) remove
+`GLOBAL_KILL_SWITCH` and deliberately corrupt real paper-account journal
+state to engineer a genuine mismatch against production infrastructure,
+or (b) build a new, isolated `workflow_dispatch` GH Actions job that
+runs `bot.run()` against fully mocked broker/journal objects (no real
+network calls), literally dispatched through GH Actions rather than
+local pytest, to satisfy "dispatched-workflow... not only direct-call
+coverage" without touching production state. (a) is a materially
+different, riskier class of action than the code/test/review work done
+so far this session and deserves an explicit user decision before doing
+it, not an autonomous one under the standing goal. (b) is safe but is
+real, separate scope (a new CI workflow file, its own review). Neither
+attempted yet; recorded here so the next session picks a path
+deliberately instead of either stalling on it indefinitely or
+improvising against real state.
+
 **M28 -- journal reason strings derived, not hardcoded.** Every buy
 used to journal as `NEW_POSITION` regardless of whether the symbol was
 already held -- the real bug that mislabeled six top-ups (HIG x2, ASO,
@@ -1471,6 +1493,11 @@ real scope, correctly its own reviewed increment, not a same-session
 bolt-on. Tracked here as the concrete next step on M29c specifically,
 ahead of general Epic A/D continuation.
 
+**Update, same session:** this persistence + display work was built,
+tested, and reviewed -- see "M29c completion" below. It surfaced a
+larger, pre-existing structural gap in how the real deployed site gets
+its trading state at all; see that section for the full finding.
+
 **M30 -- CI format-check gap.** CI ran `ruff check` but never `ruff
 format --check`, so a correctly-linted-but-inconsistently-formatted
 diff could still merge. Added a "Ruff format" step to
@@ -1494,11 +1521,48 @@ before the combined push (real findings, all fixed):**
 | `market_buy`'s ADV-ceiling estimate divided notional by the buy's own (higher) limit price, not last trade price -- the inline comment claimed this made the estimate more conservative, but the arithmetic runs the opposite direction: dividing by a higher ceiling price yields *fewer* implied shares, understating what a same- or lower-price fill (which a DAY limit order routinely produces) would actually buy | Split `_last_trade_price` out of `_limit_price`; the ADV estimate now uses last trade price, reserving the wider limit price only for the order request itself. Comment corrected to state the real direction of the bias. Pinned regression test (`test_market_buy_adv_check_uses_last_trade_price_not_the_wider_limit_price`) proves a specific order that would wrongly pass the ceiling under the old (limit-price) estimate now correctly fails it |
 | `xbrl.py`'s module docstring stated in the present tense that shadow-mode "runs alongside data.py" -- true of the design intent, not of the code: nothing calls `shadow_compare`/`fetch_company_facts` outside `tests/test_xbrl.py` yet, so a reader planning M37's hand-review step could wrongly believe there's already production log data to review | Reworded to state plainly that M36 builds and fixture-tests the module only; wiring it into a real run and accumulating a disagreement log to review is explicitly M37's job |
 
+**M29c completion -- persist + display holding state (added 2026-09-03,
+closing the gap the pm-reviewer finding above identified).**
+`portfolio.StateTracker` gains `holding_states` alongside `strikes` in
+`state.json`, with a real backward-compatible migration: every state.json
+written before this change is a bare flat `{ticker: strike_count}` dict
+with no wrapper keys, so `_load` detects the new format only when *both*
+a `"strikes"` and a `"holding_states"` key are present *and* both map to
+dicts -- not just "strikes present" -- specifically so a legacy file
+with a real ticker literally named "STRIKES" can't be misread as the
+new format and silently drop every other ticker's count. `save()`
+always writes the new format, migrating a legacy file forward on first
+write (matching `journal.py`'s own migration precedent). `process_sells`
+now records every ticker's classified state unconditionally, not just
+the two states (`DETERIORATING`, `CORPORATE_ACTION`) that already had
+some other visible side effect. `report.py` reads `state.json` read-only
+(new `import portfolio`, never calls `.save()`) and renders a
+green/amber/neutral/red badge on each held position's card for
+healthy/deteriorating/unreadable/corporate_action respectively; silent
+(no badge) when a ticker's state was never classified, same "a badge is
+a bonus signal, never a placeholder" rule the existing quality badges
+already use. `bot.py`'s stale-strike reconciliation is extended
+(`tracked_holding_state_tickers()`, deliberately broader than the
+strikes-only `tracked_tickers()`, since a `HEALTHY` holding has zero
+strikes and would otherwise never get cleared once sold) to also clear
+a sold-off ticker's recorded state.
+
+**Fourth `staff-engineer-reviewer` pass, on this completion diff (one
+real finding, fixed; one major pre-existing gap discovered, not
+introduced by this diff, not fixed here):**
+
+| Finding | Fixed |
+|---|---|
+| `StateTracker._load` only validated the *container* shapes at load time; an individual unrecognized `holding_states` value (a future `HoldingState` the running code doesn't know about, a hand-edited or version-mismatched file from a rollback/staged deploy) raised an unhandled `ValueError` from `get_holding_state`/`all_holding_states`, inside `generate_report`'s bare `try/except: raise` -- one bad ticker's stale value would abort the *entire* report build (index.html, tickers.html, pnl.html together), not just that ticker's badge. Contradicts this same file's own established pattern for exactly this class of problem (`_load_pnl_snapshot`'s "one bad file can't take down index.html/tickers.html too") | `get_holding_state` now catches `ValueError` and returns `None` (logged) instead of raising; `all_holding_states` silently omits an unrecognized ticker instead of raising. Regression tests for both, plus a previously-missing test for the "legacy ticker literally named STRIKES" case the migration docstring already claimed was handled. |
+| **Not a defect in this diff, but a major structural discovery**: the badge (and the whole `picks`/held-positions display path it hangs off) cannot currently render on the real deployed site *at all* -- and, per independent corroboration in `HANDOFF.md` (the live site shows buyable candidates, not held positions) and `report.py`'s own `_render_candidates_or_empty` docstring, this predates this session entirely. The only pipeline that actually publishes the public site is `.github/workflows/daily-screen.yml` -> `daily_screen.py` -> `report.generate_report()`, which never has `journal.db`/`state.json` at all (`daily-screen.yml` says so explicitly: "bot-state ... irrelevant here" -- by design, since `daily_screen.py` is deliberately screen-only and carries no Alpaca credentials). The workflow that *does* have that data, `daily-trade.yml`, never calls `report.py`. So `journal.get_holdings_detail()` always returns `[]` in the pipeline that actually ships to `gramunger.com`, `_render_index` always falls into the candidates branch, and M29c's exit criterion ("distinguishable ... on the corresponding site page") is unobservable in production as currently wired -- true of the pre-existing `picks` display generally, not specific to this milestone's badge. | Not fixed here -- this is a real, separate architectural gap (how does trading state ever reach the process that publishes the site?), not a same-session patch. **Hard constraint on any candidate fix, not just a clause to note in passing**: `daily_screen.py` is screen-only *by design*, specifically so it can be deployed with zero Alpaca credentials (`munger-workflow` skill's own "Screen-only safety" rule; the CronJob/Cloud-Run-Job manifests literally mount no secrets) -- this is a deliberate credential-isolation security boundary, not an oversight, and every candidate fix must preserve it. That rules out the naive "just give daily_screen.py the Alpaca keys too" fix outright. Needs a deliberate design decision that respects the boundary: does `report.py` move to run inside `daily-trade.yml`'s own job, where the state already lives (and Alpaca creds already are)? does the trading workflow publish a *read-only*, credential-free export of `state.json`/`journal.db`'s display-relevant fields (not the files themselves) somewhere `daily_screen.py`/`report.py` can read without ever holding trading credentials? something else? -- exactly the kind of question `agent-skills:plan` or a `staff-engineer-reviewer` pass on a real proposal should answer, not something to improvise mid-milestone. Recorded here as newly discovered, unowned, and blocking a genuinely observable "done" for M29c and, more importantly, for the pre-existing `picks` display feature it was piggybacking on. |
+
 | Task | Status | Date / Notes |
 |---|---|---|
 | M29a: `HoldingState` enum + `classify_holding_state` | done | 2026-09-03 |
 | M29b: `execution.is_corporate_action` (Alpaca Assets API, fails open) | done | 2026-09-03 |
-| M29c: wired into `process_sells` / `bot.run`, buy-queue exclusion | partially done | 2026-09-03 -- exclusion + alerting done and tested; persisted-artifact + site-page display of holding state still outstanding, see write-up above (corrected from an earlier, wrong "deferred to M34" read of the design note). |
+| M29c: exclusion + alerting (never auto-traded) | done | 2026-09-03 -- the safety-critical half; tested. |
+| M29c: persist HoldingState in state.json (real migration) + render on the site page | done, code-and-tests-only | 2026-09-03 -- built, correct, tested (`tests/test_portfolio.py`, `tests/test_report.py`), fail-soft against unrecognized future values. **Cannot be observed on the real deployed site** -- see the major finding above; the display pipeline itself has a pre-existing gap this diff doesn't close. |
+| Design decision: how does trading state (`state.json`/`journal.db`) reach the process that publishes the public site | todo | Newly discovered; no owner or milestone number assigned yet -- candidate slot: a new Epic A/D item, not yet numbered (not M37, which is XBRL-specific). Applies to **both** deployment targets identically, not just Cloud Run: `deploy/k8s`'s Pi k3s CronJob runs the same screen-only `daily_screen.py` with no Alpaca secrets mounted (`munger-workflow` skill's own "Screen-only safety" rule), so the gap is in `daily_screen.py`/`report.py`'s architecture itself, not a Cloud-Run-specific misconfiguration. Blocks calling M29c's display genuinely "done" in production, and blocks the pre-existing `picks` display from ever showing real held positions on either deployed site at all. |
 | M30: `ruff format --check` added to CI | done | 2026-09-03 |
 | 2nd `staff-engineer-reviewer` pass + real finding fixed | done | 2026-09-03 -- corporate-action buy-queue leak closed via `generate_buy_queue(exclude=...)`; reconciliation-escalation-parity gap recorded, not fixed (see table above). |
 | 3rd `staff-engineer-reviewer` pass (full M26-M30/M36 diff) + all 3 findings fixed | done | 2026-09-03 -- `record_order` idempotency, ADV last-trade-price estimate, `xbrl.py` docstring overstatement (see table above). |

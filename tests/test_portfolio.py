@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +106,160 @@ def test_state_tracker_tracked_tickers_lists_only_nonzero_strikes(tmp_path: Path
     tracker.reset_strikes("MSFT")
 
     assert tracker.tracked_tickers() == ["AAPL"]
+
+
+# --- StateTracker: holding_states (Design v2.2 §3.2, M29c) ---
+
+
+def test_state_tracker_get_holding_state_defaults_to_none(tmp_path: Path) -> None:
+    tracker = portfolio.StateTracker(path=tmp_path / "state.json")
+    assert tracker.get_holding_state("AAPL") is None
+
+
+def test_state_tracker_record_and_get_holding_state_roundtrip(tmp_path: Path) -> None:
+    tracker = portfolio.StateTracker(path=tmp_path / "state.json")
+    tracker.record_holding_state("AAPL", portfolio.HoldingState.DETERIORATING)
+    assert tracker.get_holding_state("AAPL") is portfolio.HoldingState.DETERIORATING
+
+
+def test_state_tracker_all_holding_states_returns_every_recorded_ticker(tmp_path: Path) -> None:
+    tracker = portfolio.StateTracker(path=tmp_path / "state.json")
+    tracker.record_holding_state("AAPL", portfolio.HoldingState.HEALTHY)
+    tracker.record_holding_state("MSFT", portfolio.HoldingState.CORPORATE_ACTION)
+
+    assert tracker.all_holding_states() == {
+        "AAPL": portfolio.HoldingState.HEALTHY,
+        "MSFT": portfolio.HoldingState.CORPORATE_ACTION,
+    }
+
+
+def test_state_tracker_clear_holding_state_removes_it(tmp_path: Path) -> None:
+    tracker = portfolio.StateTracker(path=tmp_path / "state.json")
+    tracker.record_holding_state("AAPL", portfolio.HoldingState.HEALTHY)
+    tracker.clear_holding_state("AAPL")
+    assert tracker.get_holding_state("AAPL") is None
+
+
+def test_state_tracker_clear_holding_state_of_an_untracked_ticker_is_a_no_op(
+    tmp_path: Path,
+) -> None:
+    tracker = portfolio.StateTracker(path=tmp_path / "state.json")
+    tracker.clear_holding_state("AAPL")  # never recorded -- must not raise
+    assert tracker.get_holding_state("AAPL") is None
+
+
+def test_state_tracker_tracked_holding_state_tickers_includes_healthy(tmp_path: Path) -> None:
+    # Deliberately distinct from tracked_tickers() (nonzero strikes only)
+    # -- a HEALTHY holding has zero strikes but must still show up here,
+    # or bot.py's stale-state reconciliation would never clear it once
+    # sold.
+    tracker = portfolio.StateTracker(path=tmp_path / "state.json")
+    tracker.record_holding_state("AAPL", portfolio.HoldingState.HEALTHY)
+
+    assert tracker.tracked_holding_state_tickers() == ["AAPL"]
+    assert tracker.tracked_tickers() == []  # zero strikes, so absent from this one
+
+
+def test_state_tracker_save_and_reload_roundtrips_holding_states(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    tracker = portfolio.StateTracker(path=state_path)
+    tracker.add_strike("AAPL")
+    tracker.record_holding_state("AAPL", portfolio.HoldingState.DETERIORATING)
+    tracker.record_holding_state("MSFT", portfolio.HoldingState.HEALTHY)
+    tracker.save()
+
+    reloaded = portfolio.StateTracker(path=state_path)
+    assert reloaded.get_strikes("AAPL") == 1
+    assert reloaded.get_holding_state("AAPL") is portfolio.HoldingState.DETERIORATING
+    assert reloaded.get_holding_state("MSFT") is portfolio.HoldingState.HEALTHY
+
+
+def test_state_tracker_save_writes_the_new_wrapped_schema(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    tracker = portfolio.StateTracker(path=state_path)
+    tracker.add_strike("AAPL")
+    tracker.record_holding_state("AAPL", portfolio.HoldingState.HEALTHY)
+    tracker.save()
+
+    on_disk = json.loads(state_path.read_text())
+    assert on_disk == {"strikes": {"AAPL": 1}, "holding_states": {"AAPL": "healthy"}}
+
+
+def test_state_tracker_loads_a_legacy_flat_strikes_file(tmp_path: Path) -> None:
+    # Every real state.json written before M29c is exactly this shape --
+    # a bare {ticker: strike_count} dict, no wrapper keys at all. Must
+    # keep loading correctly, or every real deployed state.json becomes
+    # unreadable the moment this code ships.
+    state_path = tmp_path / "state.json"
+    state_path.write_text('{"FOX": 1, "LPG": 2}')
+
+    tracker = portfolio.StateTracker(path=state_path)
+
+    assert tracker.get_strikes("FOX") == 1
+    assert tracker.get_strikes("LPG") == 2
+    assert tracker.all_holding_states() == {}  # no holding-state data in a legacy file
+
+
+def test_state_tracker_a_legacy_ticker_literally_named_strikes_does_not_misread_as_new_format(
+    tmp_path: Path,
+) -> None:
+    # The new-format detection requires BOTH "strikes" and "holding_states"
+    # keys present AND both mapped to dicts -- not just "strikes" present
+    # -- specifically so a legacy file with an (unlikely but possible)
+    # real ticker literally named "STRIKES" doesn't get misread as the
+    # new wrapped format and silently lose every other ticker's count.
+    # Uppercase here since that's what a real ticker looks like; the
+    # check itself is case-sensitive against the lowercase wrapper key,
+    # so this also confirms there's no accidental case-insensitive
+    # collision.
+    state_path = tmp_path / "state.json"
+    state_path.write_text('{"STRIKES": 3, "AAPL": 1}')
+
+    tracker = portfolio.StateTracker(path=state_path)
+
+    assert tracker.get_strikes("STRIKES") == 3
+    assert tracker.get_strikes("AAPL") == 1
+
+
+def test_state_tracker_get_holding_state_ignores_an_unrecognized_value(tmp_path: Path) -> None:
+    # Staff-engineer-reviewer finding: a version mismatch between the
+    # running code's HoldingState enum and a persisted state.json (a
+    # rollback, a staged deploy reading an older/newer file, a hand
+    # edit) must not raise -- get_holding_state degrades to None, not an
+    # unhandled ValueError that would abort report.py's entire report
+    # generation over one ticker's stale/unknown value.
+    state_path = tmp_path / "state.json"
+    state_path.write_text('{"strikes": {}, "holding_states": {"AAPL": "some_future_state"}}')
+
+    tracker = portfolio.StateTracker(path=state_path)
+
+    assert tracker.get_holding_state("AAPL") is None
+
+
+def test_state_tracker_all_holding_states_omits_an_unrecognized_value(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        '{"strikes": {}, "holding_states": {"AAPL": "some_future_state", "MSFT": "healthy"}}'
+    )
+
+    tracker = portfolio.StateTracker(path=state_path)
+
+    # AAPL silently omitted, not raised; MSFT (a recognized value) is
+    # still returned correctly -- one bad ticker doesn't take the rest
+    # down with it.
+    assert tracker.all_holding_states() == {"MSFT": portfolio.HoldingState.HEALTHY}
+
+
+def test_state_tracker_migrates_a_legacy_file_to_the_new_schema_on_save(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text('{"FOX": 1}')
+
+    tracker = portfolio.StateTracker(path=state_path)
+    tracker.record_holding_state("FOX", portfolio.HoldingState.DETERIORATING)
+    tracker.save()
+
+    on_disk = json.loads(state_path.read_text())
+    assert on_disk == {"strikes": {"FOX": 1}, "holding_states": {"FOX": "deteriorating"}}
 
 
 # --- HoldingState / classify_holding_state (Design v2.2 §3.2, M29a) ---
@@ -329,6 +484,36 @@ def test_process_sells_persists_state(tmp_path: Path) -> None:
         {"AAPL": 1000.0}, {"AAPL": _quality_metrics(symbol="AAPL", return_on_equity=0.05)}, state
     )
     assert state_path.exists()
+
+
+# --- process_sells: records HoldingState for every branch (M29c) ---
+
+
+def test_process_sells_records_healthy_holding_state(tmp_path: Path) -> None:
+    state = portfolio.StateTracker(path=tmp_path / "state.json")
+    portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": _quality_metrics(symbol="AAPL")}, state)
+    assert state.get_holding_state("AAPL") is portfolio.HoldingState.HEALTHY
+
+
+def test_process_sells_records_deteriorating_holding_state(tmp_path: Path) -> None:
+    state = portfolio.StateTracker(path=tmp_path / "state.json")
+    failing = _quality_metrics(symbol="AAPL", return_on_equity=0.05)
+    portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": failing}, state)
+    assert state.get_holding_state("AAPL") is portfolio.HoldingState.DETERIORATING
+
+
+def test_process_sells_records_unreadable_holding_state(tmp_path: Path) -> None:
+    state = portfolio.StateTracker(path=tmp_path / "state.json")
+    portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": None}, state)
+    assert state.get_holding_state("AAPL") is portfolio.HoldingState.UNREADABLE
+
+
+def test_process_sells_records_corporate_action_holding_state(tmp_path: Path) -> None:
+    state = portfolio.StateTracker(path=tmp_path / "state.json")
+    portfolio.process_sells(
+        {"AAPL": 1000.0}, {"AAPL": None}, state, corporate_action_check=lambda t: True
+    )
+    assert state.get_holding_state("AAPL") is portfolio.HoldingState.CORPORATE_ACTION
 
 
 # --- generate_buy_queue ---

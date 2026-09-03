@@ -13,6 +13,7 @@ import pytest
 
 import config
 import journal
+import portfolio
 import report
 
 
@@ -25,6 +26,11 @@ def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "PNL_DATA_PATH", tmp_path / "pnl.json")
     monkeypatch.setattr(config, "REAL_MONEY_DATA_PATH", tmp_path / "real_money.json")
     monkeypatch.setattr(config, "LIVE_TRADING_ENABLED", False)
+    # M29c: generate_report now reads state.json (via portfolio.StateTracker,
+    # read-only) to overlay each pick's holding-state badge -- redirect it
+    # like every other config.*_PATH, or a test would read the real repo's
+    # state.json instead of a clean tmp_path one.
+    monkeypatch.setattr(config, "STATE_FILE_PATH", tmp_path / "state.json")
 
 
 def _write_screen_results(rows: str) -> None:
@@ -272,6 +278,89 @@ def test_render_badges_handles_missing_metrics_row() -> None:
     # _render_candidate/_render_pick can have no matching metrics row at
     # all (data missing that run) -- must not raise.
     assert report._render_badges(None) == ""
+
+
+# --- Holding-state badge (Design v2.2 §3.2, M29c) ---
+
+
+def test_render_holding_state_badge_is_empty_when_state_is_unknown() -> None:
+    # Same "a badge is a bonus signal, never a placeholder" convention as
+    # _render_badges -- a fresh buy or a pre-M29c state.json both mean
+    # "not yet classified," not "healthy."
+    assert report._render_holding_state_badge(None) == ""
+
+
+@pytest.mark.parametrize(
+    ("holding_state", "expected_label", "expected_class"),
+    [
+        (portfolio.HoldingState.HEALTHY, "Healthy", "badge-green"),
+        (portfolio.HoldingState.DETERIORATING, "Deteriorating", "badge-amber"),
+        (portfolio.HoldingState.UNREADABLE, "Data unavailable", "badge-neutral"),
+        (portfolio.HoldingState.CORPORATE_ACTION, "Corporate action", "badge-red"),
+    ],
+)
+def test_render_holding_state_badge_shows_the_right_label_and_color(
+    holding_state: portfolio.HoldingState, expected_label: str, expected_class: str
+) -> None:
+    html_out = report._render_holding_state_badge(holding_state)
+    assert expected_label in html_out
+    assert expected_class in html_out
+
+
+def test_render_pick_includes_the_holding_state_badge() -> None:
+    _write_screen_results("AAPL,True,90.5,,2500000000000,28.4,0.30\n")
+    results = report._load_screen_results()
+
+    pick_html = report._render_pick(
+        "AAPL",
+        journal_row=None,
+        results=results,
+        holding_state=portfolio.HoldingState.DETERIORATING,
+    )
+
+    assert "Deteriorating" in pick_html
+    assert "badge-amber" in pick_html
+
+
+def test_render_pick_omits_the_holding_state_badge_when_unknown() -> None:
+    _write_screen_results("AAPL,True,90.5,,2500000000000,28.4,0.30\n")
+    results = report._load_screen_results()
+
+    pick_html = report._render_pick("AAPL", journal_row=None, results=results)
+
+    assert "Deteriorating" not in pick_html
+    assert "Healthy" not in pick_html
+    assert "Corporate action" not in pick_html
+    assert "Data unavailable" not in pick_html
+
+
+def test_generate_report_shows_a_recorded_holding_state_badge_for_a_pick() -> None:
+    # End-to-end: generate_report reads state.json (via portfolio.StateTracker)
+    # and threads it all the way through _render_index -> _render_pick.
+    _write_screen_results("AAPL,True,90.5,,2500000000000,28.4,0.30\n")
+    journal.record_order("AAPL", "buy", "NEW_POSITION score=90.5", notional=500.0)
+    state = portfolio.StateTracker(path=config.STATE_FILE_PATH)
+    state.record_holding_state("AAPL", portfolio.HoldingState.CORPORATE_ACTION)
+    state.save()
+
+    report.generate_report()
+
+    index_html = (config.REPORT_DIR / "index.html").read_text()
+    assert "Corporate action" in index_html
+    assert "badge-red" in index_html
+
+
+def test_generate_report_omits_the_badge_when_state_json_has_no_recorded_state() -> None:
+    _write_screen_results("AAPL,True,90.5,,2500000000000,28.4,0.30\n")
+    journal.record_order("AAPL", "buy", "NEW_POSITION score=90.5", notional=500.0)
+
+    report.generate_report()
+
+    index_html = (config.REPORT_DIR / "index.html").read_text()
+    assert "Healthy" not in index_html
+    assert "Deteriorating" not in index_html
+    assert "Corporate action" not in index_html
+    assert "Data unavailable" not in index_html
 
 
 def test_index_page_includes_methodology_drawer() -> None:
