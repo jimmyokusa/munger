@@ -13,6 +13,7 @@ reexport check happy, the same pattern used in data.py's own tests.
 from __future__ import annotations
 
 import datetime
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -358,7 +359,7 @@ def test_run_full_happy_path_places_liquidations_and_buys(monkeypatch: pytest.Mo
     monkeypatch.setattr(
         portfolio,
         "process_sells",
-        lambda holdings, metrics, state, corp_check=None: (["LIQUIDATE_ME"], [], []),
+        lambda holdings, metrics, state, period, corp_check=None: (["LIQUIDATE_ME"], [], []),
     )
 
     captured_buy_queue_holdings: dict[str, float] = {}
@@ -431,7 +432,9 @@ def test_run_journals_a_top_up_buy_distinctly_from_a_new_position(
     )
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
     monkeypatch.setattr(
-        portfolio, "process_sells", lambda holdings, metrics, state, corp_check=None: ([], [], [])
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, period, corp_check=None: ([], [], []),
     )
     monkeypatch.setattr(
         portfolio,
@@ -480,7 +483,7 @@ def test_run_alerts_on_unreadable_holdings_without_selling_them(
     monkeypatch.setattr(
         portfolio,
         "process_sells",
-        lambda holdings, metrics, state, corp_check=None: ([], ["ACQD"], []),
+        lambda holdings, metrics, state, period, corp_check=None: ([], ["ACQD"], []),
     )
     monkeypatch.setattr(
         portfolio, "generate_buy_queue", lambda holdings, results, cash, exclude=None: []
@@ -519,7 +522,7 @@ def test_run_alerts_on_corporate_action_without_selling_or_topping_up(
     monkeypatch.setattr(
         portfolio,
         "process_sells",
-        lambda holdings, metrics, state, corp_check=None: ([], [], ["MRGD"]),
+        lambda holdings, metrics, state, period, corp_check=None: ([], [], ["MRGD"]),
     )
     captured_buy_queue_holdings: dict[str, float] = {}
     captured_exclude: set[str] | None = None
@@ -580,7 +583,21 @@ def test_run_reproduces_the_fox_lpg_shape_and_does_not_reset_strikes_on_an_unfil
     monkeypatch.setattr(portfolio, "StateTracker", lambda: _real_state_tracker(path=state_path))
     # One strike short of the threshold -- this run's failing check
     # pushes FOX over the line, so process_sells decides to liquidate.
-    state_path.write_text(f'{{"FOX": {config.STRIKES_TO_LIQUIDATE - 1}}}')
+    # M35: v2 schema, strikes as a list of distinct periods (not an int
+    # count) -- config.STRIKES_TO_LIQUIDATE - 1 already-struck periods,
+    # none of them the one this run's own period_identifier(run_date)
+    # will compute, so this run's strike is a genuinely new period.
+    existing_periods = [f"period-{i}" for i in range(config.STRIKES_TO_LIQUIDATE - 1)]
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "strikes": {"FOX": existing_periods},
+                "holding_states": {},
+                "pending_liquidations": [],
+            }
+        )
+    )
 
     monkeypatch.setattr(
         universe, "get_universe_with_diagnostics", lambda: universe.UniverseResult(tickers=["FOX"])
@@ -677,7 +694,7 @@ def test_run_sets_kill_switch_and_settlement_blocked_on_a_query_failure(
     monkeypatch.setattr(
         portfolio,
         "process_sells",
-        lambda holdings, metrics, state, corp_check=None: (["A"], [], []),
+        lambda holdings, metrics, state, period, corp_check=None: (["A"], [], []),
     )
     monkeypatch.setattr(
         portfolio, "generate_buy_queue", lambda holdings, results, cash, exclude=None: []
@@ -718,7 +735,7 @@ def test_run_halts_remaining_liquidations_and_all_buys_after_a_query_failure(
     monkeypatch.setattr(
         portfolio,
         "process_sells",
-        lambda holdings, metrics, state, corp_check=None: (["A", "B"], [], []),
+        lambda holdings, metrics, state, period, corp_check=None: (["A", "B"], [], []),
     )
     monkeypatch.setattr(
         portfolio,
@@ -761,7 +778,9 @@ def test_run_halts_remaining_buys_after_a_buy_settlement_query_failure(
     )
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
     monkeypatch.setattr(
-        portfolio, "process_sells", lambda holdings, metrics, state, corp_check=None: ([], [], [])
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, period, corp_check=None: ([], [], []),
     )
     monkeypatch.setattr(
         portfolio,
@@ -794,7 +813,16 @@ def test_reset_stale_strikes_clears_a_tracked_ticker_no_longer_held(tmp_path: Pa
     # evidence the position is gone, independent of whether settlement
     # ever resolved that specific order.
     state_path = tmp_path / "state.json"
-    state_path.write_text('{"GONE": 10, "STILL_HELD": 3}')
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "strikes": {"GONE": ["p1", "p2"], "STILL_HELD": ["p1", "p2", "p3"]},
+                "holding_states": {},
+                "pending_liquidations": [],
+            }
+        )
+    )
     state = portfolio.StateTracker(path=state_path)
 
     bot._reset_stale_strikes_for_tickers_no_longer_held(state, {"STILL_HELD": 1000.0})
@@ -882,7 +910,7 @@ def test_run_defers_buy_orders_but_still_liquidates_when_order_budget_exceeded(
     monkeypatch.setattr(
         portfolio,
         "process_sells",
-        lambda holdings, metrics, state, corp_check=None: (["A"], [], []),
+        lambda holdings, metrics, state, period, corp_check=None: (["A"], [], []),
     )
     monkeypatch.setattr(
         portfolio,
@@ -917,7 +945,9 @@ def test_run_defers_buy_order_when_notional_budget_exceeded(
     monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {})
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
     monkeypatch.setattr(
-        portfolio, "process_sells", lambda holdings, metrics, state, corp_check=None: ([], [], [])
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, period, corp_check=None: ([], [], []),
     )
     monkeypatch.setattr(
         portfolio,
@@ -953,7 +983,9 @@ def test_run_does_not_journal_a_failed_order_and_continues(monkeypatch: pytest.M
     monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {})
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
     monkeypatch.setattr(
-        portfolio, "process_sells", lambda holdings, metrics, state, corp_check=None: ([], [], [])
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, period, corp_check=None: ([], [], []),
     )
     monkeypatch.setattr(
         portfolio,
@@ -1053,7 +1085,11 @@ def test_run_skips_sell_evaluation_when_holdings_data_mostly_missing(
     process_sells_calls: list[dict[str, float]] = []
 
     def _fake_process_sells(
-        holdings: dict[str, float], metrics: dict[str, Any], state: Any, corp_check: Any = None
+        holdings: dict[str, float],
+        metrics: dict[str, Any],
+        state: Any,
+        period: str,
+        corp_check: Any = None,
     ) -> tuple[list[str], list[str], list[str]]:
         process_sells_calls.append(holdings)
         return ["A"], [], []
@@ -1321,7 +1357,9 @@ def test_run_trades_live_when_the_live_trading_flag_is_set(
     monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {})
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
     monkeypatch.setattr(
-        portfolio, "process_sells", lambda holdings, metrics, state, corp_check=None: ([], [], [])
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, period, corp_check=None: ([], [], []),
     )
     monkeypatch.setattr(
         portfolio, "generate_buy_queue", lambda holdings, results, cash, exclude=None: []

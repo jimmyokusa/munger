@@ -57,6 +57,7 @@ def _process_sells_if_data_is_healthy(
     holdings_metrics: dict[str, data.Metrics | None],
     state: portfolio.StateTracker,
     alerts: list[str],
+    period: str,
     corporate_action_check: Callable[[str], bool] | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Run process_sells, unless too much of the holdings' data is missing.
@@ -82,7 +83,7 @@ def _process_sells_if_data_is_healthy(
         )
         return [], [], []
     return portfolio.process_sells(
-        current_holdings, holdings_metrics, state, corporate_action_check
+        current_holdings, holdings_metrics, state, period, corporate_action_check
     )
 
 
@@ -179,8 +180,14 @@ def run(run_date: str | None = None) -> int:
     holdings_metrics = data.fetch_all_metrics(list(current_holdings), phase="holdings check")
     state = portfolio.StateTracker()
     _reset_stale_strikes_for_tickers_no_longer_held(state, current_holdings)
+    period = portfolio.period_identifier(run_date)
     to_liquidate, unresolved, corporate_action = _process_sells_if_data_is_healthy(
-        current_holdings, holdings_metrics, state, alerts, exec_module.is_corporate_action
+        current_holdings,
+        holdings_metrics,
+        state,
+        alerts,
+        period,
+        exec_module.is_corporate_action,
     )
 
     # The handoff to Execute (M34, §3.1): Evaluate decides, Execute acts.

@@ -136,22 +136,34 @@ MIN_ORDER_NOTIONAL = 50.0  # orders below this are skipped as dust
 # target is never trimmed to rebalance down (DESIGN.md 3.4: this module
 # never sells to buy, and a rally is success, not a sell signal).
 REBALANCE_DRIFT_BAND_PCT = 0.10
-# M24 fix: this counts runs, and runs are daily -- 2 was sized for the
-# quarterly cadence DESIGN.md originally assumed (roughly six months of
-# sustained deterioration), but at the actual daily cadence it meant two
-# consecutive daily yfinance reads was enough to force a real
-# liquidation, against yfinance's own acknowledged field-level flakiness
-# (the system's weakest input). REBALANCE_DRIFT_BAND_PCT above already
-# solves the equivalent buy-side noise problem; nothing solved it
-# sell-side until now. 10 (~2 trading weeks of uninterrupted quality
-# failure; any single clean check resets the streak to zero) is the
-# smallest change that stops the hair-trigger, not a precise derivation
-# -- still well short of the ~2 quarters DESIGN.md's philosophy implies.
-# The more faithful fix is decoupling sell evaluation onto its own
-# weekly/monthly tick while the screen keeps running daily; that's a
-# structural change to the run loop deliberately left as an open design
-# question rather than folded into this retune.
-STRIKES_TO_LIQUIDATE = 10
+# History: M24 fix -- this counted runs, and runs were daily -- 2 was
+# sized for the quarterly cadence DESIGN.md originally assumed (roughly
+# six months of sustained deterioration), but at the actual daily
+# cadence it meant two consecutive daily yfinance reads was enough to
+# force a real liquidation, against yfinance's own acknowledged
+# field-level flakiness (the system's weakest input). REBALANCE_DRIFT_
+# BAND_PCT above already solves the equivalent buy-side noise problem;
+# nothing solved it sell-side until then. 10 (~2 trading weeks of
+# uninterrupted quality failure) was a stopgap, explicitly noted at the
+# time as "not a precise derivation... still well short of the ~2
+# quarters DESIGN.md's philosophy implies," pending "decoupling sell
+# evaluation onto its own weekly/monthly tick... a structural change to
+# the run loop deliberately left as an open design question."
+#
+# M34/M35 (Design v2.2 §3.1) are that structural change: Evaluate now
+# runs on its own quarterly cadence, and a strike is recorded against a
+# fiscal *period* (portfolio.period_identifier), not a run -- any number
+# of daily bot.py invocations within one quarter already collapse to at
+# most one strike. Counting periods instead of runs is exactly the fix
+# the stopgap comment above was waiting for, so the threshold reverts to
+# the original, literal design intent it names directly: "two strikes
+# means two consecutive quarters of failed quality" (§3.1). Leaving this
+# at 10 after M35 shipped would have been a real bug, not a conservative
+# choice -- staff-engineer-reviewer finding: 10 periods is ~2.5 years of
+# sustained failure before the automated liquidation safety net fires at
+# all, silently defeating the two-strike discipline the whole redesign
+# exists to restore, with no alert and no disclosed reasoning.
+STRIKES_TO_LIQUIDATE = 2
 
 # --- Execution module (DESIGN.md 3.5) ---
 # M20 (DESIGN_REAL_MONEY.md §3.1): env-driven, not a bare literal, so the

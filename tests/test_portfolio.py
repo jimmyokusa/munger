@@ -67,15 +67,26 @@ def test_state_tracker_get_strikes_defaults_to_zero(tmp_path: Path) -> None:
 
 def test_state_tracker_add_strike_increments(tmp_path: Path) -> None:
     tracker = portfolio.StateTracker(path=tmp_path / "state.json")
-    tracker.add_strike("AAPL")
+    tracker.add_strike("AAPL", "2026Q1")
     assert tracker.get_strikes("AAPL") == 1
-    tracker.add_strike("AAPL")
+    tracker.add_strike("AAPL", "2026Q2")
     assert tracker.get_strikes("AAPL") == 2
+
+
+def test_state_tracker_add_strike_is_idempotent_within_the_same_period(tmp_path: Path) -> None:
+    # M35: two strikes means two DISTINCT periods of failed quality, not
+    # two calls -- a crash-restart re-run (or bot.py's own daily
+    # fallback cadence) checking the same quarter twice must not
+    # double-count.
+    tracker = portfolio.StateTracker(path=tmp_path / "state.json")
+    tracker.add_strike("AAPL", "2026Q1")
+    tracker.add_strike("AAPL", "2026Q1")
+    assert tracker.get_strikes("AAPL") == 1
 
 
 def test_state_tracker_reset_strikes_clears(tmp_path: Path) -> None:
     tracker = portfolio.StateTracker(path=tmp_path / "state.json")
-    tracker.add_strike("AAPL")
+    tracker.add_strike("AAPL", "2026Q1")
     tracker.reset_strikes("AAPL")
     assert tracker.get_strikes("AAPL") == 0
 
@@ -83,7 +94,7 @@ def test_state_tracker_reset_strikes_clears(tmp_path: Path) -> None:
 def test_state_tracker_save_and_reload_roundtrip(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     tracker = portfolio.StateTracker(path=state_path)
-    tracker.add_strike("AAPL")
+    tracker.add_strike("AAPL", "2026Q1")
     tracker.save()
 
     reloaded = portfolio.StateTracker(path=state_path)
@@ -101,11 +112,19 @@ def test_state_tracker_corrupt_file_falls_back_to_empty(tmp_path: Path) -> None:
 
 def test_state_tracker_tracked_tickers_lists_only_nonzero_strikes(tmp_path: Path) -> None:
     tracker = portfolio.StateTracker(path=tmp_path / "state.json")
-    tracker.add_strike("AAPL")
-    tracker.add_strike("MSFT")
+    tracker.add_strike("AAPL", "2026Q1")
+    tracker.add_strike("MSFT", "2026Q1")
     tracker.reset_strikes("MSFT")
 
     assert tracker.tracked_tickers() == ["AAPL"]
+
+
+def test_period_identifier_derives_the_calendar_quarter() -> None:
+    assert portfolio.period_identifier("2026-01-15") == "2026Q1"
+    assert portfolio.period_identifier("2026-03-31") == "2026Q1"
+    assert portfolio.period_identifier("2026-04-01") == "2026Q2"
+    assert portfolio.period_identifier("2026-09-03") == "2026Q3"
+    assert portfolio.period_identifier("2026-12-31") == "2026Q4"
 
 
 # --- StateTracker: holding_states (Design v2.2 §3.2, M29c) ---
@@ -163,7 +182,7 @@ def test_state_tracker_tracked_holding_state_tickers_includes_healthy(tmp_path: 
 def test_state_tracker_save_and_reload_roundtrips_holding_states(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     tracker = portfolio.StateTracker(path=state_path)
-    tracker.add_strike("AAPL")
+    tracker.add_strike("AAPL", "2026Q1")
     tracker.record_holding_state("AAPL", portfolio.HoldingState.DETERIORATING)
     tracker.record_holding_state("MSFT", portfolio.HoldingState.HEALTHY)
     tracker.save()
@@ -174,55 +193,146 @@ def test_state_tracker_save_and_reload_roundtrips_holding_states(tmp_path: Path)
     assert reloaded.get_holding_state("MSFT") is portfolio.HoldingState.HEALTHY
 
 
-def test_state_tracker_save_writes_the_new_wrapped_schema(tmp_path: Path) -> None:
+def test_state_tracker_save_writes_the_v2_schema(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     tracker = portfolio.StateTracker(path=state_path)
-    tracker.add_strike("AAPL")
-    tracker.record_holding_state("AAPL", portfolio.HoldingState.HEALTHY)
+    tracker.add_strike("AAPL", "2026Q1")
+    tracker.add_strike("AAPL", "2026Q2")
+    tracker.record_holding_state("AAPL", portfolio.HoldingState.DETERIORATING)
     tracker.save()
 
     on_disk = json.loads(state_path.read_text())
     assert on_disk == {
-        "strikes": {"AAPL": 1},
-        "holding_states": {"AAPL": "healthy"},
+        "version": 2,
+        "strikes": {"AAPL": ["2026Q1", "2026Q2"]},
+        "holding_states": {"AAPL": "deteriorating"},
         "pending_liquidations": [],
     }
 
 
-def test_state_tracker_loads_a_legacy_flat_strikes_file(tmp_path: Path) -> None:
-    # Every real state.json written before M29c is exactly this shape --
-    # a bare {ticker: strike_count} dict, no wrapper keys at all. Must
-    # keep loading correctly, or every real deployed state.json becomes
-    # unreadable the moment this code ships.
+def test_state_tracker_loads_a_v2_file(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
-    state_path.write_text('{"FOX": 1, "LPG": 2}')
+    state_path.write_text(
+        '{"version": 2, "strikes": {"HRMY": ["2026Q1", "2026Q2"]}, '
+        '"holding_states": {}, "pending_liquidations": []}'
+    )
 
     tracker = portfolio.StateTracker(path=state_path)
 
-    assert tracker.get_strikes("FOX") == 1
-    assert tracker.get_strikes("LPG") == 2
-    assert tracker.all_holding_states() == {}  # no holding-state data in a legacy file
+    assert tracker.get_strikes("HRMY") == 2
 
 
-def test_state_tracker_a_legacy_ticker_literally_named_strikes_does_not_misread_as_new_format(
+# --- StateTracker: migration to v2 (M35, Design v2.2 §3.1) ---
+#
+# Migration policy, stated explicitly and tested, not left implicit:
+# every in-flight integer strike count is DISCARDED, never converted
+# into a synthesized placeholder period -- a fabricated historical
+# period would misrepresent when the strike actually occurred.
+
+
+def test_state_tracker_migrates_a_real_legacy_flat_file_discarding_strikes(
     tmp_path: Path,
 ) -> None:
-    # The new-format detection requires BOTH "strikes" and "holding_states"
-    # keys present AND both mapped to dicts -- not just "strikes" present
-    # -- specifically so a legacy file with an (unlikely but possible)
-    # real ticker literally named "STRIKES" doesn't get misread as the
-    # new wrapped format and silently lose every other ticker's count.
-    # Uppercase here since that's what a real ticker looks like; the
-    # check itself is case-sensitive against the lowercase wrapper key,
-    # so this also confirms there's no accidental case-insensitive
-    # collision.
+    # Real fixture: tests/fixtures/real_bot_state_legacy_strikes.json is
+    # an actual byte-for-byte copy of this project's own bot-state
+    # branch's state.json from before M29c/M34/M35 shipped -- the exact
+    # FOX/LPG divergence this whole Design v2.2 epic traces back to. A
+    # bare {ticker: strike_count} dict, no wrapper keys at all.
+    #
+    # Scope, stated plainly (staff-engineer-reviewer finding): this
+    # proves the *legacy pre-M29c* discard path against real historical
+    # data -- which, per the real `bot-state` branch's own git history
+    # checked directly, is the ONLY format any real state.json has ever
+    # actually been in (the branch's current file is `{}`, from the
+    # manual paper-account reset, and every prior real snapshot on that
+    # branch predates M29c). The synthetic M29c-M34-wrapped-format test
+    # below it is NOT backed by an equivalent real fixture, because no
+    # real state.json in that intermediate shape has ever existed --
+    # bot.py, evaluate.py, and execute_trades.py all moved straight from
+    # legacy to v2 in the same commit, so that intermediate format is
+    # defensive coverage for a shape this deployment history never
+    # actually produced, not a gap in what "real fixture" testing means
+    # here.
+    real_fixture = Path(__file__).parent / "fixtures" / "real_bot_state_legacy_strikes.json"
+    state_path = tmp_path / "state.json"
+    state_path.write_text(real_fixture.read_text())
+
+    tracker = portfolio.StateTracker(path=state_path)
+
+    # Discarded, not migrated to a fabricated single-period list --
+    # both tickers start clean and must fail quality again, under the
+    # new period-based rule, to re-accumulate.
+    assert tracker.get_strikes("FOX") == 0
+    assert tracker.get_strikes("LPG") == 0
+    assert tracker.all_holding_states() == {}
+    assert tracker.pending_liquidations() == []
+
+
+def test_state_tracker_logs_a_warning_naming_discarded_tickers(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Staff-engineer-reviewer finding: the discard branches previously
+    # returned silently, unlike the adjacent "unreadable/corrupt"
+    # except-branch, which does log -- an operator reviewing a cutover
+    # run's logs had no way to see that real strike history was erased,
+    # or for which tickers, without diffing state.json by hand.
+    state_path = tmp_path / "state.json"
+    state_path.write_text('{"FOX": 1, "LPG": 2}')
+
+    with caplog.at_level("WARNING"):
+        portfolio.StateTracker(path=state_path)
+
+    assert "FOX" in caplog.text
+    assert "LPG" in caplog.text
+    assert "discard" in caplog.text.lower()
+
+
+def test_state_tracker_does_not_log_when_there_is_nothing_to_discard(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING"):
+        portfolio.StateTracker(path=tmp_path / "state.json")  # no file at all
+
+    assert caplog.records == []
+
+
+def test_state_tracker_a_legacy_ticker_literally_named_strikes_does_not_misread_as_v2(
+    tmp_path: Path,
+) -> None:
+    # The v2-format detection requires "version": 2 specifically -- not
+    # just a "strikes" key present -- specifically so a legacy file with
+    # an (unlikely but possible) real ticker literally named "STRIKES"
+    # doesn't get misread as the new format.
     state_path = tmp_path / "state.json"
     state_path.write_text('{"STRIKES": 3, "AAPL": 1}')
 
     tracker = portfolio.StateTracker(path=state_path)
 
-    assert tracker.get_strikes("STRIKES") == 3
-    assert tracker.get_strikes("AAPL") == 1
+    # Migrated (discarded), not misread -- both entries are pre-v2
+    # integer strike counts, correctly zeroed out per the migration
+    # policy, not treated as v2 period lists.
+    assert tracker.get_strikes("STRIKES") == 0
+    assert tracker.get_strikes("AAPL") == 0
+
+
+def test_state_tracker_migrates_a_pre_v2_wrapped_file_discarding_strikes_only(
+    tmp_path: Path,
+) -> None:
+    # The M29c-M34 wrapped-but-still-int-valued shape (no "version" key
+    # at all). Strikes are discarded per the migration policy;
+    # holding_states/pending_liquidations are NOT strike data and carry
+    # forward unchanged.
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        '{"strikes": {"AAPL": 5}, "holding_states": {"AAPL": "deteriorating"}, '
+        '"pending_liquidations": ["AAPL"]}'
+    )
+
+    tracker = portfolio.StateTracker(path=state_path)
+
+    assert tracker.get_strikes("AAPL") == 0  # discarded
+    assert tracker.get_holding_state("AAPL") is portfolio.HoldingState.DETERIORATING  # preserved
+    assert tracker.pending_liquidations() == ["AAPL"]  # preserved
 
 
 def test_state_tracker_get_holding_state_ignores_an_unrecognized_value(tmp_path: Path) -> None:
@@ -233,7 +343,10 @@ def test_state_tracker_get_holding_state_ignores_an_unrecognized_value(tmp_path:
     # unhandled ValueError that would abort report.py's entire report
     # generation over one ticker's stale/unknown value.
     state_path = tmp_path / "state.json"
-    state_path.write_text('{"strikes": {}, "holding_states": {"AAPL": "some_future_state"}}')
+    state_path.write_text(
+        '{"version": 2, "strikes": {}, "holding_states": {"AAPL": "some_future_state"}, '
+        '"pending_liquidations": []}'
+    )
 
     tracker = portfolio.StateTracker(path=state_path)
 
@@ -243,7 +356,9 @@ def test_state_tracker_get_holding_state_ignores_an_unrecognized_value(tmp_path:
 def test_state_tracker_all_holding_states_omits_an_unrecognized_value(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     state_path.write_text(
-        '{"strikes": {}, "holding_states": {"AAPL": "some_future_state", "MSFT": "healthy"}}'
+        '{"version": 2, "strikes": {}, '
+        '"holding_states": {"AAPL": "some_future_state", "MSFT": "healthy"}, '
+        '"pending_liquidations": []}'
     )
 
     tracker = portfolio.StateTracker(path=state_path)
@@ -254,7 +369,7 @@ def test_state_tracker_all_holding_states_omits_an_unrecognized_value(tmp_path: 
     assert tracker.all_holding_states() == {"MSFT": portfolio.HoldingState.HEALTHY}
 
 
-def test_state_tracker_migrates_a_legacy_file_to_the_new_schema_on_save(tmp_path: Path) -> None:
+def test_state_tracker_migrates_a_legacy_file_to_v2_on_save(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     state_path.write_text('{"FOX": 1}')
 
@@ -264,7 +379,8 @@ def test_state_tracker_migrates_a_legacy_file_to_the_new_schema_on_save(tmp_path
 
     on_disk = json.loads(state_path.read_text())
     assert on_disk == {
-        "strikes": {"FOX": 1},
+        "version": 2,
+        "strikes": {},  # discarded, not fabricated
         "holding_states": {"FOX": "deteriorating"},
         "pending_liquidations": [],
     }
@@ -322,12 +438,15 @@ def test_state_tracker_loads_pending_liquidations_from_a_pre_m34_file(tmp_path: 
     # holding_states but no pending_liquidations key at all -- must
     # default to empty, not crash.
     state_path = tmp_path / "state.json"
-    state_path.write_text('{"strikes": {"AAPL": 1}, "holding_states": {}}')
+    state_path.write_text('{"strikes": {"AAPL": 1}, "holding_states": {"AAPL": "deteriorating"}}')
 
     tracker = portfolio.StateTracker(path=state_path)
 
     assert tracker.pending_liquidations() == []
-    assert tracker.get_strikes("AAPL") == 1  # the rest of the pre-M34 file still loads correctly
+    # This is also a pre-v2 file (no "version" key) -- strikes are
+    # discarded per the M35 migration policy, holding_states preserved.
+    assert tracker.get_strikes("AAPL") == 0
+    assert tracker.get_holding_state("AAPL") is portfolio.HoldingState.DETERIORATING
 
 
 # --- HoldingState / classify_holding_state (Design v2.2 §3.2, M29a) ---
@@ -377,11 +496,13 @@ def test_classify_holding_state_corporate_action_takes_priority_over_data_presen
 
 # --- process_sells ---
 
+_TEST_PERIOD = "2026Q1"  # a fixed period id (M35) -- these tests aren't about period boundaries
+
 
 def test_process_sells_clean_check_no_strike(tmp_path: Path) -> None:
     state = portfolio.StateTracker(path=tmp_path / "state.json")
     to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
-        {"AAPL": 1000.0}, {"AAPL": _quality_metrics(symbol="AAPL")}, state
+        {"AAPL": 1000.0}, {"AAPL": _quality_metrics(symbol="AAPL")}, state, _TEST_PERIOD
     )
     assert to_liquidate == []
     assert unresolved == []
@@ -394,12 +515,12 @@ def test_process_sells_one_strike_then_clean_resets(tmp_path: Path) -> None:
     passing = _quality_metrics(symbol="AAPL")
 
     state = portfolio.StateTracker(path=state_path)
-    portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": failing}, state)
+    portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": failing}, state, _TEST_PERIOD)
     assert state.get_strikes("AAPL") == 1
 
     state2 = portfolio.StateTracker(path=state_path)  # reload, like the next run would
     to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
-        {"AAPL": 1000.0}, {"AAPL": passing}, state2
+        {"AAPL": 1000.0}, {"AAPL": passing}, state2, _TEST_PERIOD
     )
     assert to_liquidate == []
     assert unresolved == []
@@ -408,15 +529,19 @@ def test_process_sells_one_strike_then_clean_resets(tmp_path: Path) -> None:
 
 def test_process_sells_liquidates_only_after_the_configured_streak(tmp_path: Path) -> None:
     # M24: config-driven, not a hardcoded "2", so this survives the next
-    # retune of config.STRIKES_TO_LIQUIDATE (currently 10).
+    # retune of config.STRIKES_TO_LIQUIDATE (currently 2, per M35's
+    # revert -- see that constant's own comment). M35: each iteration
+    # uses a DISTINCT period -- add_strike is idempotent per period now,
+    # so reusing the same one every loop would only ever accumulate a
+    # single strike, defeating the point of this test.
     state_path = tmp_path / "state.json"
     failing = _quality_metrics(symbol="AAPL", return_on_equity=0.05)
 
     to_liquidate: list[str] = []
-    for _ in range(config.STRIKES_TO_LIQUIDATE):
+    for i in range(config.STRIKES_TO_LIQUIDATE):
         state = portfolio.StateTracker(path=state_path)
         to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
-            {"AAPL": 1000.0}, {"AAPL": failing}, state
+            {"AAPL": 1000.0}, {"AAPL": failing}, state, f"period-{i}"
         )
         assert unresolved == []
 
@@ -436,15 +561,33 @@ def test_process_sells_does_not_liquidate_before_the_configured_streak(tmp_path:
     failing = _quality_metrics(symbol="AAPL", return_on_equity=0.05)
 
     to_liquidate: list[str] = []
-    for _ in range(config.STRIKES_TO_LIQUIDATE - 1):
+    for i in range(config.STRIKES_TO_LIQUIDATE - 1):
         state = portfolio.StateTracker(path=state_path)
         to_liquidate, _unresolved, _corporate_action = portfolio.process_sells(
-            {"AAPL": 1000.0}, {"AAPL": failing}, state
+            {"AAPL": 1000.0}, {"AAPL": failing}, state, f"period-{i}"
         )
 
     assert to_liquidate == []
     final_state = portfolio.StateTracker(path=state_path)
     assert final_state.get_strikes("AAPL") == config.STRIKES_TO_LIQUIDATE - 1
+
+
+def test_process_sells_does_not_double_count_the_same_period_repeated(tmp_path: Path) -> None:
+    # M35's own new behavior: repeating the SAME period (a crash-restart
+    # re-run within one evaluation window) must not accumulate multiple
+    # strikes, however many times it's called.
+    state_path = tmp_path / "state.json"
+    failing = _quality_metrics(symbol="AAPL", return_on_equity=0.05)
+
+    for _ in range(config.STRIKES_TO_LIQUIDATE):
+        state = portfolio.StateTracker(path=state_path)
+        to_liquidate, _unresolved, _corporate_action = portfolio.process_sells(
+            {"AAPL": 1000.0}, {"AAPL": failing}, state, _TEST_PERIOD
+        )
+
+    assert to_liquidate == []
+    final_state = portfolio.StateTracker(path=state_path)
+    assert final_state.get_strikes("AAPL") == 1  # one period, one strike, no matter how many calls
 
 
 def test_process_sells_resets_strikes_after_liquidation_for_a_future_rebuy(
@@ -468,21 +611,23 @@ def test_process_sells_resets_strikes_after_liquidation_for_a_future_rebuy(
     failing = _quality_metrics(symbol="AAPL", return_on_equity=0.05)
 
     to_liquidate: list[str] = []
-    for _ in range(config.STRIKES_TO_LIQUIDATE):
+    state = portfolio.StateTracker(path=state_path)
+    for i in range(config.STRIKES_TO_LIQUIDATE):
         state = portfolio.StateTracker(path=state_path)
         to_liquidate, _unresolved, _corporate_action = portfolio.process_sells(
-            {"AAPL": 1000.0}, {"AAPL": failing}, state
+            {"AAPL": 1000.0}, {"AAPL": failing}, state, f"period-{i}"
         )
     assert to_liquidate == ["AAPL"]  # confirms liquidation actually happened first
     state.reset_strikes("AAPL")  # simulates bot.run's post-confirmed-fill reset
     state.save()
 
     # AAPL is re-bought later; its very first quality check after that
-    # fails once -- this must be treated as strike 1 of a fresh streak,
-    # not a continuation of the already-liquidated streak.
+    # fails once, in a period never used above -- this must be treated
+    # as strike 1 of a fresh streak, not a continuation of the
+    # already-liquidated streak.
     state_next = portfolio.StateTracker(path=state_path)
     to_liquidate, _unresolved, _corporate_action = portfolio.process_sells(
-        {"AAPL": 1000.0}, {"AAPL": failing}, state_next
+        {"AAPL": 1000.0}, {"AAPL": failing}, state_next, "period-rebuy"
     )
 
     assert to_liquidate == []
@@ -498,7 +643,7 @@ def test_process_sells_missing_ticker_is_unresolved_not_struck(tmp_path: Path) -
     # the buggy behavior -- inverted, not deleted.)
     state = portfolio.StateTracker(path=tmp_path / "state.json")
     to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
-        {"AAPL": 1000.0}, {}, state
+        {"AAPL": 1000.0}, {}, state, _TEST_PERIOD
     )
     assert to_liquidate == []
     assert unresolved == ["AAPL"]
@@ -510,7 +655,7 @@ def test_process_sells_none_metrics_is_unresolved_not_struck(tmp_path: Path) -> 
     # not deleted; see the sibling test above for why.
     state = portfolio.StateTracker(path=tmp_path / "state.json")
     to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
-        {"AAPL": 1000.0}, {"AAPL": None}, state
+        {"AAPL": 1000.0}, {"AAPL": None}, state, _TEST_PERIOD
     )
     assert to_liquidate == []
     assert unresolved == ["AAPL"]
@@ -524,12 +669,12 @@ def test_process_sells_unreadable_check_holds_an_existing_streak_steady(tmp_path
     failing = _quality_metrics(symbol="AAPL", return_on_equity=0.05)
 
     state = portfolio.StateTracker(path=state_path)
-    portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": failing}, state)  # strike 1
+    portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": failing}, state, _TEST_PERIOD)  # strike 1
     assert state.get_strikes("AAPL") == 1
 
     state2 = portfolio.StateTracker(path=state_path)
     to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
-        {"AAPL": 1000.0}, {"AAPL": None}, state2
+        {"AAPL": 1000.0}, {"AAPL": None}, state2, _TEST_PERIOD
     )
     assert to_liquidate == []
     assert unresolved == ["AAPL"]
@@ -539,7 +684,7 @@ def test_process_sells_unreadable_check_holds_an_existing_streak_steady(tmp_path
     # streak isn't stuck, just untouched by the unreadable check itself.
     state3 = portfolio.StateTracker(path=state_path)
     to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
-        {"AAPL": 1000.0}, {"AAPL": _quality_metrics(symbol="AAPL")}, state3
+        {"AAPL": 1000.0}, {"AAPL": _quality_metrics(symbol="AAPL")}, state3, _TEST_PERIOD
     )
     assert unresolved == []
     assert state3.get_strikes("AAPL") == 0
@@ -549,7 +694,10 @@ def test_process_sells_persists_state(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     state = portfolio.StateTracker(path=state_path)
     portfolio.process_sells(
-        {"AAPL": 1000.0}, {"AAPL": _quality_metrics(symbol="AAPL", return_on_equity=0.05)}, state
+        {"AAPL": 1000.0},
+        {"AAPL": _quality_metrics(symbol="AAPL", return_on_equity=0.05)},
+        state,
+        _TEST_PERIOD,
     )
     assert state_path.exists()
 
@@ -559,27 +707,29 @@ def test_process_sells_persists_state(tmp_path: Path) -> None:
 
 def test_process_sells_records_healthy_holding_state(tmp_path: Path) -> None:
     state = portfolio.StateTracker(path=tmp_path / "state.json")
-    portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": _quality_metrics(symbol="AAPL")}, state)
+    portfolio.process_sells(
+        {"AAPL": 1000.0}, {"AAPL": _quality_metrics(symbol="AAPL")}, state, _TEST_PERIOD
+    )
     assert state.get_holding_state("AAPL") is portfolio.HoldingState.HEALTHY
 
 
 def test_process_sells_records_deteriorating_holding_state(tmp_path: Path) -> None:
     state = portfolio.StateTracker(path=tmp_path / "state.json")
     failing = _quality_metrics(symbol="AAPL", return_on_equity=0.05)
-    portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": failing}, state)
+    portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": failing}, state, _TEST_PERIOD)
     assert state.get_holding_state("AAPL") is portfolio.HoldingState.DETERIORATING
 
 
 def test_process_sells_records_unreadable_holding_state(tmp_path: Path) -> None:
     state = portfolio.StateTracker(path=tmp_path / "state.json")
-    portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": None}, state)
+    portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": None}, state, _TEST_PERIOD)
     assert state.get_holding_state("AAPL") is portfolio.HoldingState.UNREADABLE
 
 
 def test_process_sells_records_corporate_action_holding_state(tmp_path: Path) -> None:
     state = portfolio.StateTracker(path=tmp_path / "state.json")
     portfolio.process_sells(
-        {"AAPL": 1000.0}, {"AAPL": None}, state, corporate_action_check=lambda t: True
+        {"AAPL": 1000.0}, {"AAPL": None}, state, _TEST_PERIOD, corporate_action_check=lambda t: True
     )
     assert state.get_holding_state("AAPL") is portfolio.HoldingState.CORPORATE_ACTION
 

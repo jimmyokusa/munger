@@ -7,6 +7,7 @@ own test files). Follows the same patterns as tests/test_bot.py.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -179,8 +180,20 @@ def test_run_never_liquidates_or_buys_even_past_the_strike_threshold(
     monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {"AAPL": failing})
     state_path = config.STATE_FILE_PATH
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    # one strike short of liquidation
-    state_path.write_text('{"strikes": {"AAPL": 9}, "holding_states": {}}')
+    # M35: v2 schema, one strike (distinct period) short of liquidation --
+    # none of these collide with this run's own period (2026Q3), so its
+    # check adds a genuinely new, final distinct period.
+    existing_periods = [f"period-{i}" for i in range(config.STRIKES_TO_LIQUIDATE - 1)]
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "strikes": {"AAPL": existing_periods},
+                "holding_states": {},
+                "pending_liquidations": [],
+            }
+        )
+    )
 
     exit_code = evaluate.run(run_date="2026-07-21")
 
@@ -200,8 +213,17 @@ def test_run_records_a_pending_liquidation_past_the_strike_threshold(
     monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {"HRMY": failing})
     state_path = config.STATE_FILE_PATH
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    strikes_json = f'{{"HRMY": {config.STRIKES_TO_LIQUIDATE - 1}}}'
-    state_path.write_text(f'{{"strikes": {strikes_json}, "holding_states": {{}}}}')
+    existing_periods = [f"period-{i}" for i in range(config.STRIKES_TO_LIQUIDATE - 1)]
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "strikes": {"HRMY": existing_periods},
+                "holding_states": {},
+                "pending_liquidations": [],
+            }
+        )
+    )
 
     exit_code = evaluate.run(run_date="2026-07-21")
 

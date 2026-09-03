@@ -1955,3 +1955,124 @@ disabled and the new one is live.
 | M34 reconciled against `DESIGN_V2.md`'s own 4 exit criteria | partially done | 2026-09-03 -- 2 of 4 met cleanly, 1 met under a stated (not the only possible) reading, 1 (site-labeling) openly not met. See the reconciliation above; M34 is not being called fully closed against its own design spec. |
 | Decide and execute the actual cutover (enable new crons, disable old ones, place monitoring/display cadence) | todo | Explicitly not performed this pass -- see "Why the cutover isn't automatic" above. Next real decision point for M34. |
 | Push to `main` and GCP redeploy | done | 2026-09-03 -- commit `532282c` pushed to `main`. `deploy/cloudrun/deploy.sh daily-screen --verify` rebuilt/repinned the daily-screen Cloud Run Job to digest `sha256:2bb6ef90a920f3cd3eafc399292ade176bfaa890cb5d5e04bda4aa3b39f28194`; live verification execution `daily-screen-rf8lq` succeeded. Same scope caveat as prior pushes this session: confirms `daily_screen.py`'s own pipeline isn't broken by the new code (it never calls `evaluate.py`/`execute_trades.py`, and `portfolio.StateTracker`'s new `pending_liquidations` field is inert for the report-rendering path) -- does not exercise Evaluate/Execute themselves, which remain `workflow_dispatch`-only and untouched by this deploy. The four new GitHub Actions workflow files are not part of what a Cloud Run redeploy affects at all -- they live and are dispatched entirely within GitHub Actions, independent of this GCP deployment target. |
+
+## Design v2.2 execution: M35 -- period-based strikes with versioned state.json (added 2026-09-03, Epic C, continuing the same `/goal`)
+
+Completes Tranche 2/Epic C alongside M34: strikes become time-based
+("a strike is recorded against a *fiscal period*, not a run" -- §3.1),
+with a versioned, explicitly-migrated `state.json` schema.
+
+**Non-goals, stated explicitly** (`pm-reviewer` finding: this file is
+otherwise disciplined about naming what a milestone doesn't do, e.g.
+M34's own "why the cutover isn't automatic" -- this section previously
+lacked the equivalent). M35 does not touch the `bot.py` -> evaluate.py/
+execute_trades.py cutover decision (still open, tracked in M34's own
+section); does not change `STRIKES_TO_LIQUIDATE`'s value for any reason
+beyond restoring the pre-M24 intent the new period-based unit makes
+correct again (not a fresh re-tuning); and does not add a live-fire
+verification of the corrected threshold against a real quarterly cycle
+(tracked as its own open row below, not performed here).
+
+**Schema v2.** `{"version": 2, "strikes": {ticker: [period_id, ...]},
+"holding_states": {...}, "pending_liquidations": [...]}` -- `strikes`'
+value type changes from an int count to a list of distinct period
+identifiers (e.g. `["2026Q1", "2026Q2"]`). New module-level
+`portfolio.period_identifier(run_date)`: calendar-quarter based
+(`"2026Q3"`), the natural boundary now that Evaluate itself runs
+quarterly (M34) -- every Evaluate run within one calendar quarter maps
+to the same period id. `StateTracker.add_strike` now requires a
+`period: str` argument and is idempotent per period (adding the same
+period twice doesn't double-count -- a crash-restart re-run, or bot.py's
+own daily fallback cadence checking the same quarter repeatedly, must
+not accumulate multiple strikes for what's really one evaluation
+window). `get_strikes` still returns a plain `int` (the count of
+distinct struck periods), so every existing caller comparing against
+`config.STRIKES_TO_LIQUIDATE` needed no change. `process_sells` gained
+a required `period` parameter, threaded through from both `evaluate.py`
+(its own quarterly `run_date`) and `bot.py` (its daily `run_date` --
+bot.py's repeated daily calls within one quarter now naturally collapse
+to at most one strike too, an intentional side effect of sharing the
+same period-derivation, not a special case either module needed to
+implement).
+
+**Migration policy, stated explicitly and followed** (§3.1's own
+requirement): every in-flight integer strike count from a pre-v2 file
+is discarded, never converted into a synthesized placeholder period --
+a fabricated historical period would misrepresent *when* the strike
+actually occurred. Any ticker mid-streak at migration time starts clean
+and must fail quality again, under the new period-based rule, to
+re-accumulate. Implementation note: a discarded ticker is *absent* from
+the in-memory strikes dict entirely, not present with an explicit empty
+list -- this preserves `tracked_tickers()`'s existing "presence implies
+nonzero" invariant (it returns `list(self._strikes.keys())` with no
+separate nonzero filter, relying on the fact that nothing ever inserts
+a zero-strike entry); `get_strikes` returns `0` either way, so this is
+the same conceptual "empty period list" the design doc's own exit
+criteria describes, implemented in the way that doesn't quietly break
+an existing method's contract. `holding_states`/`pending_liquidations`
+are NOT strike data and are preserved as-is across migration.
+
+**Real-fixture migration test.**
+`tests/fixtures/real_bot_state_legacy_strikes.json` is a byte-for-byte
+copy of this project's own `bot-state` branch's actual historical
+`state.json` (from before the FOX/LPG positions were manually
+liquidated) -- `{"FOX": 1, "LPG": 1}`, the exact divergence this whole
+epic traces back to. Fetched read-only (`git fetch origin bot-state`,
+never pushed to) specifically to test against, per §3.1's own "tested
+against real persisted state from bot-state, not a synthetic fixture"
+requirement.
+
+**`staff-engineer-reviewer` pass -- one critical finding, fixed; two
+lower-severity findings, fixed; two findings recorded as verified-safe
+or scope-limited, not code changes:**
+
+| Finding | Resolution |
+|---|---|
+| **Critical.** `config.STRIKES_TO_LIQUIDATE = 10` was tuned at M24 specifically for *run-based* counting on a *daily* cadence ("~2 trading weeks of uninterrupted quality failure"), with its own comment explicitly naming the eventual fix as "decoupling sell evaluation onto its own weekly/monthly tick... a structural change... left as an open design question." M34+M35 together are exactly that structural change, but nobody had retuned the threshold to match the new period-based unit -- left at 10, reaching liquidation would have required **10 distinct calendar quarters (~2.5 years)** of sustained failure, not the "~2 consecutive quarters" §3.1's own language states as the literal design intent, silently defeating the two-strike discipline this entire epic exists to restore. **Correction, `pm-reviewer` finding:** this file's earlier framing here ("would have taken effect on the very next scheduled `daily-trade.yml` run") overstated the immediacy -- `GLOBAL_KILL_SWITCH_FLAG_FILE_PATH` (`GLOBAL_KILL_SWITCH`, committed to `main` at M24, per that section's own row) is confirmed still present in this checkout as of this write-up, so `bot.py` cannot place *any* order, paper or live, regardless of this threshold's value, until that file is removed. The bug was real and latent, not live-armed the moment this section was written; its actual trigger condition is "someone lifts `GLOBAL_KILL_SWITCH` before this fix ships," not "the next cron tick." Severity of the underlying defect is unchanged by this correction -- a wrong threshold is still a wrong threshold -- only the urgency framing was inaccurate. | **Code fix.** `STRIKES_TO_LIQUIDATE` reverted to `2` -- the original pre-M24 value, sized for exactly the quarterly cadence M24's own comment said was still owed. Comment rewritten to carry the full history (M24's daily-cadence stopgap, explicitly non-final; M34/M35 as the fix it was waiting for) so a future reader doesn't have to reconstruct this reasoning from two separate commits. |
+| The pre-v2 migration discard branches in `StateTracker._load` returned silently -- no log line at all, unlike the adjacent "unreadable/corrupt" except-branch three lines below, which does log. An operator reviewing a cutover run's logs had no way to see that real strike history was erased, or for which tickers, without diffing `state.json` by hand. | **Code fix.** New `_log_discarded_strikes` helper: a `logger.warning` naming the affected tickers on both discard paths (pre-v2 wrapped and legacy-flat), silent only when there's genuinely nothing to discard. Two new tests confirm the warning fires with the right ticker names and stays silent on an empty/absent file. |
+| The real-fixture migration test only exercises the pre-M29c legacy-flat discard path; the M29c-M34-wrapped-format discard path is covered only by a synthetic fixture, despite that being (in the abstract) the more recent, more-likely-live format. | **Not a code fix -- verified and documented, not a real gap.** Checked the actual `bot-state` branch's git history directly: its current file is `{}` (the manual reset), and every prior real snapshot on that branch predates M29c -- the wrapped-int intermediate format has **never actually existed** in real production state, because `bot.py`/`evaluate.py`/`execute_trades.py` all move straight from legacy to v2 in this same commit. The synthetic test for that branch is defensive coverage for a shape this deployment history never produced, correctly labeled as such now in its own docstring, not a gap in "real fixture" testing. |
+| Reverse-compatibility risk: `state.json` is shared across independently-deployed consumers (GitHub-Actions writers; `report.py`'s separately-released Cloud Run/Pi k3s image) that can be on different code versions mid-rollout -- no test or documented reasoning for what happens when an *older* (pre-M35) binary reads a *v2* file. | **Not a code fix -- traced and verified safe, documented in `StateTracker`'s own docstring.** A pre-M35 binary's own format check only tests for dict-ness, so it takes its "wrapped format" branch on a v2 file (still a dict, just list-valued) and fails inside its own `int(v)` cast on a list value -- a `TypeError`, caught by that same binary's own blanket `except (..., TypeError, ...)`, degrading safely to empty strikes with a logged (if imprecisely worded) error, not an uncaught crash. Confirmed by re-reading the exact pre-M35 `_load` shape this replaced, not merely assumed. `report.py` itself never touches strikes directly (only `all_holding_states()`), so this risk is narrower than it first appears regardless. |
+
+**Reconciled against `DESIGN_V2.md`'s own M35 exit criteria** (checked
+directly against `DESIGN_V2.md` line 1021 -- **3 criteria, not 4**;
+`pm-reviewer` finding: an earlier draft of this section claimed "4,"
+carried over from M34's write-up pattern without re-deriving M35's own
+actual count -- corrected here):
+
+1. **Schema version as a top-level field** -- met.
+2. **Migration policy stated and followed** (discard, not fabricate) --
+   met, with one disclosed deviation from the design text's literal
+   wording: `DESIGN_V2.md` says a migrated ticker gets "an empty period
+   list" (present, `[]`); this implementation makes it *absent* from
+   the strikes dict entirely instead. Same observable behavior
+   (`get_strikes` returns `0` either way) but not the same on-disk/
+   in-memory shape, chosen specifically to preserve `tracked_tickers()`'s
+   existing "presence implies nonzero" invariant (it returns
+   `list(self._strikes.keys())` with no separate nonzero filter,
+   relying on nothing ever inserting a zero-strike entry -- an explicit
+   empty-list entry would have silently broken that). `pm-reviewer`
+   finding: this is a real, unilateral reinterpretation of an explicit,
+   bolded design requirement, not a rubber-stamped match -- named here
+   plainly rather than absorbed into "done," so it's available for
+   explicit sign-off rather than discovered later by someone diffing
+   the design doc against the code.
+3. **Tested against real persisted state from `bot-state`, not only
+   synthetic** -- met, with the scope caveat on the wrapped-format path
+   documented in the findings table above.
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| `portfolio.period_identifier` (calendar-quarter derivation) | done | 2026-09-03 -- boundary-tested (Q1/Q2/Q4 edges including the exact 2026-03-31/2026-04-01 transition). |
+| `StateTracker` v2 schema + migration (discard, not fabricate) | done | 2026-09-03 |
+| `add_strike(ticker, period)`: per-period idempotency | done | 2026-09-03 |
+| `process_sells`/`evaluate.py`/`bot.py`: threaded `period` through | done | 2026-09-03 -- bot.py's daily cadence naturally collapses to one strike per quarter too. |
+| Real-fixture migration test (`tests/fixtures/real_bot_state_legacy_strikes.json`, fetched read-only from the real `bot-state` branch) | done | 2026-09-03 |
+| `staff-engineer-reviewer` pass: 1 critical + 2 lower-severity findings fixed; 2 verified-safe/scope-limited, documented not code-changed | done | 2026-09-03 -- see table above. |
+| `STRIKES_TO_LIQUIDATE` corrected 10 -> 2 to match the new period-based unit | done | 2026-09-03 -- the critical finding; see table above for the full reasoning. |
+| Discard-migration logging (`_log_discarded_strikes`) + tests | done | 2026-09-03 |
+| M35 reconciled against `DESIGN_V2.md`'s own 3 exit criteria (corrected from an earlier miscounted "4") | done | 2026-09-03 -- all 3 met; one disclosed deviation (empty-list vs. absent) on criterion 2, see above. |
+| Full suite green, `ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` clean | done | 2026-09-03 -- 610 passing (was 603 before this M35 batch). |
+| Live-verification step post-deploy (confirm the real migration ran cleanly against the real `bot-state` file; confirm `period_identifier` classifies real run dates correctly on the live cadence) | todo | `pm-reviewer` finding: this project has a real precedent for this (M22/M23's live-verification follow-ups, M34's own Cloud Run execution check) that this section didn't follow. Lower urgency than it would otherwise be, since `GLOBAL_KILL_SWITCH` currently blocks all order placement regardless (see the Critical finding's correction above) -- but still owed once that switch is ever lifted, and not yet scheduled. |
+| Rollback plan for the migration | not needed, stated explicitly | 2026-09-03 -- the migration is deliberately irreversible (discard, not fabricate) by design, but the real `bot-state` branch's current file is already `{}` (the manual paper-account reset predates this work) -- there is nothing to lose right now. `pm-reviewer` finding: this fact was previously buried inside a review-findings row rather than stated as the explicit reason a staged rollout/rollback plan is safe to skip here; surfaced directly in this row instead. |
+| Whether this push needs sign-off beyond the standing `/goal` directive | resolved, not deferred | 2026-09-03 -- `pm-reviewer` finding: a prior draft of this row was circular (justified skipping a new sign-off by re-invoking the same blanket precedent the finding was questioning) and left as an open `todo` with nothing actually gating the push row below it. Resolved directly instead: this push proceeds under the standing `/goal` directive, same as every other push this session, and does **not** wait on separate confirmation -- but the reason that's a defensible call *specifically for a threshold change* (not just precedent) is that `GLOBAL_KILL_SWITCH` makes this push inert for any live consequence: no order can be placed, correct threshold or wrong one, until a human makes the separate, independently-deliberate decision to remove that file. *That* removal -- not this push -- is the actual moment real capital risk changes, and it is not being made here or implied by this row. |
+| Push to `main` and GCP redeploy | todo | Next step this session. **Scope note** (`pm-reviewer` finding, matching M34's own equivalent caveat): a GCP redeploy only affects `daily-screen`/`report-web` (screen-only; never touches strike logic). The load-bearing fix here (`STRIKES_TO_LIQUIDATE`) only matters to `bot.py`, which runs via GitHub Actions (`daily-trade.yml`/`daily-trade-live.yml`), a wholly separate mechanism from a Cloud Run redeploy -- the `git push` to `main` is what actually activates it, not the GCP step. |

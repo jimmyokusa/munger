@@ -19,6 +19,7 @@ rather than splitting into a second persisted store for one more field.
 
 from __future__ import annotations
 
+import datetime
 import enum
 import json
 import logging
@@ -78,33 +79,69 @@ def classify_holding_state(metrics: data.Metrics | None, is_corporate_action: bo
     return HoldingState.HEALTHY if passed else HoldingState.DETERIORATING
 
 
+def period_identifier(run_date: str) -> str:
+    """The fiscal-period id a given run_date falls in, e.g. "2026Q3" (M35, Design v2.2 §3.1).
+
+    Calendar-quarter based -- the natural period boundary given Evaluate
+    itself now runs quarterly (M34): every Evaluate run within the same
+    calendar quarter maps to the same period id, which is exactly what
+    makes `add_strike`'s per-period idempotency meaningful (a
+    crash-restart re-run, or bot.py's own daily fallback cadence, must
+    not accumulate multiple strikes for what's really one evaluation
+    period). Not tied to each individual company's own fiscal calendar
+    (which varies per filer) -- the design's own §3.1 language ("two
+    strikes means two consecutive quarters of failed quality") is about
+    *this system's* evaluation cadence, not matching each holding's own
+    10-Q schedule.
+    """
+    date = datetime.date.fromisoformat(run_date)
+    quarter = (date.month - 1) // 3 + 1
+    return f"{date.year}Q{quarter}"
+
+
 class StateTracker:
-    """Reads/writes the strike-streak counters and per-ticker holding state to state.json.
+    """Reads/writes the strike-streak periods and per-ticker holding state to state.json.
 
     Never the source of truth for current holdings -- those are always
     fetched live from the broker (DESIGN.md 3.4). Writes are atomic
     (temp file + rename) so a crash mid-write can't corrupt the file.
 
-    Schema (M29c, Design v2.2 §3.2; extended M34, §3.1): `{"strikes":
-    {ticker: int, ...}, "holding_states": {ticker: "healthy"|
+    Schema v2 (M35, Design v2.2 §3.1): `{"version": 2, "strikes":
+    {ticker: [period_id, ...]}, "holding_states": {ticker: "healthy"|
     "deteriorating"|"unreadable"|"corporate_action", ...},
-    "pending_liquidations": [ticker, ...]}`. Every real state.json
-    written before M29c is the legacy format instead -- a bare flat
-    `{ticker: int}` dict, no wrapper keys at all; every real state.json
-    written between M29c and M34 has `strikes`/`holding_states` but no
-    `pending_liquidations` key. `_load` distinguishes the pre-M29c
-    legacy shape from the wrapped one by checking for `strikes`'/
-    `holding_states`'s two wrapper keys explicitly (both must be present
-    and both must be dicts); it doesn't just check for "strikes" alone,
-    since misreading a legacy file with an unlikely-but-possible real
-    ticker literally named "STRIKES" as the new format would silently
-    drop every other real ticker's strike count. `pending_liquidations`
-    defaults to `[]` when absent -- no equivalent ambiguity risk, since
-    it's a strictly additive field a pre-M34 file never had reason to
-    include. `save()` always writes the current full format -- every
-    write migrates an older file forward, matching journal.py's own
-    migration precedent of writing the new shape going forward rather
-    than a separate one-time migration step.
+    "pending_liquidations": [ticker, ...]}`. Strikes are now recorded
+    against a *fiscal period* (see `period_identifier`), not a run --
+    two strikes means two distinct periods of failed quality, literally,
+    regardless of how many times any workflow happens to run within one
+    period. `get_strikes` still returns a plain `int` (the count of
+    distinct struck periods) so every existing caller comparing against
+    `config.STRIKES_TO_LIQUIDATE` needed no change.
+
+    Every real state.json written before this schema version has no
+    top-level `"version"` key at all -- either the pre-M29c legacy flat
+    `{ticker: int}` shape, or the M29c-M34 wrapped-but-still-int-valued
+    `{"strikes": {ticker: int}, "holding_states": {...},
+    "pending_liquidations": [...]}` shape. `_load` treats the presence
+    of `"version": 2` as the sole signal for the new list-valued format;
+    anything else (no version key, or a version this code doesn't
+    recognize) is treated as pre-v2 and migrated.
+
+    **Migration policy, stated explicitly and followed, not left
+    implicit** (§3.1's own requirement): every in-flight integer strike
+    count is discarded, not converted into a synthesized placeholder
+    period -- a fabricated historical period would misrepresent *when*
+    the strike actually occurred, which this system's own audit
+    discipline (DESIGN.md 3.6, journal.py's whole reason to exist) treats
+    as worse than losing the count. Any ticker mid-streak at migration
+    time starts clean and must fail quality again, under the new rule,
+    to re-accumulate. `holding_states`/`pending_liquidations` are NOT
+    strike data and are preserved as-is across this migration (a pre-v2
+    wrapped file's own `holding_states`/`pending_liquidations`, if
+    present, carry forward unchanged) -- only strikes' value type
+    changes shape. `save()` always writes the current (v2) format --
+    every write migrates an older file forward, matching journal.py's
+    own migration precedent of writing the new shape going forward
+    rather than a separate one-time migration step.
 
     `pending_liquidations` (M34, Design v2.2 §3.1): the handoff between
     the quarterly Evaluate cadence (which decides a ticker should be
@@ -114,49 +151,124 @@ class StateTracker:
     is confirmed filled -- an unfilled/unconfirmed one stays pending for
     the next Execute window to retry, matching §3.3's "unfilled orders
     are surfaced, not forgotten" rule one level up in cadence.
+
+    **Reverse compatibility, verified not just assumed** (staff-engineer-
+    reviewer finding): state.json is shared across independently-
+    deployed consumers (GitHub-Actions-triggered writers; report.py's
+    separately-released Cloud Run/Pi k3s image, which only ever reads
+    `all_holding_states()`, never strikes directly) that can be on
+    different code versions during a rollout. A pre-M35 binary reading a
+    v2 file takes its own "pre-v2 wrapped format" branch (v2's `strikes`
+    is still a dict, just list-valued instead of int-valued, and that
+    binary's own format check only tests for dict-ness) and then fails
+    inside `int(v)` on a list value -- a `TypeError`, caught by that same
+    binary's own blanket `except (..., TypeError, ...)`, degrading
+    safely to empty strikes with a logged (if imprecisely worded,
+    "corrupt" rather than "newer schema") error, not an uncaught crash.
+    Confirmed by re-reading the exact pre-M35 `_load` shape this
+    replaced, not merely assumed.
     """
 
+    _SCHEMA_VERSION = 2
+
     def __init__(self, path: Path = config.STATE_FILE_PATH) -> None:
-        """Load existing strike counters, holding states, and pending liquidations."""
+        """Load existing strike periods, holding states, and pending liquidations."""
         self._path = path
-        self._strikes: dict[str, int]
+        self._strikes: dict[str, list[str]]
         self._holding_states: dict[str, str]
         self._pending_liquidations: set[str]
         self._strikes, self._holding_states, self._pending_liquidations = self._load()
 
-    def _load(self) -> tuple[dict[str, int], dict[str, str], set[str]]:
+    def _load(self) -> tuple[dict[str, list[str]], dict[str, str], set[str]]:
         if not self._path.exists():
             return {}, {}, set()
         try:
             loaded = json.loads(self._path.read_text())
-            if isinstance(loaded.get("strikes"), dict) and isinstance(
-                loaded.get("holding_states"), dict
-            ):
-                strikes = {str(k): int(v) for k, v in loaded["strikes"].items()}
-                holding_states = {str(k): str(v) for k, v in loaded["holding_states"].items()}
+            if loaded.get("version") == self._SCHEMA_VERSION:
+                # .get(..., {}) here, not direct indexing (staff-engineer-
+                # reviewer finding): a hand-edited or partially-repaired
+                # state.json tagged "version": 2 but missing a key (a
+                # plausible operational action -- this project's own
+                # history includes a hand-reset state.json) must degrade
+                # to empty for that key, the same graceful fallback every
+                # other malformed shape below gets, not an uncaught
+                # KeyError that crashes the whole run.
+                strikes = {
+                    str(k): [str(p) for p in v] for k, v in loaded.get("strikes", {}).items()
+                }
+                holding_states = {
+                    str(k): str(v) for k, v in loaded.get("holding_states", {}).items()
+                }
                 raw_pending = loaded.get("pending_liquidations", [])
                 pending = {str(t) for t in raw_pending} if isinstance(raw_pending, list) else set()
                 return strikes, holding_states, pending
+            if isinstance(loaded.get("strikes"), dict) and isinstance(
+                loaded.get("holding_states"), dict
+            ):
+                # Pre-v2, M29c-M34 wrapped format: strikes are still
+                # plain ints here. Discarded per the migration policy
+                # above -- holding_states/pending_liquidations are not
+                # strike data and carry forward unchanged.
+                self._log_discarded_strikes(loaded["strikes"])
+                holding_states = {str(k): str(v) for k, v in loaded["holding_states"].items()}
+                raw_pending = loaded.get("pending_liquidations", [])
+                pending = {str(t) for t in raw_pending} if isinstance(raw_pending, list) else set()
+                return {}, holding_states, pending
             # Legacy pre-M29c format: the whole file is a flat
-            # {ticker: strike_count} dict with no wrapper keys.
-            return {str(k): int(v) for k, v in loaded.items()}, {}, set()
-        except (json.JSONDecodeError, OSError, ValueError, TypeError, AttributeError):
+            # {ticker: strike_count} dict with no wrapper keys. Same
+            # discard-the-counts migration policy.
+            self._log_discarded_strikes(loaded)
+            return {}, {}, set()
+        except (json.JSONDecodeError, OSError, ValueError, TypeError, AttributeError, KeyError):
             logger.error(
                 "%s unreadable/corrupt; starting from empty state", self._path, exc_info=True
             )
             return {}, {}, set()
 
-    def get_strikes(self, ticker: str) -> int:
-        """Current consecutive-strike count for `ticker` (0 if none)."""
-        return self._strikes.get(ticker, 0)
+    def _log_discarded_strikes(self, pre_v2_strikes: dict[str, object]) -> None:
+        """Warn, naming the affected tickers, when a pre-v2 migration discards strike data.
 
-    def add_strike(self, ticker: str) -> int:
-        """Increment `ticker`'s strike count and return the new value."""
-        self._strikes[ticker] = self._strikes.get(ticker, 0) + 1
-        return self._strikes[ticker]
+        Staff-engineer-reviewer finding: the discard branches in `_load`
+        previously returned silently -- unlike the adjacent "unreadable/
+        corrupt" except-branch just below them, which does log. A ticker
+        one strike away from a real quality-driven liquidation has its
+        warning history erased the moment this schema ships; an operator
+        reviewing the cutover run's logs should be able to see that
+        happened, and to which tickers, without diffing state.json by
+        hand. A no-op (not even a log line) when there was nothing to
+        discard -- an empty pre-v2 file is not a noteworthy event.
+        """
+        if pre_v2_strikes:
+            logger.warning(
+                "%s: migrating to the v2 (period-based) strikes schema -- discarding "
+                "in-flight integer strike counts for %s per the stated migration policy "
+                "(no fabricated placeholder period; each starts clean and must fail "
+                "quality again, under the new period-based rule, to re-accumulate)",
+                self._path,
+                sorted(pre_v2_strikes),
+            )
+
+    def get_strikes(self, ticker: str) -> int:
+        """Current count of distinct struck periods for `ticker` (0 if none)."""
+        return len(self._strikes.get(ticker, []))
+
+    def add_strike(self, ticker: str, period: str) -> int:
+        """Record a strike for `ticker` against `period` and return the new count.
+
+        Idempotent per period (M35): adding the same `period` twice for
+        the same ticker (a crash-restart re-run within the same
+        evaluation period, or bot.py's own daily fallback cadence
+        checking the same quarter repeatedly) does not double-count --
+        `period_identifier` is what makes "two strikes" mean two
+        genuinely distinct periods, not two runs.
+        """
+        periods = self._strikes.setdefault(ticker, [])
+        if period not in periods:
+            periods.append(period)
+        return len(periods)
 
     def reset_strikes(self, ticker: str) -> None:
-        """Clear `ticker`'s strike count back to zero (a clean check)."""
+        """Clear `ticker`'s struck-period list back to empty (a clean check)."""
         self._strikes.pop(ticker, None)
 
     def tracked_tickers(self) -> list[str]:
@@ -255,12 +367,17 @@ class StateTracker:
         return sorted(self._pending_liquidations)
 
     def save(self) -> None:
-        """Atomically write strikes + holding states + pending liquidations (temp file + rename)."""
+        """Atomically write the current state (temp file + rename), v2 schema.
+
+        Version, strikes (as period lists), holding states, and pending
+        liquidations.
+        """
         tmp_path = self._path.with_suffix(self._path.suffix + ".tmp")
         tmp_path.write_text(
             json.dumps(
                 {
-                    "strikes": self._strikes,
+                    "version": self._SCHEMA_VERSION,
+                    "strikes": {t: sorted(periods) for t, periods in self._strikes.items()},
                     "holding_states": self._holding_states,
                     "pending_liquidations": sorted(self._pending_liquidations),
                 }
@@ -273,16 +390,18 @@ def process_sells(
     current_holdings: Holdings,
     new_market_data: dict[str, data.Metrics | None],
     state: StateTracker,
+    period: str,
     corporate_action_check: Callable[[str], bool] | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Re-check every current holding against the Munger quality floors only.
 
     Graham's entry gates (P/E, P/E x P/B, size) deliberately do NOT apply
     here -- a stock growing out of "cheap" is success, not a sell signal
-    (DESIGN.md 3.4). A hard-failing check earns a strike; a clean check
-    resets the streak. `config.STRIKES_TO_LIQUIDATE` consecutive strikes
-    means liquidate. Mutates and saves `state` as a side effect; returns
-    `(to_liquidate, unresolved, corporate_action)`.
+    (DESIGN.md 3.4). A hard-failing check earns a strike against `period`
+    (M35, Design v2.2 §3.1 -- see `period_identifier`); a clean check
+    resets the streak. `config.STRIKES_TO_LIQUIDATE` distinct struck
+    periods means liquidate. Mutates and saves `state` as a side effect;
+    returns `(to_liquidate, unresolved, corporate_action)`.
 
     Each ticker is classified via `classify_holding_state` (§3.2, M29a)
     into exactly one of HEALTHY/DETERIORATING/UNREADABLE/
@@ -369,7 +488,7 @@ def process_sells(
         if holding_state is HoldingState.HEALTHY:
             state.reset_strikes(ticker)
         else:
-            state.add_strike(ticker)
+            state.add_strike(ticker, period)
         if state.get_strikes(ticker) >= config.STRIKES_TO_LIQUIDATE:
             to_liquidate.append(ticker)
             # M26c: strikes are NOT reset here anymore -- see the
