@@ -82,6 +82,20 @@ table.metrics td:first-child { opacity: 0.65; cursor: help; }
   color: light-dark(#3f3f46, #d4d4d8);
   background: light-dark(rgba(113, 113, 122, 0.15), rgba(161, 161, 170, 0.2));
 }
+/* M29c (Design v2.2 §3.2): the two warning/alert tiers _render_badges
+   didn't need before a per-position holding-state badge existed --
+   amber for "deteriorating, on strike N" (a warning, not yet a
+   liquidation), red for "corporate action, needs manual review" (the
+   one state that's never auto-traded). Same shape as .badge-green/
+   -blue above, just a different hue pair. */
+.badge-amber {
+  color: light-dark(#92400e, #fcd34d);
+  background: light-dark(rgba(245, 158, 11, 0.15), rgba(245, 158, 11, 0.2));
+}
+.badge-red {
+  color: light-dark(#991b1b, #fca5a5);
+  background: light-dark(rgba(220, 38, 38, 0.15), rgba(220, 38, 38, 0.2));
+}
 
 /* P&L page (user request): gain/loss color convention, reusing .badge-
    green's exact color for gains rather than inventing a second green. */
@@ -197,7 +211,7 @@ a.cal-cell:hover { filter: brightness(0.95); }
 <a href="tickers.html">See all screened tickers &rarr;</a>
 <a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>
 <div class="glass" style="padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.85rem;">&#9432; This is a personal, automated research project, not investment advice. Nothing on this site is a recommendation to buy or sell any security &mdash; it publishes the output of one rules-based paper-trading strategy for its own record.</div>
-<p class="generated">Generated 2026-09-02 17:09 UTC</p>
+<p class="generated">Generated 2026-09-03 17:05 UTC</p>
 <p style="font-size: 0.85rem; opacity: 0.75; margin-bottom: 1rem;">
   Each day's screen is informational only &mdash; daily_screen.py never places orders;
   trading decisions stay on the quarterly cadence. Click a day to see its full results.
@@ -205,7 +219,7 @@ a.cal-cell:hover { filter: brightness(0.95); }
 <div class="cal-legend"><span class="cal-legend-swatch cal-has-buyable"></span> buyable names found &nbsp;<span class="cal-legend-swatch cal-has-data"></span> screened, none buyable &nbsp;<span class="cal-legend-swatch cal-empty"></span> no run that day</div>
 <div class="glass cal-month">
   <h2>September 2026</h2>
-  <div class="cal-grid"><div class="cal-weekday">Mo</div><div class="cal-weekday">Tu</div><div class="cal-weekday">We</div><div class="cal-weekday">Th</div><div class="cal-weekday">Fr</div><div class="cal-weekday">Sa</div><div class="cal-weekday">Su</div><div class="cal-cell cal-blank"></div><a class="cal-cell cal-has-data cal-has-buyable" href="screen_results_archive/screen_results_2026-09-01.csv" title="1506 tickers, 13 buyable"><span class="cal-day">1</span><span class="cal-count">13</span></a><a class="cal-cell cal-has-data cal-has-buyable" href="screen_results_archive/screen_results_2026-09-02.csv" title="1506 tickers, 14 buyable"><span class="cal-day">2</span><span class="cal-count">14</span></a><div class="cal-cell cal-empty"><span class="cal-day">3</span></div><div class="cal-cell cal-empty"><span class="cal-day">4</span></div><div class="cal-cell cal-empty"><span class="cal-day">5</span></div><div class="cal-cell cal-empty"><span class="cal-day">6</span></div><div class="cal-cell cal-empty"><span class="cal-day">7</span></div><div class="cal-cell cal-empty"><span class="cal-day">8</span></div><div class="cal-cell cal-empty"><span class="cal-day">9</span></div><div class="cal-cell cal-empty"><span class="cal-day">10</span></div><div class="cal-cell cal-empty"><span class="cal-day">11</span></div><div class="cal-cell cal-empty"><span class="cal-day">12</span></div><div class="cal-cell cal-empty"><span class="cal-day">13</span></div><div class="cal-cell cal-empty"><span class="cal-day">14</span></div><div class="cal-cell cal-empty"><span class="cal-day">15</span></div><div class="cal-cell cal-empty"><span class="cal-day">16</span></div><div class="cal-cell cal-empty"><span class="cal-day">17</span></div><div class="cal-cell cal-empty"><span class="cal-day">18</span></div><div class="cal-cell cal-empty"><span class="cal-day">19</span></div><div class="cal-cell cal-empty"><span class="cal-day">20</span></div><div class="cal-cell cal-empty"><span class="cal-day">21</span></div><div class="cal-cell cal-empty"><span class="cal-day">22</span></div><div class="cal-cell cal-empty"><span class="cal-day">23</span></div><div class="cal-cell cal-empty"><span class="cal-day">24</span></div><div class="cal-cell cal-empty"><span class="cal-day">25</span></div><div class="cal-cell cal-empty"><span class="cal-day">26</span></div><div class="cal-cell cal-empty"><span class="cal-day">27</span></div><div class="cal-cell cal-empty"><span class="cal-day">28</span></div><div class="cal-cell cal-empty"><span class="cal-day">29</span></div><div class="cal-cell cal-empty"><span class="cal-day">30</span></div></div>
+  <div class="cal-grid"><div class="cal-weekday">Mo</div><div class="cal-weekday">Tu</div><div class="cal-weekday">We</div><div class="cal-weekday">Th</div><div class="cal-weekday">Fr</div><div class="cal-weekday">Sa</div><div class="cal-weekday">Su</div><div class="cal-cell cal-blank"></div><a class="cal-cell cal-has-data cal-has-buyable" href="screen_results_archive/screen_results_2026-09-01.csv" title="1506 tickers, 13 buyable"><span class="cal-day">1</span><span class="cal-count">13</span></a><a class="cal-cell cal-has-data cal-has-buyable" href="screen_results_archive/screen_results_2026-09-02.csv" title="1506 tickers, 14 buyable"><span class="cal-day">2</span><span class="cal-count">14</span></a><a class="cal-cell cal-has-data cal-has-buyable" href="screen_results_archive/screen_results_2026-09-03.csv" title="1506 tickers, 13 buyable"><span class="cal-day">3</span><span class="cal-count">13</span></a><div class="cal-cell cal-empty"><span class="cal-day">4</span></div><div class="cal-cell cal-empty"><span class="cal-day">5</span></div><div class="cal-cell cal-empty"><span class="cal-day">6</span></div><div class="cal-cell cal-empty"><span class="cal-day">7</span></div><div class="cal-cell cal-empty"><span class="cal-day">8</span></div><div class="cal-cell cal-empty"><span class="cal-day">9</span></div><div class="cal-cell cal-empty"><span class="cal-day">10</span></div><div class="cal-cell cal-empty"><span class="cal-day">11</span></div><div class="cal-cell cal-empty"><span class="cal-day">12</span></div><div class="cal-cell cal-empty"><span class="cal-day">13</span></div><div class="cal-cell cal-empty"><span class="cal-day">14</span></div><div class="cal-cell cal-empty"><span class="cal-day">15</span></div><div class="cal-cell cal-empty"><span class="cal-day">16</span></div><div class="cal-cell cal-empty"><span class="cal-day">17</span></div><div class="cal-cell cal-empty"><span class="cal-day">18</span></div><div class="cal-cell cal-empty"><span class="cal-day">19</span></div><div class="cal-cell cal-empty"><span class="cal-day">20</span></div><div class="cal-cell cal-empty"><span class="cal-day">21</span></div><div class="cal-cell cal-empty"><span class="cal-day">22</span></div><div class="cal-cell cal-empty"><span class="cal-day">23</span></div><div class="cal-cell cal-empty"><span class="cal-day">24</span></div><div class="cal-cell cal-empty"><span class="cal-day">25</span></div><div class="cal-cell cal-empty"><span class="cal-day">26</span></div><div class="cal-cell cal-empty"><span class="cal-day">27</span></div><div class="cal-cell cal-empty"><span class="cal-day">28</span></div><div class="cal-cell cal-empty"><span class="cal-day">29</span></div><div class="cal-cell cal-empty"><span class="cal-day">30</span></div></div>
 </div>
 <div class="glass cal-month">
   <h2>August 2026</h2>
