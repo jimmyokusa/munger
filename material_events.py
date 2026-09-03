@@ -31,6 +31,12 @@ import config
 import journal
 import xbrl
 
+# mypy strict (no_implicit_reexport): xbrl/urllib are re-exported so
+# tests can patch material_events.xbrl.throttled_get and
+# material_events.urllib.request.urlopen directly -- the actual network/
+# XBRL-fetch seams this module calls through, not incidental attributes.
+__all__ = ["urllib", "xbrl"]
+
 logger = logging.getLogger(__name__)
 
 _SUBMISSIONS_URL_TEMPLATE = "https://data.sec.gov/submissions/CIK{cik}.json"

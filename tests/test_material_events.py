@@ -424,7 +424,7 @@ def test_module_never_imports_execution_or_portfolio() -> None:
     # OWN import statements never name either module directly.
     source = Path(material_events.__file__).read_text()
     tree = ast.parse(source)
-    imported_names = set()
+    imported_names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imported_names.update(alias.name for alias in node.names)

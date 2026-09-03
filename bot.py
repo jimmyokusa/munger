@@ -44,6 +44,26 @@ from trading_common import global_kill_switch_active as _global_kill_switch_acti
 from trading_common import kill_switch_active as _kill_switch_active
 from trading_common import settle_and_react as _settle_and_react
 
+# mypy strict (no_implicit_reexport) only treats an imported name as
+# explicitly re-exported via `__all__` or a same-name `as` alias -- a
+# renamed alias like the ones above (kill_switch_active as
+# _kill_switch_active) doesn't qualify on its own. These four are
+# accessed externally as bot._name by tests that must patch bot's own
+# bound reference specifically (not trading_common's), since bot.py's
+# functions resolve the name in bot's namespace at call time -- patching
+# trading_common's copy instead wouldn't affect bot.run() and would also
+# leak into evaluate.py/execute_trades.py's unrelated tests, which import
+# the same trading_common functions independently. Listed here, not
+# worked around per call site, since that's the direct fix for what
+# mypy is actually flagging: these names are genuinely, deliberately
+# part of bot.py's externally-touched surface, even though private.
+__all__ = [
+    "_cap_buy_orders_to_budget",
+    "_check_data_freshness",
+    "_global_kill_switch_active",
+    "_kill_switch_active",
+]
+
 logger = logging.getLogger(__name__)
 
 

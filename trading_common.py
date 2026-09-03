@@ -20,6 +20,11 @@ import config
 import execution
 import settlement
 
+# mypy strict (no_implicit_reexport): re-exported so tests can patch
+# trading_common.settlement.settle_order directly -- the actual
+# settlement-query seam settle_and_react calls through.
+__all__ = ["settlement"]
+
 logger = logging.getLogger(__name__)
 
 
