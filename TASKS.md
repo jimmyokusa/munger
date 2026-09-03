@@ -1766,3 +1766,192 @@ found `record_manual_override` had no caller anywhere outside tests
 | `DISCORD_MATERIAL_EVENT_WEBHOOK_URL` GitHub Actions secret provisioned | todo | Operator action, not something I can do -- the code is config-gated off (no-op) until this secret is set on the repo, same as every other optional Discord integration here. |
 | M44-M49 (Tranche 4, Tier 2/3 model-assisted event extraction) | todo | Explicitly out of scope for M42/M43 -- gated far later per `DESIGN_V2.md`'s own tranche plan; not started. |
 | Push to `main` and GCP redeploy | done | 2026-09-03 -- commit `a125a15` pushed to `main`. `deploy/cloudrun/deploy.sh daily-screen --verify` rebuilt/repinned the daily-screen Cloud Run Job to digest `sha256:74601656ece93aa824817107873849f9ef0e66bafbf375564f67fcd2c858932f`; live verification execution `daily-screen-xhhq5` succeeded. Same scope caveat as the M29c push: confirms the new code doesn't break `daily_screen.py`'s own pipeline (it never calls `material_events.py`, which only runs from `daily-trade.yml`/`daily-trade-live.yml`) -- does not exercise the 8-K poller itself, which needs a real dispatched trading-workflow run (see the M42 wiring row above) or the `DISCORD_MATERIAL_EVENT_WEBHOOK_URL` secret being set, whichever comes first. |
+
+## Design v2.2 execution: M34 -- cadence split (screen/evaluate/execute) (added 2026-09-03, Epic C, continuing the same `/goal`)
+
+**Production trading cadence is unchanged by this section.**
+`daily-trade.yml`'s cron is still `0 14 * * *` -- the system is still
+trading daily via `bot.py`, exactly as before this milestone. What
+shipped here is a fully built, reviewed, tested, but *inactive* parallel
+mechanism, plus an explicit open decision (see "Why the cutover isn't
+automatic" below), not a live cadence change. Stated plainly up front
+(`pm-reviewer` finding) so the task table below, which reads as mostly
+"done," isn't mistaken for "shipped to production."
+
+The largest single change this session: splits `bot.py`'s combined daily
+evaluate+execute loop into the three independently-cadenced workflows
+`DESIGN_V2.md` §3.1 calls for. Real, high-stakes scope -- it changes
+*when and how the bot places real orders* -- handled with commensurately
+more review than earlier milestones this batch (three staff-engineer-
+reviewer passes' worth of findings folded in below, not one).
+
+**Screen (daily, no broker)** -- already `daily_screen.py`, unchanged.
+Confirmed it already satisfies this cadence's own description.
+
+**Evaluate (quarterly, read-only) -- new `evaluate.py`.** Runs M29a-c's
+`HoldingState` machine against current holdings; never calls
+`market_buy`/`liquidate`. A ticker that fails badly enough is recorded
+as *pending* (`portfolio.StateTracker.add_pending_liquidation`) for
+Execute to act on later, not acted on itself. "Read-only" is a real
+distinction from Execute, not an exemption from workflow/credential
+isolation (§3.1's own stated reasoning) -- it still calls the broker
+(`get_current_holdings`, `is_corporate_action`), just never an
+order-submission endpoint.
+
+**Execute (monthly, write) -- new `execute_trades.py`.** Two jobs: (1)
+liquidate whatever's in `pending_liquidations` that's still actually
+held; (2) run its own fresh universe screen (this GitHub Actions runner
+has no access to `daily_screen.py`'s separately-deployed Cloud Run/k3s
+filesystem, so it can't read that cadence's output file -- screens
+fresh here, same as `bot.py` always has) and build/place the buy queue.
+
+**`trading_common.py` (new) + `bot.py` (refactored, not deleted).**
+Kill-switch checks, `_alert`/`_finish`, `_settle_and_react`,
+`_cap_buy_orders_to_budget`, and the data-freshness check are extracted
+into a shared module so Evaluate/Execute/the old combined loop can't
+drift apart on safety-critical logic. `bot.py` itself is kept working,
+behavior-unchanged (import-aliased onto `trading_common`, verified via
+its own unmodified 45-test suite still passing). **Framing correction**
+(`pm-reviewer` finding): calling `bot.py` a "documented fallback" was
+backwards -- as of this write-up `bot.py` is the *only* live
+order-placement path (its cron is still active; the new trio's is not),
+not a backstop for a primary that's already running. It stays primary
+until the cutover below actually happens.
+
+**`portfolio.StateTracker` gains `pending_liquidations`.** A third
+persisted field (`state.json`'s schema: `{"strikes": {...},
+"holding_states": {...}, "pending_liquidations": [...]}`), additive to
+M29c's own schema, with the same backward-compatible load path (a
+pre-M34 file simply has no such key, defaults to empty). This is the
+actual handoff mechanism between Evaluate and Execute.
+
+**Four new workflow files, landed `workflow_dispatch`-only, deliberately
+no `schedule:` cron yet:** `evaluate-holdings.yml`,
+`evaluate-holdings-live.yml`, `execute-trades.yml`,
+`execute-trades-live.yml`. This is a real, considered safety decision,
+not a placeholder -- see "Why the cutover isn't automatic" below.
+
+**First `staff-engineer-reviewer` pass (4 findings; 3 closed with a code
+fix, 1 closed only with a documentation warning -- not the same thing,
+kept distinct below per `pm-reviewer` finding rather than filed together
+under one "all fixed" label):**
+
+| Finding | Resolution |
+|---|---|
+| `execute_trades.py` computed `to_liquidate` from `pending ∩ current_holdings` alone -- the live corporate-action re-check only fed the *buy* side (`exclude` on `generate_buy_queue`), never subtracted from `to_liquidate`. A ticker Evaluate had already queued for liquidation before it entered a corporate action would still get sold, directly violating "CORPORATE_ACTION... never auto-traded, always a human decision" (§3.2) | **Code fix.** Corporate-action check now runs *before* `to_liquidate` is computed and is subtracted from it; a deferred ticker stays pending (not cleared -- the original quality-failure reason may still be valid once the corporate action resolves) and is alerted on distinctly ("Liquidation deferred..."). Regression test pins the exact collision case. |
+| `evaluate.py` only ever *added* to `pending_liquidations` -- a ticker pending from an earlier quarter that recovers to HEALTHY before Execute ever runs stayed pending forever; Execute would liquidate a position the system's own fresher classification says is fine | **Code fix.** Evaluate now clears a pending mark when `state.get_holding_state(ticker) is HoldingState.HEALTHY`, gated on the *same* fetch-fraction check `process_sells` itself uses (not just "did process_sells run") -- a degraded-data run must not clear a pending liquidation off a stale prior classification it never actually re-confirmed. Two regression tests: the recovery case, and the degraded-data case that must NOT clear. |
+| Three concurrency groups (`daily-trade`, `evaluate-holdings`, `execute-trades`, and their `-live` counterparts) were each scoped to their own file alone, but all three read/write the *same* `bot-state`/`bot-state-live` git branch with a bare `git push` and no retry/rebase logic. Two of these workflows running close together (most plausibly today: `daily-trade.yml`'s cron is still live, unrelated to the new dispatch-only ones) risks a non-fast-forward push rejection that silently loses that run's `state.json` update -- a real trade already happened, but its strike reset / pending-liquidation clear / holding-state record never persisted | **Code fix.** All six workflows (paper trio + live trio) now share one concurrency group per account (`bot-state-paper`, `bot-state-live`) instead of six independent ones -- GitHub Actions queues them instead of letting them race. |
+| Shared `client_order_id` scheme (`execution.py`: `mode-run_date-symbol-side`) between `bot.py` and `execute_trades.py` correctly prevents a real double-submission to the broker if both ever decided to trade the same symbol the same day (the existing idempotency guard "recovers" the order instead of resubmitting) -- but that recovery still runs the *second* caller's own settlement bookkeeping (strike resets, pending-liquidation clears) against an order it didn't actually decide to place, and `record_order`'s own dedup guard silently drops the duplicate audit-trail row rather than raising, making a same-day collision easy to miss | **Documentation warning only -- a residual risk, not closed** (`pm-reviewer` finding: originally filed as "fixed" alongside the three code fixes above, which overstated it). There is no safe code-level fix that doesn't either weaken the double-submission guard or duplicate audit-trail rows. Explicit, loud "DO NOT dispatch alongside daily-trade.yml's own cron" warnings were added to both `execute-trades.yml`/`execute-trades-live.yml`'s headers, but nothing *enforces* this -- a human can still dispatch it anyway. Tracked as its own open task-table row below, not closed. |
+
+**On "no shared local state" (§3.1's own exit-criteria phrase,
+`pm-reviewer` finding that this file left the reading ambiguous):** read
+as *paper/live isolation* (M20's own precedent, the more likely intended
+meaning given §3.1's surrounding text about separate credentials per
+workflow), this is satisfied -- paper and live never share a branch,
+secrets, or runner. Read literally as "Evaluate and Execute share
+nothing," it is not -- both intentionally read/write the same
+`bot-state`/`bot-state-live` branch, which is *why* the concurrency-group
+fix above was needed at all. This file claims the first reading, not the
+second, and says so explicitly here rather than leaving it for a reader
+to infer.
+
+**Verified sound (not re-flagged, checked directly):** the dispatch-only
+landing genuinely cannot place a real order today -- traced precisely:
+`execute-trades-live.yml` sets `MUNGER_PAPER_TRADING: "false"` but never
+sets `MUNGER_LIVE_TRADING_ENABLED` (matching `daily-trade-live.yml`'s
+own current state, live trading is gated off independent of this
+workflow's own dispatch-only posture), and `execute_trades.py`/
+`evaluate.py` both check `not config.PAPER_TRADING and not
+config.LIVE_TRADING_ENABLED` before `ExecutionModule` is ever
+constructed. The `bot.py` -> `trading_common.py` extraction is
+behavior-preserving (read both files in full, not just "tests still
+pass" -- every moved function's call sites, signatures, and order of
+operations are unchanged; no leftover duplicate/dead code in `bot.py`).
+
+**Known gaps, recorded not fixed (consistent with this session's own
+established pattern of naming these rather than silently absorbing
+them):**
+
+| Gap | Why not fixed now |
+|---|---|
+| No escalation for a liquidation that stays pending across many Execute windows without ever confirming filled -- each run just re-alerts generically, no "retried N times / persisted M cycles" Critical escalation | Same class of gap already recorded for reconciliation-mismatch persistence (M29a-c section above) and for the settlement record-before-alert crash window (M42-M43 section above) -- a real pattern across this codebase's alert mechanisms, worth solving once, generally, rather than three separate one-off patches. |
+| A held position with `market_value is None` is silently skipped from `current_holdings` (pre-existing `execution.py` behavior, not introduced here) without raising; the stale-pending-liquidation cleanup in `execute_trades.py` depends on `journal.check_reconciliation` catching the resulting mismatch to avoid clearing a genuinely-still-held pending liquidation without an attempted sell | Believed safe by construction (reconciliation runs and would abort *before* the cleanup touches state, in the realistic case), but not directly tested against this specific edge case. Flagged for a defensive test, not treated as a live bug. |
+| Display/monitoring steps (`pnl.py`, `prices.py`, `news_update.py`, `material_events.py`) still run only from `daily-trade.yml`'s daily cadence -- not wired into Evaluate or Execute at all | Deliberately out of scope for this pass; whether they get their own independent cadence (matching §3.1's own cadence-decoupling spirit) or ride along with Execute once it goes live is a real open design decision, not made automatically by landing these four workflow files. |
+
+**M34 is not fully closed against `DESIGN_V2.md`'s own exit-criteria row
+for it** (`pm-reviewer` finding: the "gap labelled on the site" item
+below was originally filed only in the generic gaps table above, which
+buried that this is one of *four* explicit exit criteria the design doc
+itself states for M34, not an adjacent nice-to-have). Checked against
+`DESIGN_V2.md` line 1020 directly, one by one:
+
+1. **Paper/live isolation verified per workflow** -- met (see "Verified
+   sound" above).
+2. **No shared local state** -- met under the paper/live-isolation
+   reading this file claims; not met under a literal
+   Evaluate-shares-nothing-with-Execute reading. See the callout above.
+3. **The daily-screen/quarterly-evaluate gap labelled on the site per
+   §3.1** ("the site labels it explicitly on the holding's row...
+   neither you nor a reader mistakes deliberate patience for a broken
+   pipeline") -- **not met.** Would inherit the exact same pre-existing
+   reporting-pipeline gap already extensively documented under M29c (the
+   process that publishes the real site never has `journal.db`/
+   `state.json` access at all) -- building it now would be the same
+   mistake a third time, blocked on the same unresolved architectural
+   question. Recorded here as an explicitly unmet exit criterion, not
+   folded quietly into the general gaps table.
+4. **The evaluate workflow now runs M29a-c's state machine on its own
+   cadence** -- met.
+
+So: 2 of 4 met cleanly, 1 met under a stated reading (not the only
+possible one), 1 openly not met. M34's own status row below reflects
+this (not marked flatly "done").
+
+**Why the cutover isn't automatic.** Enabling the new workflows' crons
+(and correspondingly disabling `daily-trade.yml`/`daily-trade-live.yml`'s
+own) would change real trading cadence from daily to monthly for actual
+order placement -- a consequential, hard-to-reverse production change to
+a live-money-adjacent system, not a routine code change. Landing the
+mechanism `workflow_dispatch`-only, fully built, reviewed, and tested,
+but not switched on, mirrors this project's own established caution
+pattern for exactly this class of decision (M36/XBRL's shadow-mode-
+before-switchover requirement, M31's kill-criteria requiring the user's
+own risk tolerance, M27's dispatched-workflow-test path requiring an
+explicit choice between two real tradeoffs). The actual cutover --
+enabling the new crons, disabling the old ones, and deciding where
+pnl/prices/news/material-events cadence lands -- is recorded here as
+the next real decision point, not performed under this same pass.
+
+**Who decides, and on what basis** (`pm-reviewer` finding: the cutover
+row below previously had no owner or criteria, unlike M31's own explicit
+"the user's own risk tolerance" framing for a comparably consequential
+decision). Same answer as M31's: this is the user's call, not an
+engineering judgment call to make unilaterally, precisely because it's
+irreversible-ish and live-money-adjacent. Candidate criteria worth the
+user's own consideration, not decided here: some minimum number of
+successful `workflow_dispatch` runs of `evaluate-holdings.yml`/
+`execute-trades.yml` in paper mode first; a minimum observation period
+under the new state machine before trusting it with real orders; and
+whether the `client_order_id`-collision warning (see the table above)
+needs to become a code-level guard before cutover, not just a YAML
+comment, given real capital is what's at stake once the old cron is
+disabled and the new one is live.
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| Confirm Screen cadence already satisfied by `daily_screen.py` | done | 2026-09-03 -- no code change needed. |
+| `trading_common.py`: extract shared safety helpers | done | 2026-09-03 -- behavior-preserving, verified via `bot.py`'s own unmodified 45-test suite. |
+| `bot.py`: refactored to import from `trading_common.py` -- currently the only live order-placement path, not a fallback | done | 2026-09-03 -- see the framing correction above. |
+| `evaluate.py`: quarterly, read-only holdings evaluation | done | 2026-09-03 |
+| `execute_trades.py`: monthly, order-placing execution | done | 2026-09-03 |
+| `portfolio.StateTracker`: `pending_liquidations` (Evaluate->Execute handoff) | done | 2026-09-03 -- additive schema, backward-compatible load. |
+| 4 new workflow files, landed `workflow_dispatch`-only | done | 2026-09-03 -- YAML validated (`yaml.safe_load`); no cron added, deliberately. |
+| `staff-engineer-reviewer` pass: 3 of 4 findings closed with a code fix | done | 2026-09-03 -- see table above. |
+| `staff-engineer-reviewer` pass: `client_order_id`-collision finding closed only with a documentation warning, not enforced | todo | Real residual risk while `bot.py` and the new trio coexist -- nothing stops a human from dispatching `execute-trades.yml` on a day `daily-trade.yml`'s cron already ran. Candidate fix: a code-level mutual-exclusion guard, not just the YAML header warning. Named as its own row per the cutover-criteria note above, not bundled into "all fixed." |
+| Coexistence-window tracking: how long `bot.py` and the new trio are both live, and who's responsible for removing `bot.py`'s cron once trusted | todo | Currently unbounded -- bundled implicitly into "decide and execute the actual cutover" below, which conflates the go/no-go decision with this narrower operational cleanup. Separated out per `pm-reviewer` finding so it isn't lost inside the larger decision. |
+| 3 known gaps documented (not resolved -- "done" below means written down, not closed) | done | 2026-09-03 -- see table above. Excludes the site-labeling gap, moved to the exit-criteria reconciliation above since it's one of `DESIGN_V2.md`'s own stated M34 criteria, not a general gap. |
+| Real-fixture and behavior tests (`tests/test_trading_common.py`, `tests/test_evaluate.py`, `tests/test_execute_trades.py`, `tests/test_portfolio.py` pending-liquidations additions) | done | 2026-09-03 -- 50 new tests across the four files. |
+| Full suite green, `ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` clean | done | 2026-09-03 -- 603 passing (was 553 before this batch). |
+| M34 reconciled against `DESIGN_V2.md`'s own 4 exit criteria | partially done | 2026-09-03 -- 2 of 4 met cleanly, 1 met under a stated (not the only possible) reading, 1 (site-labeling) openly not met. See the reconciliation above; M34 is not being called fully closed against its own design spec. |
+| Decide and execute the actual cutover (enable new crons, disable old ones, place monitoring/display cadence) | todo | Explicitly not performed this pass -- see "Why the cutover isn't automatic" above. Next real decision point for M34. |
+| Push to `main` and GCP redeploy | todo | Next step this session. |

@@ -42,12 +42,15 @@ on:
         type: boolean
         default: false
 
-# Independent from daily-trade.yml's own "daily-trade" group -- these are
-# two different accounts/workflows and must never block each other, only
-# overlapping invocations of this same workflow (M10's original finding,
-# applied identically here).
+# Independent from daily-trade.yml's own "bot-state-paper" group -- these
+# are two different accounts/workflows and must never block each other.
+# M34 staff-engineer-reviewer finding (see daily-trade.yml's own comment
+# for the full reasoning): shared with evaluate-holdings-live.yml and
+# execute-trades-live.yml (`bot-state-live`), since all three read/write
+# the same `bot-state-live` git branch and a concurrent push there could
+# silently lose a run's state update.
 concurrency:
-  group: daily-trade-live
+  group: bot-state-live
   cancel-in-progress: false
 
 jobs:

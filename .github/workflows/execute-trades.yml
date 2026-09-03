@@ -1,0 +1,143 @@
+name: Execute trades (monthly)
+
+# M34 (Design v2.2 §3.1): the monthly, order-placing half of the
+# cadence-split trio (screen daily / evaluate quarterly / execute
+# monthly), superseding bot.py's combined daily evaluate+execute loop.
+# Runs execute_trades.py -- liquidates whatever evaluate.py has decided
+# (via portfolio.StateTracker.pending_liquidations) and builds/places
+# the buy queue from its own fresh universe screen (this runner has no
+# access to daily_screen.py's separately-deployed Cloud Run/k3s
+# filesystem, so it screens fresh here, same as bot.py always has).
+#
+# LANDED DISPATCH-ONLY, DELIBERATELY (no `schedule:` trigger yet): see
+# evaluate-holdings.yml's own header and TASKS.md's M34 section -- this
+# workflow existing changes nothing about production trading cadence
+# until a deliberate cutover decision also disables daily-trade.yml's
+# daily cron. Running both on real crons simultaneously risks
+# daily-trade.yml's own bot.py placing an order the same window this
+# workflow already acted on, or double-executing a liquidation.
+#
+# DO NOT manually dispatch this workflow (or evaluate-holdings.yml) on a
+# day daily-trade.yml's own cron has already run, or before it runs
+# later that same day (staff-engineer-reviewer finding). Both share the
+# same client_order_id scheme (execution.py: mode-run_date-symbol-side),
+# which correctly prevents a real double-submission to the broker if
+# both decide to trade the same symbol the same day -- market_buy/
+# liquidate() "recover" the existing order instead of resubmitting -- but
+# that recovery still runs *this* workflow's own settle_and_react and
+# on_filled bookkeeping (strike resets, pending-liquidation clears)
+# against an order this workflow didn't actually decide to place, and
+# journal.record_order's own idempotency guard silently drops the
+# duplicate audit-trail row rather than raising, so a same-day collision
+# is easy to miss after the fact. Treat daily-trade.yml and this trio as
+# mutually exclusive until the cutover -- never both active the same day.
+#
+# Display/monitoring steps (pnl.py, prices.py, news_update.py,
+# material_events.py) are deliberately NOT included here yet -- they
+# still run from daily-trade.yml on its daily cadence. Whether they move
+# to their own independent cadence (matching M34's own cadence-
+# decoupling spirit) or ride along with Execute once it goes live is an
+# open decision, not made automatically by landing this workflow file --
+# see TASKS.md.
+on:
+  workflow_dispatch:
+    inputs:
+      screen_only:
+        description: "Force KILL_SWITCH (screen-only, no broker calls) for this manual run"
+        type: boolean
+        default: true
+
+# Shared with daily-trade.yml and evaluate-holdings.yml
+# (`bot-state-paper`) -- see daily-trade.yml's own comment on its
+# concurrency block for the full reasoning.
+concurrency:
+  group: bot-state-paper
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same bot-state git-branch persistence mechanism daily-trade.yml
+      # already uses -- see that file's own extensive comment. Execute
+      # reads/writes the same bot-state branch Evaluate does, since both
+      # operate on the same account's state (see evaluate-holdings.yml's
+      # own comment on why sharing that persisted store isn't the "shared
+      # local state" §3.1 warns against).
+      - name: Prepare persisted bot-state branch
+        run: |
+          set -e
+          if git ls-remote --exit-code --heads origin bot-state >/dev/null 2>&1; then
+            git fetch origin bot-state
+            git worktree add ../bot-state-wt -b bot-state origin/bot-state
+          else
+            echo "No bot-state branch yet -- first run, starting fresh."
+            git worktree add --detach ../bot-state-wt
+            git -C ../bot-state-wt checkout --orphan bot-state
+            git -C ../bot-state-wt rm -rf . >/dev/null 2>&1 || true
+          fi
+          for f in state.json journal.db munger.log; do
+            if [ -f "../bot-state-wt/$f" ]; then
+              cp "../bot-state-wt/$f" .
+              echo "Restored $f from bot-state branch."
+            fi
+          done
+          if [ -d ../bot-state-wt/screen_results_archive ]; then
+            mkdir -p screen_results_archive
+            cp -a ../bot-state-wt/screen_results_archive/. screen_results_archive/
+            echo "Restored screen_results_archive/ from bot-state branch."
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Force screen-only mode for this manual run
+        if: github.event_name == 'workflow_dispatch' && inputs.screen_only
+        run: touch KILL_SWITCH
+
+      - name: Run execute
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python execute_trades.py
+
+      - name: Persist bot state
+        if: always()
+        run: |
+          set -e
+          git config user.name "munger-bot"
+          git config user.email "munger-bot@users.noreply.github.com"
+          for f in state.json journal.db munger.log; do
+            [ -f "$f" ] && cp "$f" ../bot-state-wt/
+          done
+          if [ -d screen_results_archive ]; then
+            mkdir -p ../bot-state-wt/screen_results_archive
+            cp -a screen_results_archive/. ../bot-state-wt/screen_results_archive/
+          fi
+          cd ../bot-state-wt
+          git add -A
+          git commit -q -m "Execute state snapshot from run ${{ github.run_id }}" --allow-empty
+          git push origin HEAD:bot-state
+
+      - name: Upload run artifacts for manual inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: execute-run-artifacts-${{ github.run_id }}
+          path: |
+            munger.log
+            journal.db
+            state.json
+            screen_results.csv
+          if-no-files-found: ignore
+          retention-days: 400

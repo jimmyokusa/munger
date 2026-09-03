@@ -85,32 +85,48 @@ class StateTracker:
     fetched live from the broker (DESIGN.md 3.4). Writes are atomic
     (temp file + rename) so a crash mid-write can't corrupt the file.
 
-    Schema (M29c, Design v2.2 §3.2): `{"strikes": {ticker: int, ...},
-    "holding_states": {ticker: "healthy"|"deteriorating"|"unreadable"|
-    "corporate_action", ...}}`. Every real state.json written before this
-    milestone is the pre-M29c legacy format instead -- a bare flat
-    `{ticker: int}` dict, no wrapper keys at all. `_load` distinguishes
-    the two by checking for the new format's two wrapper keys explicitly
-    (both must be present and both must be dicts); it doesn't just check
-    for "strikes" alone, since misreading a legacy file with an
-    unlikely-but-possible real ticker literally named "STRIKES" as the
-    new format would silently drop every other real ticker's strike
-    count. `save()` always writes the new format -- every write migrates
-    a legacy file forward, matching journal.py's own migration
-    precedent of writing the new shape going forward rather than a
-    separate one-time migration step.
+    Schema (M29c, Design v2.2 §3.2; extended M34, §3.1): `{"strikes":
+    {ticker: int, ...}, "holding_states": {ticker: "healthy"|
+    "deteriorating"|"unreadable"|"corporate_action", ...},
+    "pending_liquidations": [ticker, ...]}`. Every real state.json
+    written before M29c is the legacy format instead -- a bare flat
+    `{ticker: int}` dict, no wrapper keys at all; every real state.json
+    written between M29c and M34 has `strikes`/`holding_states` but no
+    `pending_liquidations` key. `_load` distinguishes the pre-M29c
+    legacy shape from the wrapped one by checking for `strikes`'/
+    `holding_states`'s two wrapper keys explicitly (both must be present
+    and both must be dicts); it doesn't just check for "strikes" alone,
+    since misreading a legacy file with an unlikely-but-possible real
+    ticker literally named "STRIKES" as the new format would silently
+    drop every other real ticker's strike count. `pending_liquidations`
+    defaults to `[]` when absent -- no equivalent ambiguity risk, since
+    it's a strictly additive field a pre-M34 file never had reason to
+    include. `save()` always writes the current full format -- every
+    write migrates an older file forward, matching journal.py's own
+    migration precedent of writing the new shape going forward rather
+    than a separate one-time migration step.
+
+    `pending_liquidations` (M34, Design v2.2 §3.1): the handoff between
+    the quarterly Evaluate cadence (which decides a ticker should be
+    liquidated but never places an order) and the monthly Execute
+    cadence (which does). Evaluate adds to this set; Execute reads it,
+    attempts each liquidation, and removes a ticker once its liquidation
+    is confirmed filled -- an unfilled/unconfirmed one stays pending for
+    the next Execute window to retry, matching §3.3's "unfilled orders
+    are surfaced, not forgotten" rule one level up in cadence.
     """
 
     def __init__(self, path: Path = config.STATE_FILE_PATH) -> None:
-        """Load existing strike counters and holding states from `path`, if any."""
+        """Load existing strike counters, holding states, and pending liquidations."""
         self._path = path
         self._strikes: dict[str, int]
         self._holding_states: dict[str, str]
-        self._strikes, self._holding_states = self._load()
+        self._pending_liquidations: set[str]
+        self._strikes, self._holding_states, self._pending_liquidations = self._load()
 
-    def _load(self) -> tuple[dict[str, int], dict[str, str]]:
+    def _load(self) -> tuple[dict[str, int], dict[str, str], set[str]]:
         if not self._path.exists():
-            return {}, {}
+            return {}, {}, set()
         try:
             loaded = json.loads(self._path.read_text())
             if isinstance(loaded.get("strikes"), dict) and isinstance(
@@ -118,15 +134,17 @@ class StateTracker:
             ):
                 strikes = {str(k): int(v) for k, v in loaded["strikes"].items()}
                 holding_states = {str(k): str(v) for k, v in loaded["holding_states"].items()}
-                return strikes, holding_states
+                raw_pending = loaded.get("pending_liquidations", [])
+                pending = {str(t) for t in raw_pending} if isinstance(raw_pending, list) else set()
+                return strikes, holding_states, pending
             # Legacy pre-M29c format: the whole file is a flat
             # {ticker: strike_count} dict with no wrapper keys.
-            return {str(k): int(v) for k, v in loaded.items()}, {}
+            return {str(k): int(v) for k, v in loaded.items()}, {}, set()
         except (json.JSONDecodeError, OSError, ValueError, TypeError, AttributeError):
             logger.error(
                 "%s unreadable/corrupt; starting from empty state", self._path, exc_info=True
             )
-            return {}, {}
+            return {}, {}, set()
 
     def get_strikes(self, ticker: str) -> int:
         """Current consecutive-strike count for `ticker` (0 if none)."""
@@ -224,11 +242,29 @@ class StateTracker:
         """
         return list(self._holding_states.keys())
 
+    def add_pending_liquidation(self, ticker: str) -> None:
+        """Mark `ticker` as decided-for-liquidation, awaiting the next Execute window (M34)."""
+        self._pending_liquidations.add(ticker)
+
+    def remove_pending_liquidation(self, ticker: str) -> None:
+        """Clear `ticker`'s pending-liquidation mark, once its sell is confirmed filled."""
+        self._pending_liquidations.discard(ticker)
+
+    def pending_liquidations(self) -> list[str]:
+        """Every ticker Evaluate has decided to liquidate that Execute hasn't confirmed yet."""
+        return sorted(self._pending_liquidations)
+
     def save(self) -> None:
-        """Atomically write strikes + holding states to disk (temp file + rename)."""
+        """Atomically write strikes + holding states + pending liquidations (temp file + rename)."""
         tmp_path = self._path.with_suffix(self._path.suffix + ".tmp")
         tmp_path.write_text(
-            json.dumps({"strikes": self._strikes, "holding_states": self._holding_states})
+            json.dumps(
+                {
+                    "strikes": self._strikes,
+                    "holding_states": self._holding_states,
+                    "pending_liquidations": sorted(self._pending_liquidations),
+                }
+            )
         )
         tmp_path.replace(self._path)
 

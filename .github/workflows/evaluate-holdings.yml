@@ -1,0 +1,118 @@
+name: Evaluate holdings (quarterly, read-only)
+
+# M34 (Design v2.2 §3.1): the quarterly, read-only half of the
+# cadence-split trio (screen daily / evaluate quarterly / execute
+# monthly), superseding bot.py's combined daily evaluate+execute loop.
+# Runs evaluate.py -- classifies current holdings via M29a-c's state
+# machine and records liquidation decisions as *pending* for the next
+# Execute window; never calls a broker order-submission endpoint.
+#
+# LANDED DISPATCH-ONLY, DELIBERATELY (no `schedule:` trigger yet): this
+# workflow's own existence changes nothing about production trading
+# cadence until a deliberate cutover decision also disables
+# daily-trade.yml's daily cron -- running both simultaneously with real
+# crons would risk daily-trade.yml's own bot.py placing an order the
+# same run this workflow already evaluated, or worse, double-executing
+# a liquidation. See TASKS.md's M34 section for the open cutover
+# decision and why it isn't made automatically here.
+on:
+  workflow_dispatch:
+    inputs:
+      screen_only:
+        description: "Force KILL_SWITCH (no broker calls) for this manual run"
+        type: boolean
+        default: true
+
+# Shared with daily-trade.yml and execute-trades.yml (`bot-state-paper`,
+# not a name unique to this file) -- see daily-trade.yml's own comment
+# on its concurrency block for why: all three read/write the same
+# `bot-state` git branch, and a concurrent push there has no retry/
+# rebase logic and could silently lose a run's state update.
+concurrency:
+  group: bot-state-paper
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same bot-state git-branch persistence mechanism daily-trade.yml
+      # already uses (see that file's own extensive comment on why:
+      # ephemeral runners, state.json/journal.db are load-bearing for
+      # correctness, git branch has no eviction window). Evaluate reads
+      # journal.db (for reconciliation) and state.json (strikes/holding
+      # states/pending liquidations) and writes back an updated
+      # state.json -- the same bot-state branch Execute also reads from
+      # and writes to, since they operate on the same account's state,
+      # just on different cadences. "No shared local state" (§3.1) means
+      # no shared *runner* filesystem across separate workflow runs, not
+      # that Evaluate and Execute can't both durably persist to the same
+      # account's git-backed state store the way every cadence touching
+      # this account's data already does.
+      - name: Prepare persisted bot-state branch
+        run: |
+          set -e
+          if git ls-remote --exit-code --heads origin bot-state >/dev/null 2>&1; then
+            git fetch origin bot-state
+            git worktree add ../bot-state-wt -b bot-state origin/bot-state
+          else
+            echo "No bot-state branch yet -- first run, starting fresh."
+            git worktree add --detach ../bot-state-wt
+            git -C ../bot-state-wt checkout --orphan bot-state
+            git -C ../bot-state-wt rm -rf . >/dev/null 2>&1 || true
+          fi
+          for f in state.json journal.db munger.log; do
+            if [ -f "../bot-state-wt/$f" ]; then
+              cp "../bot-state-wt/$f" .
+              echo "Restored $f from bot-state branch."
+            fi
+          done
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Force screen-only mode for this manual run
+        if: github.event_name == 'workflow_dispatch' && inputs.screen_only
+        run: touch KILL_SWITCH
+
+      - name: Run evaluate
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python evaluate.py
+
+      - name: Persist bot state
+        if: always()
+        run: |
+          set -e
+          git config user.name "munger-bot"
+          git config user.email "munger-bot@users.noreply.github.com"
+          for f in state.json journal.db munger.log; do
+            [ -f "$f" ] && cp "$f" ../bot-state-wt/
+          done
+          cd ../bot-state-wt
+          git add -A
+          git commit -q -m "Evaluate state snapshot from run ${{ github.run_id }}" --allow-empty
+          git push origin HEAD:bot-state
+
+      - name: Upload run artifacts for manual inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluate-run-artifacts-${{ github.run_id }}
+          path: |
+            munger.log
+            journal.db
+            state.json
+          if-no-files-found: ignore
+          retention-days: 400

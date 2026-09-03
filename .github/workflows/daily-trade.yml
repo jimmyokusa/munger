@@ -30,8 +30,22 @@ on:
 # a scheduling-layer concern, not something bot.py itself should own.
 # `cancel-in-progress: false` queues a second trigger rather than killing
 # an in-flight run partway through order submission.
+#
+# M34 staff-engineer-reviewer finding: this group is now shared with
+# evaluate-holdings.yml and execute-trades.yml (`bot-state-paper`, not a
+# name unique to this file) -- all three read/write the same `bot-state`
+# git branch, and a bare `git push` there has no retry/rebase logic. A
+# same-name-only group would have let, say, a manual execute-trades.yml
+# dispatch race this workflow's own daily cron: whichever pushed second
+# would get a non-fast-forward rejection and silently lose that run's
+# state.json/journal.db update (a real liquidation or buy already
+# placed, but its strike reset / pending-liquidation clear / holding-
+# state record never persisted) even though the step itself fails
+# loudly. Sharing one group across all three that touch this branch
+# makes GitHub Actions queue them instead, closing the race at the
+# scheduling layer rather than trying to detect it after the fact.
 concurrency:
-  group: daily-trade
+  group: bot-state-paper
   cancel-in-progress: false
 
 jobs:

@@ -182,7 +182,11 @@ def test_state_tracker_save_writes_the_new_wrapped_schema(tmp_path: Path) -> Non
     tracker.save()
 
     on_disk = json.loads(state_path.read_text())
-    assert on_disk == {"strikes": {"AAPL": 1}, "holding_states": {"AAPL": "healthy"}}
+    assert on_disk == {
+        "strikes": {"AAPL": 1},
+        "holding_states": {"AAPL": "healthy"},
+        "pending_liquidations": [],
+    }
 
 
 def test_state_tracker_loads_a_legacy_flat_strikes_file(tmp_path: Path) -> None:
@@ -259,7 +263,71 @@ def test_state_tracker_migrates_a_legacy_file_to_the_new_schema_on_save(tmp_path
     tracker.save()
 
     on_disk = json.loads(state_path.read_text())
-    assert on_disk == {"strikes": {"FOX": 1}, "holding_states": {"FOX": "deteriorating"}}
+    assert on_disk == {
+        "strikes": {"FOX": 1},
+        "holding_states": {"FOX": "deteriorating"},
+        "pending_liquidations": [],
+    }
+
+
+# --- StateTracker: pending_liquidations (M34, Design v2.2 §3.1) ---
+
+
+def test_state_tracker_pending_liquidations_starts_empty(tmp_path: Path) -> None:
+    tracker = portfolio.StateTracker(path=tmp_path / "state.json")
+    assert tracker.pending_liquidations() == []
+
+
+def test_state_tracker_add_and_list_pending_liquidations(tmp_path: Path) -> None:
+    tracker = portfolio.StateTracker(path=tmp_path / "state.json")
+    tracker.add_pending_liquidation("HRMY")
+    tracker.add_pending_liquidation("FOX")
+    assert tracker.pending_liquidations() == ["FOX", "HRMY"]  # sorted, deterministic order
+
+
+def test_state_tracker_add_pending_liquidation_is_idempotent(tmp_path: Path) -> None:
+    tracker = portfolio.StateTracker(path=tmp_path / "state.json")
+    tracker.add_pending_liquidation("HRMY")
+    tracker.add_pending_liquidation("HRMY")
+    assert tracker.pending_liquidations() == ["HRMY"]
+
+
+def test_state_tracker_remove_pending_liquidation_clears_it(tmp_path: Path) -> None:
+    tracker = portfolio.StateTracker(path=tmp_path / "state.json")
+    tracker.add_pending_liquidation("HRMY")
+    tracker.remove_pending_liquidation("HRMY")
+    assert tracker.pending_liquidations() == []
+
+
+def test_state_tracker_remove_pending_liquidation_of_an_absent_ticker_is_a_no_op(
+    tmp_path: Path,
+) -> None:
+    tracker = portfolio.StateTracker(path=tmp_path / "state.json")
+    tracker.remove_pending_liquidation("HRMY")  # never added -- must not raise
+    assert tracker.pending_liquidations() == []
+
+
+def test_state_tracker_save_and_reload_roundtrips_pending_liquidations(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    tracker = portfolio.StateTracker(path=state_path)
+    tracker.add_pending_liquidation("HRMY")
+    tracker.save()
+
+    reloaded = portfolio.StateTracker(path=state_path)
+    assert reloaded.pending_liquidations() == ["HRMY"]
+
+
+def test_state_tracker_loads_pending_liquidations_from_a_pre_m34_file(tmp_path: Path) -> None:
+    # A real state.json written between M29c and M34 has strikes/
+    # holding_states but no pending_liquidations key at all -- must
+    # default to empty, not crash.
+    state_path = tmp_path / "state.json"
+    state_path.write_text('{"strikes": {"AAPL": 1}, "holding_states": {}}')
+
+    tracker = portfolio.StateTracker(path=state_path)
+
+    assert tracker.pending_liquidations() == []
+    assert tracker.get_strikes("AAPL") == 1  # the rest of the pre-M34 file still loads correctly
 
 
 # --- HoldingState / classify_holding_state (Design v2.2 §3.2, M29a) ---
