@@ -1569,6 +1569,9 @@ introduced by this diff, not fixed here):**
 | `pm-reviewer` pass on this TASKS.md write-up + findings corrected | done | 2026-09-03 -- M27/M29c/M36 "done" rows corrected to accurately reflect the design doc's own exit criteria; see each section's write-up. |
 | Full suite green, `ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` clean | done | 2026-09-03 -- 479 passing (was 474 pre-3rd-review). |
 | Push M26-M30 to `main` and GCP redeploy | done | 2026-09-03 -- see M36's push row below for the same commit/deploy/verify details (one combined push covers all three sections). |
+| 4th `staff-engineer-reviewer` pass (M29c persist+display completion) + real finding fixed | done | 2026-09-03 -- `HoldingState`-unrecognized-value crash-the-whole-report bug fixed; major pre-existing reporting-pipeline gap discovered and recorded, not fixed (see "M29c completion" write-up and finding table above). |
+| Full suite green, `ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` clean | done | 2026-09-03 -- 506 passing (was 479). |
+| Push M29c-completion to `main` and GCP redeploy | done | 2026-09-03 -- commit `777eab8` pushed to `main`. `deploy/cloudrun/deploy.sh daily-screen --verify` rebuilt/repinned the daily-screen Cloud Run Job to digest `sha256:5c55ea0bdd26710fdc0dde35b7f93deaef728f9def58928196ddc6f44367da2f`; live verification execution `daily-screen-8j5kp` succeeded. Per the pipeline-gap finding above, this confirms the new `import portfolio`/state.json-read code doesn't break `daily_screen.py` (it safely no-ops -- no state.json in that pipeline, so `holding_states` is always `{}` there) -- it does NOT confirm the badge itself renders anywhere, since this deployment path never has journal/state data to show. |
 
 ## Design v2.2 execution: M36 -- XBRL shadow mode (added 2026-09-03, Epic D start)
 
