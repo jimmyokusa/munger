@@ -13,6 +13,26 @@ the milestone plan, and resolves the two questions v2.1 left open:
 sizing stays equal-weight with `MAX_SINGLE_POSITION_WEIGHT` deleted, and
 the margin-decline flag moves out of the optional tranche into M39.
 
+**Revision note (2026-09-02):** a second, independent review round —
+staff-engineer-reviewer, pm-reviewer, and warren-buffett, each reading
+this document fresh rather than deferring to §4's own embedded reviews
+— found and this revision fixed: staleness against `main` (M24 status,
+the `ruff format` count); the settlement pass's "idempotent and
+blocking" language specified into actual partial-fill/query-failure/
+escalation rules (§3.3); the `state.json` migration's lossy-translation
+policy stated explicitly (§3.1, M35); the "evaluate touches broker: No"
+self-contradiction (§3.1); a named data source for corporate-action
+detection (§3.2) and for Tier-2 event retrieval (§3.8), closing two
+previously-unconfirmed external dependencies; numeric thresholds added
+where a gate was named without one (XBRL disagreement tolerance §3.4,
+filing-agent precision/recall bar §3.5); and Tier-2's structural-threat
+flags routed to a logged human decision instead of auto-halving
+position weight (§3.5) — the one place a model's judgment was taking a
+fully automated portfolio action. Not resolved in this pass, by design
+— handed to a dedicated PM planning pass instead, since they're scope
+and sequencing questions, not content fixes: whether M26 and M29 need
+splitting, and whether Epic D can proceed ahead of all of Epic A.
+
 ## 1. What Production Actually Showed
 
 Between 2026-07-27 and 2026-08-10 the system placed 20 buys and 6 sells
@@ -123,15 +143,25 @@ Three independent schedules, each doing one job:
 | Job | Cadence | Touches broker | Rationale |
 |---|---|---|---|
 | **Screen** | Daily | No | Cheap, informative, feeds the site. Nothing about it needs to be slow. |
-| **Evaluate holdings** | Quarterly, ~3 weeks after quarter-end | No | Fundamentals change quarterly. Evaluating them daily manufactures noise. Timed so fresh 10-Q data has propagated. |
-| **Execute** | Monthly | Yes | Buys and sells batch here. Bounded, reviewable, infrequent. |
+| **Evaluate holdings** | Quarterly, ~3 weeks after quarter-end | Read-only | Fetches current holdings live (this system's own long-standing rule — holdings are never read from local state) to know what to evaluate, and checks corporate-action status per §3.2. Never places an order. Fundamentals change quarterly; evaluating them daily manufactures noise. Timed so fresh 10-Q data has propagated. |
+| **Execute** | Monthly | Write | Buys and sells batch here. Bounded, reviewable, infrequent. |
+
+**"Read-only" vs. "Write" above is a real distinction, not a rounding error
+(staff-engineer-reviewer finding: the original "No" for Evaluate
+contradicted itself — you cannot evaluate holdings without first knowing
+what's held).** Evaluate calls the broker's position-list endpoint and
+nothing else; Execute is the only cadence that can submit an order. Both
+still get their own workflow and credentials per the isolation rule
+below — "read-only" is not an exemption from that.
 
 **Strikes become time-based, not run-based.** A strike is recorded
 against a *fiscal period*, not a run. Two strikes means two consecutive
 quarters of failed quality — the design's original intent, now literally
 true regardless of how often anything runs. `state.json` stores
-`{ticker: [list of period identifiers struck]}` rather than an integer
-counter, so the meaning survives any future cadence change.
+`{"version": 2, "strikes": {ticker: [list of period identifiers
+struck]}}` — versioned per M35 — rather than a bare integer counter, so
+the meaning survives any future cadence change and a future format
+change has somewhere to record itself.
 
 This deletes the need for `REBALANCE_DRIFT_BAND_PCT` as a noise
 suppressor. It may remain as a transaction-cost floor, but it is no
@@ -167,8 +197,16 @@ not collapsible:
 
 CORPORATE_ACTION gets active detection rather than being inferred from
 absence: check the broker's own position record and the exchange listing
-status before concluding a ticker has vanished. Absence of data must
-never again be a trading signal.
+status before concluding a ticker has vanished. Concretely, both checks
+reuse infrastructure the system already has rather than adding a new
+external dependency (pm-reviewer finding: this needed a named source,
+not just "the exchange"): Alpaca's Assets API
+(`GET /v2/assets/{symbol}`, already reachable from `execution.py`)
+carries a `status`/`tradable` field per symbol, cross-checked against
+the broker's own position record already required above. If Alpaca
+reports the asset inactive or untradable while a position or a strike
+history still references it, that's CORPORATE_ACTION, not UNREADABLE.
+Absence of data must never again be a trading signal.
 
 ### 3.3 Closed-loop execution (addresses RC3)
 
@@ -192,14 +230,50 @@ rules follow:
    positions and the fills table halts execution until resolved. It is
    already the check that caught this bug; it should have teeth.
 
-**Settlement is idempotent and blocking.** A settlement pass that runs
-while the broker is unreachable would leave neither orders nor fills
-reflecting reality, so settlement must be safely re-runnable against the
-same `client_order_id` set, and a settlement pass that cannot complete
-blocks the next execution window rather than letting it proceed on stale
-state. Failing closed here is cheap: the cost is a delayed monthly
-execution, and the alternative is trading on a position picture known to
-be wrong.
+**Settlement is idempotent and blocking — specified, not just named
+(staff-engineer-reviewer finding: "idempotent and blocking" was a policy
+statement, not a spec; it named the right property without saying what
+to do in the two cases that actually occur).**
+
+1. **A query that fails is not the same as an order that is genuinely
+   still pending, and the settlement pass must be able to tell them
+   apart.** A broker-unreachable/timeout/5xx response on the status
+   query is a *query failure* — retry with backoff, and if retries are
+   exhausted, treat this run's settlement as incomplete (case 3 below).
+   A successful query that reports the order still `open`/`pending_new`
+   is a *genuinely pending* order — not an error, just not yet resolved;
+   leave it for the next settlement pass, no retry needed.
+2. **Partial fills are a third outcome, not folded into "confirmed" or
+   "unfilled."** A `partially_filled` status writes a fills row for the
+   filled quantity (real shares, real cost basis — this must be
+   journaled, not discarded) and leaves the order's remaining quantity
+   in the *genuinely pending* bucket above until it fills, expires, or
+   is canceled. Strike-reset and cost-basis logic key off filled
+   quantity, never off "was this client_order_id in the fills table at
+   all" — a 10%-filled liquidation is not a confirmed exit.
+3. **An incomplete settlement pass (query failures exhausted retries)
+   blocks the next execution window, reusing this system's existing
+   kill-switch mechanism rather than inventing new blocking behavior**
+   (staff-engineer-reviewer finding) — on exhausted retries, settlement
+   sets the same per-account `KILL_SWITCH_FLAG_FILE_PATH` execute would
+   otherwise check, so "blocked" is the same screen-only state an
+   operator can already recognize and clear by hand, not a new code
+   path to learn. Failing closed here is cheap: the cost is a delayed
+   monthly execution, and the alternative is trading on a position
+   picture known to be wrong.
+4. **A block that outlives one cycle is itself an alert, not silence.**
+   If the kill-switch flag settlement set is still present when the
+   *next* execution window would otherwise run, that raises a Critical
+   alert on its own (distinct from the routine "screen-only, kill switch
+   active" log line) — a settlement stuck for a full monthly cycle means
+   a human hasn't noticed yet, which under a monthly cadence is a
+   materially longer silent gap than this system tolerates today.
+5. **Re-running settlement against the same `client_order_id` set is
+   always safe.** Writing a fills row is `INSERT ... WHERE NOT EXISTS`
+   (or the schema's equivalent uniqueness constraint) on
+   `client_order_id`, so a settlement pass re-run after a partial
+   failure re-checks every order in the set but only ever writes each
+   fill once.
 
 Also fixed here: the journal reason string is derived from the actual
 decision (`NEW_POSITION`, `TOP_UP`, `SELL_QUALITY`,
@@ -217,7 +291,31 @@ straight from filings, free, point-in-time, authoritative. yfinance
 drops to a fallback for fields XBRL doesn't cover, and any field where
 the two disagree beyond a tolerance is flagged rather than silently
 preferred. This alone resolves the GNTX operating-margin discrepancy
-(yfinance 21.8% vs. the filed 18.7%).
+(yfinance 21.8% vs. the filed 18.7% — an 3.1-point gap, above the
+tolerance below).
+
+**Disagreement tolerance, stated as a number (staff-engineer-reviewer
+and pm-reviewer findings: this was named as a gate with no threshold
+attached).** A field disagrees if it differs from the XBRL-derived value
+by more than the larger of 5% relative or 1 percentage point absolute
+(the latter matters for ratio/margin fields already near zero, where a
+5%-relative bar is too loose to catch a real problem). This is a
+starting default, not a number derived from data that doesn't exist
+yet — M36's own shadow cycle is what calibrates it for real, and this
+figure is what that cycle validates or revises, not a fixed constant.
+
+**EDGAR itself needs an empirical volume/rate-limit check before M36
+is built on top of it, not assumed (pm-reviewer finding, matching this
+project's own D0-gate precedent in `DESIGN_DISTRIBUTED.md` — confirm an
+external constraint before building the machinery that depends on it).**
+Concretely: confirm the `companyfacts`/`submissions` endpoints sustain a
+full-universe daily fetch (~1,500 tickers) plus a one-time 10-year
+backfill for the moat-persistence component (§3.6) within SEC's stated
+fair-access limit (10 requests/second, `User-Agent` identification
+required) in a reasonable window. If they don't, scope XBRL to the
+buyable/near-buyable subset rather than the full screening universe —
+still closes RC4 for every ticker whose numbers actually decide a trade,
+at a fraction of the request volume.
 
 **Sector-aware gates.** Financials, REITs, and insurers do not have
 meaningful gross margins or current ratios. Two options, decided per
@@ -271,20 +369,56 @@ span and Item number, verified by string match against the parsed
 section before acceptance. Tier-1 disqualifiers (single product >50% of
 revenue with active patent litigation at trial stage or later; core IP
 licensed rather than owned with single-product dependence; material
-weakness in ICFR; going concern) remove a candidate outright. Tier-2
-flags (customer concentration, acquired-growth dependence, three-year
-margin decline, named regulatory obsolescence risk) halve the maximum
-position weight and display prominently.
+weakness in ICFR; going concern) remove a candidate outright.
 
-Applied retroactively: HRMY trips Tier 1 twice. GNTX trips three Tier-2
-flags and stays buyable at half weight.
+**Tier-2 flags split into two classes by consequence, not treated
+uniformly (pm-reviewer and warren-buffett findings, independently
+converging on the same gap: "flag and halve" was too soft for a
+disclosed structural threat, and the document's own "veto or flag, never
+boost" framing understated what actually happens once a flag halves a
+live position's weight automatically).**
 
-**Extraction quality is measured before it influences anything.** A
-labeled golden set of roughly 30 filings, with precision and recall
-computed in CI, gates this layer. Without it a model upgrade silently
-changes portfolio behavior and the first symptom is a P&L page nobody
-can account for. The rule layer gets unit tests; the model gets a
-benchmark.
+- **Routine flags** — customer concentration, acquired-growth
+  dependence, three-year margin decline — halve the maximum position
+  weight automatically, exactly as before. These are the kind of
+  disclosure most companies carry some version of; treating each one as
+  a stop-and-decide event would make the layer useless through alert
+  fatigue, the same failure mode §3.8 names for the event monitor.
+- **Structural-threat flags** — named regulatory obsolescence risk (the
+  GNTX class: a disclosed, dated, specific threat to the company's core
+  product category or revenue mechanism, not a generic risk-factor
+  boilerplate line) — do **not** auto-halve. They hold the candidate at
+  its *last* good decision (existing holding: unchanged weight, no new
+  top-up; not-yet-held candidate: not opened) and raise a named alert
+  requiring a **logged human decision** — hold at full weight, hold at
+  half weight, or exclude — before the position's weight can change in
+  either direction. This is the layer 3 judgment §3.6 and §6 already say
+  "remains yours"; the mechanism now actually routes to a human instead
+  of quietly resolving itself in code. The decision and its reasoning
+  are journaled as a manual override (§3.7), so it's counted alongside
+  every other override, not a silent exception to that metric.
+
+Applied retroactively: HRMY trips Tier 1 twice. GNTX trips two routine
+Tier-2 flags (customer concentration, acquired-growth dependence — both
+auto-halve) and one structural-threat flag (the mirror-replacement
+regulation) — which holds the position at its last decision and forces
+the logged human call, rather than the design silently deciding "half
+weight" on your behalf for the one risk in the document it explicitly
+says it cannot judge.
+
+**Extraction quality is measured before it influences anything, against
+a stated bar (pm-reviewer finding: "measured" named a gate with no pass
+threshold).** A labeled golden set of roughly 30 filings, with precision
+and recall computed in CI, gates this layer before it influences any
+order: **≥90% precision on Tier-1 disqualifiers, ≥80% recall.** The bars
+are asymmetric on purpose — this is a negative-only, veto-capable
+signal, so a false positive silently removes a real candidate from the
+buy queue with no other layer to catch it, while a false negative is
+more often recoverable (a missed disqualifier likely also fails a
+quantitative gate, or turns up in a later filing cycle). Without this
+gate a model upgrade silently changes portfolio behavior and the first
+symptom is a P&L page nobody can account for. The rule layer gets unit
+tests; the model gets a benchmark.
 
 **Moat mechanism (layer 2 of §3.6)** is extracted here as a display-only
 classified field — brand, switching costs, network effects, scale,
@@ -550,12 +684,20 @@ link, suppress Tier-1 Item 2.02 by default, and track alerts-per-quarter
 as a process metric under §3.7. If the rate climbs, the taxonomy is too
 loose.
 
-**Most of the plumbing already exists.** `news_update.py` runs on a
-schedule, calls the Anthropic API, posts to Discord, and has a soft-fail
-posture that cannot break the job. This is largely a retarget: from a
-general performance digest to per-holding event detection, with a
-tighter cadence and the alert-only rule enforced in code rather than by
-convention.
+**Most of the plumbing already exists, including retrieval — named
+explicitly, not left open (pm-reviewer finding: §4.3 calls Epic G
+"genuinely open-ended," but M48/M49 read as if the retrieval mechanism
+were already settled; it should be, and it already can be).**
+`news_update.py` runs on a schedule, retrieves via Alpaca's News API
+(`NewsClient.get_news()`, already integrated and already paginating
+correctly at this system's ticker volume — confirmed against the
+`alpaca-py` source, not assumed, per this project's own M22 review),
+calls the Anthropic API to extract, posts to Discord, and has a
+soft-fail posture that cannot break the job. This is largely a retarget:
+from a general performance digest to per-holding event extraction
+against §3.8's closed taxonomy, with a tighter cadence and the
+alert-only rule enforced in code rather than by convention — not a new
+data source to source and validate.
 
 ## 4. Review
 
@@ -600,9 +742,13 @@ precision/recall in CI is required before the filing agent influences
 any order, or a model upgrade will change portfolio behavior and you
 will find out from the P&L page.
 
-Finally: `ruff format --check` reports 5 files needing reformatting on
-main while `ruff check` is green. That gap suggests CI runs one and not
-the other.
+Finally: `ruff format --check` reports files needing reformatting on
+main while `ruff check` is green — **3 files as of the M24 merge**
+(`report.py`, `tests/test_config.py`, `tests/test_report.py`; this
+number was 5 when first observed and has since drifted down as other
+work touched two of those files incidentally — re-verify against `main`
+before M30 rather than trusting either historical figure). That gap
+suggests CI runs one and not the other.
 
 *Disposition:* settlement idempotence and the blocking rule are in §3.3;
 the versioned migration is M35, tested against real `bot-state` data
@@ -747,13 +893,13 @@ implemented.
 
 | ID | Milestone | Exit criteria |
 |---|---|---|
-| M24 | Land the `fix/live-trading-safety` branch | 405+ tests pass; top-up gating, unresolved-holdings handling, strike recalibration, `LIVE_TRADING_ENABLED` enforcement all merged |
-| M25 | Reconcile the FOX/LPG divergence by hand | Broker, journal, and `state.json` agree before any new code touches persisted state |
-| M26 | Closed-loop execution: orders/fills split + idempotent settlement pass | A submitted-but-unfilled order is visible as unfilled; strike reset happens only on confirmed fill; an incomplete settlement blocks the next execution window; migration verified against a hand-built pre-M26 schema |
-| M27 | Reconciliation gets teeth | A broker/journal mismatch halts execution; the FOX/LPG divergence is reproducible as a regression test |
+| M24 | Land the `fix/live-trading-safety` branch | **Done** — merged to `main` before this branch was cut (406 tests pass; top-up gating, unresolved-holdings handling, strike recalibration, `LIVE_TRADING_ENABLED` enforcement all shipped). Carries two open findings forward, not silently closed with the merge: **(a)** a crash between `process_sells` resetting a strike streak and the liquidation actually filling loses the record that a liquidation was decided — M26's confirmed-fill-only reset rule is the real fix, verify it closes this specific case, not just the general pattern; **(b)** the `bot-state-live` reconciliation has only ever been exercised via direct function calls, never through a dispatched workflow with a real breach — fold into M27's regression coverage. |
+| M25 | Reconcile the FOX/LPG divergence by hand | Broker, journal, and `state.json` agree before any new code touches persisted state. Since M24, the paper account was independently reset to zero positions by hand and `state.json` cleared to `{}` — confirm this milestone is that reconciliation already, not separate work, before scheduling it. |
+| M26 | Closed-loop execution: orders/fills split + idempotent settlement pass | A submitted-but-unfilled order is visible as unfilled; a partial fill journals its actual filled quantity and leaves the remainder pending, never "confirmed"; strike reset happens only on a full confirmed fill; a settlement pass that exhausts retries on a query failure sets the account's `KILL_SWITCH_FLAG_FILE_PATH` and blocks the next execution window; a block still present at the next window raises a Critical alert on its own; migration verified against a hand-built pre-M26 schema. Per §3.3's now-specified rules. |
+| M27 | Reconciliation gets teeth | A broker/journal mismatch halts execution; the FOX/LPG divergence is reproducible as a regression test; the live-account reconciliation path (carried forward from M24, see above) gets a dispatched-workflow regression test, not only direct-call coverage |
 | M28 | Journal reason strings derived, not hardcoded | Top-ups journal as `TOP_UP`; a test asserts no code path hardcodes `NEW_POSITION` |
-| M29 | Holding state machine (§3.2) with active corporate-action detection | Four states distinguishable in `screen_results.csv`; delisting never produces a trade |
-| M30 | Add `ruff format --check` to CI | The 5 pre-existing diffs on main resolved; formatting and linting no longer diverge |
+| M29 | Holding state machine (§3.2) with active corporate-action detection | Four states distinguishable in `screen_results.csv`; CORPORATE_ACTION correctly triggers off Alpaca's Assets API `status`/`tradable` field (§3.2) on a **synthetic fixture** — a real delisting on a live holding isn't guaranteed to occur on any predictable timeline, so this milestone closes on injected-event test coverage, the same reasoning M49 already uses for its own unforceable case, not on waiting for one to happen |
+| M30 | Add `ruff format --check` to CI | Every pre-existing formatting diff on `main`, re-counted at the time this milestone starts (not assumed from §4.1's historical figure), resolved; formatting and linting no longer diverge |
 
 **Epic B — Restart validation.**
 
@@ -761,7 +907,7 @@ implemented.
 |---|---|---|
 | M31 | Pre-register benchmark, horizon, process metrics, kill criteria | Committed file, dated, before restart |
 | M32 | Reset paper account; begin clean record | Fresh account, zero positions, `bot-state` archived not deleted |
-| M33 | Process-conformance dashboard | Turnover, sells/yr, fill rate, mismatch count, override rate, alert rate visible on the site |
+| M33 | Process-conformance dashboard | Every metric on the dashboard hand-verified at least once against the underlying journal/`state.json`/fills data for one full quarter — "visible on the site" means "rendered *and* checked to match the source data," not merely that the page loads |
 
 ### Tranche 2 — Trustworthy inputs
 
@@ -770,18 +916,18 @@ implemented.
 | ID | Milestone | Exit criteria |
 |---|---|---|
 | M34 | Split into three workflows (screen / evaluate / execute) | Paper/live isolation verified per workflow; no shared local state; the daily-screen/quarterly-evaluate gap labelled on the site per §3.1 |
-| M35 | Period-based strikes with versioned `state.json` migration | Schema version recorded; migration tested against real persisted state from `bot-state`, not a synthetic fixture |
+| M35 | Period-based strikes with versioned `state.json` migration | Schema version recorded as a top-level `{"version": 2, "strikes": {...}}` field (the current file has no such field at all — this is a shape change, not a value change); migration policy stated and followed, not left implicit (staff-engineer-reviewer finding: an integer count like `{"NMIH": 1}` cannot be reconstructed into a fiscal-period list, since periods didn't exist as a concept when the count was written) — **every in-flight integer streak is migrated to an empty period list, not a synthesized placeholder period.** A fabricated historical period would misrepresent when the strike actually occurred; the honest choice is that any ticker mid-streak at migration time starts clean and must fail quality again, under the new rule, to re-accumulate. Tested against real persisted state from `bot-state`, not a synthetic fixture. |
 
 **Epic D — Data integrity.**
 
 | ID | Milestone | Exit criteria |
 |---|---|---|
-| M36 | XBRL companyfacts integration, shadow mode | Both sources run a full cycle in parallel; per-field disagreement report reviewed by hand before switchover |
-| M37 | XBRL primary; GNTX margin discrepancy resolved | Screen figures match filed figures for a 20-name sample |
+| M36 | EDGAR volume/rate-limit check (§3.4), then XBRL companyfacts integration, shadow mode | EDGAR sustains the full-universe + 10-year-backfill request volume within its fair-access limit, measured directly (or the backfill is rescoped to the buyable/near-buyable subset, per §3.4); both sources then run a full cycle in parallel; per-field disagreement report (using the ≥5%-relative-or-1pp-absolute tolerance in §3.4) reviewed by hand before switchover |
+| M37 | XBRL primary; GNTX margin discrepancy resolved | Screen figures match filed figures, within the §3.4 tolerance, for a 20-name sample |
 | M38 | Sector-aware gates | Insurers/REITs either excluded or gated on sector-appropriate metrics; NMIH's gross-margin artifact cannot recur |
-| M39 | Trend terms, average-earnings P/E, **and the three-year margin-decline flag** | Margin direction and organic-growth terms in the score; cyclical entries visibly reduced; hold-cash rule (§3.4) exercised if the buyable list falls below target |
-| M40 | **Moat persistence component** (§3.6): ROIC persistence, margin stability, revenue/share CAGR; weights rebalanced | Acceptance test passes — GNTX outranks HRMY on the same data; companies with under 10 years of filings score zero on persistence rather than being excluded; both accepted biases disclosed on the methodology page |
-| M41 | Sector cap, ROIC cross-check, remove `MAX_SINGLE_POSITION_WEIGHT` | Concentration is chosen, not emergent; sizing stays equal-weight per §3.6 |
+| M39 | Trend terms, average-earnings P/E, **and the three-year margin-decline flag** | Margin direction and organic-growth terms in the score; on one archived screen's data, the buyable set under average-earnings P/E is a strict subset of the buyable set the same day would have produced under trailing P/E — run both, diff them, don't just assert the direction; hold-cash rule (§3.4) exercised if the buyable list falls below target |
+| M40 | **Moat persistence component** (§3.6): ROIC persistence, margin stability, revenue/share CAGR; weights rebalanced | Acceptance test passes — GNTX outranks HRMY on the same data; companies with under 10 years of filings score zero on persistence rather than being excluded; both accepted biases, plus the backward-looking-persistence limitation named in §6, disclosed on the methodology page |
+| M41 | Sector cap, ROIC cross-check, remove `MAX_SINGLE_POSITION_WEIGHT` | No sector exceeds 25% of portfolio value in any post-execution snapshot; when the cap binds, the log names the skipped lower-scoring same-sector candidate — "concentration is chosen" means the choice is visible in the log, not merely that a cap constant exists; sizing stays equal-weight per §3.6 |
 
 *Why the margin-decline flag moved into M39.* Persistence at 0.40 weight
 is backward-looking by construction: a business whose moat broke last
@@ -794,7 +940,7 @@ the optional tranche.
 
 | ID | Milestone | Exit criteria |
 |---|---|---|
-| M42 | 8-K polling for held tickers, classified by item number, **with alert-only enforcement shipped in the same change** | Item 4.02/4.01/1.03 raise a Critical/High alert within one business day; Item 2.02 suppressed by default; no model involved; a test asserts no code path lets an event record produce an order, adjust a score, or record a strike |
+| M42 | 8-K polling for held tickers, classified by item number, **with alert-only enforcement shipped in the same change** | On a synthetic/injected 8-K fixture per item type (a real Critical-severity 8-K on a held name isn't guaranteed within any development timeline, same reasoning as M29), classification and alerting fire correctly within one business day of the poll; Item 2.02 suppressed by default; no model involved; a test asserts no code path lets an event record produce an order, adjust a score, or record a strike. Re-confirm against a real 8-K opportunistically once one occurs, but don't block the milestone on waiting for one. |
 | M43 | Manual-override journaling + rate limiting | Overrides journaled with a reason and counted as a process metric; alerts per holding per quarter tracked, with a rising rate treated as a taxonomy defect rather than a market signal |
 
 *Alert-only enforcement lands with the poller, not after it.* An alert
@@ -809,8 +955,8 @@ which is precisely the drift §3.8 exists to prevent.
 | ID | Milestone | Exit criteria |
 |---|---|---|
 | M44 | EDGAR retrieval + Item 1/1A/3/7 section parser | Boundaries verified on 20 filings across sectors |
-| M45 | Extraction with quote verification + golden set in CI | Precision and recall measured against ~30 labeled filings; every field traceable to a verbatim span; the agent influences no order until this gate is green |
-| M46 | Tier-1/Tier-2 rule layer + moat-mechanism classification (display-only) | Regression fixtures reproduce the HRMY veto and the GNTX flags |
+| M45 | Extraction with quote verification + golden set in CI | Precision and recall measured against ~30 labeled filings, **≥90% precision / ≥80% recall on Tier-1 disqualifiers** per §3.5's stated bar; every field traceable to a verbatim span; the agent influences no order until this gate is green |
+| M46 | Tier-1/Tier-2 rule layer (routine-auto-halve vs. structural-threat-holds-for-human-decision split, per §3.5) + moat-mechanism classification (display-only) | Regression fixtures reproduce the HRMY veto, GNTX's two routine Tier-2 flags auto-halving, and GNTX's structural-threat flag correctly holding at last weight and raising the named human-decision alert rather than auto-halving |
 | M47 | Wire into the screen as veto-and-flag; display before it trades | Findings visible on the site for one full cycle before influencing orders |
 
 **Epic G — Material-event monitoring, model-assisted half (§3.8 Tier 2).**
