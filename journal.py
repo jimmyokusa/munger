@@ -117,6 +117,45 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+
+    # material_events: one row per 8-K SEC EDGAR accession number that
+    # matched the closed item-number taxonomy (M42, Design v2.2 §3.8).
+    # accession_number is the primary key -- SEC assigns exactly one per
+    # filing, globally unique, so it's the natural idempotency key for
+    # "have we already alerted on this filing" (mirrors client_order_id's
+    # role in fills above). Append-only audit trail, same as orders: an
+    # event record is never updated or deleted once alerted.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS material_events (
+            accession_number TEXT PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            filing_date TEXT NOT NULL,
+            items TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            alerted_timestamp TEXT NOT NULL
+        )
+        """
+    )
+
+    # manual_overrides: a human acting on a material-event alert (or any
+    # other reason) records it here with a reason, per §3.8's own
+    # requirement that overrides be "journaled with a reason and counted
+    # as a process metric" (M43). This table records the human decision
+    # itself -- never written by any automated code path, which is what
+    # keeps it a metric of human judgment rather than another automated
+    # signal.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS manual_overrides (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            account TEXT NOT NULL DEFAULT 'paper'
+        )
+        """
+    )
     return conn
 
 
@@ -269,6 +308,124 @@ def get_fill(client_order_id: str) -> dict[str, object] | None:
             "SELECT * FROM fills WHERE client_order_id = ?", (client_order_id,)
         ).fetchone()
     return dict(row) if row else None
+
+
+def has_alerted_on_filing(accession_number: str) -> bool:
+    """True if `accession_number` already has a recorded material-event alert.
+
+    M42's idempotency check (material_events.py): SEC assigns exactly
+    one accession number per filing, globally, so this is a reliable
+    "have we already alerted on this one" check across process restarts
+    -- the same role client_order_id/has_already_submitted plays for
+    orders, just for a read-only external event rather than something
+    this system submitted.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM material_events WHERE accession_number = ?", (accession_number,)
+        ).fetchone()
+    return row is not None
+
+
+def record_material_event(
+    accession_number: str, ticker: str, filing_date: str, items: str, severity: str
+) -> None:
+    """Record one alerted-on 8-K material event (M42, Design v2.2 §3.8).
+
+    Plain INSERT, not an upsert -- unlike record_order's crash-restart
+    idempotency concern, material_events.py checks
+    has_alerted_on_filing() BEFORE calling this, so a duplicate call for
+    the same accession_number would be a caller bug, not an expected
+    crash-restart path; the primary-key constraint on accession_number
+    surfaces that bug as a raised IntegrityError instead of silently
+    duplicating (or silently discarding) an audit-trail row.
+    """
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO material_events "
+            "(accession_number, ticker, filing_date, items, severity, alerted_timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                accession_number,
+                ticker,
+                filing_date,
+                items,
+                severity,
+                datetime.datetime.now(datetime.UTC).isoformat(),
+            ),
+        )
+
+
+def get_material_event_counts_by_quarter(ticker: str | None = None) -> dict[str, int]:
+    """Alerted material-event counts, keyed "TICKER-YYYYQN" (M43, §3.8).
+
+    The process metric §3.8 calls for explicitly: "alerts per holding
+    per quarter tracked, with a rising rate treated as a taxonomy
+    defect rather than a market signal." Quarter is derived from
+    `filing_date` (when the underlying event happened), not
+    `alerted_timestamp` (when this system happened to poll it) -- a
+    filing made on the last day of a quarter but alerted on the first
+    day of the next must still count against the quarter it actually
+    describes. `ticker=None` (default) returns every ticker's counts;
+    passing a specific ticker filters to just that one.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT ticker, filing_date FROM material_events"
+            + (" WHERE ticker = ?" if ticker else ""),
+            (ticker,) if ticker else (),
+        ).fetchall()
+    counts: dict[str, int] = {}
+    for row_ticker, filing_date in rows:
+        try:
+            date = datetime.date.fromisoformat(str(filing_date))
+        except ValueError:
+            continue  # malformed row -- don't let one bad date crash the whole metric
+        quarter = (date.month - 1) // 3 + 1
+        key = f"{row_ticker}-{date.year}Q{quarter}"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def record_manual_override(ticker: str, reason: str, account: str | None = None) -> None:
+    """Journal a human's manual override with a reason (M43, §3.8).
+
+    Never called by any automated code path -- this table exists
+    specifically to count and audit *human* decisions made in response
+    to (or independent of) a material-event alert, per §3.8's "acting on
+    it is a human decision, recorded in the journal as a manual override
+    with a reason." A caller enforcing "no automated path writes here"
+    is a code-review concern, not something this function can itself
+    verify.
+    """
+    account = account or _current_account()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO manual_overrides (timestamp, ticker, reason, account) VALUES (?, ?, ?, ?)",
+            (datetime.datetime.now(datetime.UTC).isoformat(), ticker, reason, account),
+        )
+
+
+def get_manual_override_count(ticker: str | None = None, account: str | None = None) -> int:
+    """Count of journaled manual overrides -- the process metric §3.8 calls for.
+
+    `ticker=None` counts every ticker; `account=None` counts every
+    account (matches get_expected_holdings' own "None means every
+    account" convention, not this process's current account, since a
+    process metric should reflect the whole system, not just whichever
+    account happens to be running).
+    """
+    query = "SELECT COUNT(*) FROM manual_overrides WHERE 1=1"
+    params: list[str] = []
+    if ticker is not None:
+        query += " AND ticker = ?"
+        params.append(ticker)
+    if account is not None:
+        query += " AND account = ?"
+        params.append(account)
+    with _connect() as conn:
+        row = conn.execute(query, params).fetchone()
+    return int(row[0]) if row else 0
 
 
 def get_expected_holdings(account: str | None = None) -> set[str]:

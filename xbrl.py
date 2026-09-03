@@ -57,11 +57,15 @@ _rate_limit_lock = threading.Lock()
 _last_request_monotonic = 0.0
 
 
-def _throttled_get(url: str) -> bytes:
+def throttled_get(url: str) -> bytes:
     """A GET request with SEC's required User-Agent.
 
     Also applies this module's self-imposed rate limit, shared across
-    every caller in this process.
+    every caller in this process -- including material_events.py's 8-K
+    submissions polling (M42), which hits the same SEC EDGAR host and
+    must share this module's rate limiter, not run a second independent
+    one that could double the real request rate against SEC's servers.
+    Public (not `throttled_get`) for exactly that cross-module reuse.
     """
     global _last_request_monotonic
     min_interval = 1.0 / config.SEC_EDGAR_MAX_REQUESTS_PER_SECOND
@@ -86,6 +90,23 @@ def load_cik_lookup(*, force_refresh: bool = False) -> dict[str, str]:
     rarely and is ~800KB, not worth re-fetching every run. `force_refresh`
     bypasses the cache (a genuinely new listing wouldn't appear in a
     stale copy).
+
+    Fails soft (returns {}, logs) on a fetch/parse failure -- staff-
+    engineer-reviewer finding: this was previously the one uncaught
+    EDGAR call in the whole module (every other fetch here already fails
+    soft, matching data.py's fetch_metrics convention). It was dead code
+    until M42's material_events.py became this function's first real
+    caller, and on GitHub Actions' ephemeral runners
+    (config.DATA_RAW_CACHE_DIR is not restored by either trading
+    workflow's bot-state persistence) the disk cache is cold on every
+    single scheduled run -- so an uncaught exception here would have hit
+    the real fetch path daily, not as a rare edge case, and crashed the
+    whole job on any transient SEC hiccup despite every doc comment in
+    this codebase claiming that job can't fail on an EDGAR problem. An
+    empty return degrades every caller correctly: get_cik(ticker, {})
+    returns None for every ticker, and poll_holdings already treats a
+    None CIK as "skip this ticker, log, keep going" per-ticker, not a
+    reason to abort the whole poll.
     """
     cache_path = _cik_cache_path()
     if not force_refresh and cache_path.exists():
@@ -95,13 +116,25 @@ def load_cik_lookup(*, force_refresh: bool = False) -> dict[str, str]:
         except (json.JSONDecodeError, KeyError, OSError):
             logger.warning("%s unreadable/corrupt -- refetching", cache_path, exc_info=True)
 
-    body = _throttled_get(_TICKER_INDEX_URL)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
-    tmp_path.write_bytes(body)
-    tmp_path.replace(cache_path)
-    raw = json.loads(body)
-    return {str(v["ticker"]).upper(): str(v["cik_str"]).zfill(10) for v in raw.values()}
+    try:
+        body = throttled_get(_TICKER_INDEX_URL)
+        raw = json.loads(body)
+        lookup = {str(v["ticker"]).upper(): str(v["cik_str"]).zfill(10) for v in raw.values()}
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, KeyError):
+        logger.error("Failed to fetch/parse the SEC ticker index -- returning empty", exc_info=True)
+        return {}
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        tmp_path.write_bytes(body)
+        tmp_path.replace(cache_path)
+    except OSError:
+        # The fetch itself succeeded -- a cache-write failure (a
+        # read-only filesystem, disk full) must not discard a perfectly
+        # good in-memory result just because it couldn't also be cached.
+        logger.warning("Failed to write %s cache -- continuing uncached", cache_path, exc_info=True)
+    return lookup
 
 
 def get_cik(ticker: str, cik_lookup: dict[str, str] | None = None) -> str | None:
@@ -127,7 +160,7 @@ def fetch_company_facts(cik: str) -> dict[str, object] | None:
     yfinance, or flag as unresolved) is identical either way.
     """
     try:
-        body = _throttled_get(_COMPANYFACTS_URL_TEMPLATE.format(cik=cik))
+        body = throttled_get(_COMPANYFACTS_URL_TEMPLATE.format(cik=cik))
     except urllib.error.HTTPError as e:
         if e.code == 404:
             logger.info("CIK %s: no XBRL companyfacts on EDGAR (404)", cik)

@@ -232,6 +232,22 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
         run: python prices.py
 
+      # 8-K material-event polling (M42, Design v2.2 §3.8 Tier 1). Runs
+      # after pnl.py (reads its pnl.json for the held-symbol list, same
+      # pattern prices.py/news_update.py already use) and is entirely
+      # soft-fail internally -- material_events.py catches every
+      # SEC-EDGAR/Discord failure per ticker and never raises out of
+      # run(), so this step can't fail the job. No ALPACA_* secrets: this
+      # module never imports execution.py/portfolio.py and reads only
+      # pnl.json (already-fetched Alpaca data) plus public SEC EDGAR
+      # endpoints -- structurally incapable of placing an order, per the
+      # module's own "alert-only, never trade-triggering" design.
+      - name: Poll for material events (8-K)
+        if: always()
+        env:
+          DISCORD_MATERIAL_EVENT_WEBHOOK_URL: ${{ secrets.DISCORD_MATERIAL_EVENT_WEBHOOK_URL }}
+        run: python material_events.py
+
       # Claude-written news/performance digest (M22, user request; cadence
       # changed daily -> monthly, M23, user request). Runs after pnl.py
       # (reads its pnl.json for the held-symbol list, same as prices.py
@@ -259,15 +275,26 @@ jobs:
 
       # M23, staff-engineer-reviewer finding: news_digest_state.json is
       # only written (by _record_posted_month(), on a successful post) by
-      # the step directly above -- which runs after "Persist bot state"
-      # already committed/pushed further up this job. A separate, later
-      # persist step is required, not a change to that earlier step's
-      # timing (which is correctly scoped to right-after-"Run bot" for
-      # bot.py's own state.json/journal.db). Same bot-state branch,
-      # mirrors that step's own git commands. `if: always()` for the same
-      # reason as every other display-concern step here; `--allow-empty`
-      # (matching "Persist bot state") means a no-op day still succeeds
-      # even though nothing changed.
+      # the step above it -- which runs after "Persist bot state" already
+      # committed/pushed further up this job. A separate, later persist
+      # step is required, not a change to that earlier step's timing
+      # (which is correctly scoped to right-after-"Run bot" for bot.py's
+      # own state.json/journal.db). Same bot-state branch, mirrors that
+      # step's own git commands. `if: always()` for the same reason as
+      # every other display-concern step here; `--allow-empty` (matching
+      # "Persist bot state") means a no-op day still succeeds even though
+      # nothing changed.
+      #
+      # journal.db is re-copied here too (M42): "Poll for material
+      # events" runs after "Persist bot state" already committed its own
+      # snapshot of journal.db, and writes new material_events rows into
+      # the SAME local journal.db file -- without re-copying it here,
+      # those rows would exist only in this ephemeral runner's
+      # filesystem and vanish at job end, silently losing every alerted
+      # event's audit trail (and, worse, its has_alerted_on_filing
+      # dedup: the next run would re-fetch the same accession numbers,
+      # find no record of them, and re-alert on filings already alerted
+      # on days ago).
       - name: Persist news digest state
         if: always()
         run: |
@@ -275,9 +302,10 @@ jobs:
           git config user.name "munger-bot"
           git config user.email "munger-bot@users.noreply.github.com"
           [ -f news_digest_state.json ] && cp news_digest_state.json ../bot-state-wt/
+          [ -f journal.db ] && cp journal.db ../bot-state-wt/
           cd ../bot-state-wt
           git add -A
-          git commit -q -m "News digest state from run ${{ github.run_id }}" --allow-empty
+          git commit -q -m "News digest + material-events state from run ${{ github.run_id }}" --allow-empty
           git push origin HEAD:bot-state
 
       - name: Upload P&L snapshot and history to GCS

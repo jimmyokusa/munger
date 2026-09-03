@@ -187,6 +187,20 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python pnl.py
 
+      # 8-K material-event polling (M42, Design v2.2 §3.8 Tier 1) -- same
+      # webhook as daily-trade.yml's own step, so both accounts' alerts
+      # land in the same Discord channel (the ticker/severity in the
+      # message itself is what a reader needs; which account holds it is
+      # secondary since the event is about the company, not the account).
+      # No ALPACA_LIVE_* secrets needed, same reasoning as the paper
+      # workflow's step: reads only this run's pnl.json plus public SEC
+      # EDGAR endpoints, never execution.py/portfolio.py.
+      - name: Poll for material events (8-K, live account)
+        if: always()
+        env:
+          DISCORD_MATERIAL_EVENT_WEBHOOK_URL: ${{ secrets.DISCORD_MATERIAL_EVENT_WEBHOOK_URL }}
+        run: python material_events.py
+
       # Claude-written news/performance digest (M22, user request; cadence
       # changed daily -> monthly, M23, user request) -- same webhook and
       # Anthropic key as daily-trade.yml's own step, so both accounts'
@@ -211,10 +225,16 @@ jobs:
 
       # M23, same reasoning as daily-trade.yml's own "Persist news digest
       # state" step: news_digest_state.json is only written by the step
-      # directly above, which runs after "Persist bot-state-live" already
+      # above it, which runs after "Persist bot-state-live" already
       # committed/pushed further up this job -- a separate, later persist
       # step is required to actually persist it, not a change to that
-      # earlier step's timing.
+      # earlier step's timing. journal.db is re-copied here too (M42),
+      # same reasoning as daily-trade.yml's own step: "Poll for material
+      # events" writes new material_events rows into the local journal.db
+      # after the earlier persist step already snapshotted it -- without
+      # this, those rows (and the has_alerted_on_filing dedup they
+      # provide) would vanish at job end and every filing would re-alert
+      # the next run.
       - name: Persist news digest state
         if: always()
         run: |
@@ -222,9 +242,10 @@ jobs:
           git config user.name "munger-bot-live"
           git config user.email "munger-bot@users.noreply.github.com"
           [ -f news_digest_state.json ] && cp news_digest_state.json ../bot-state-wt/
+          [ -f journal.db ] && cp journal.db ../bot-state-wt/
           cd ../bot-state-wt
           git add -A
-          git commit -q -m "News digest state from run ${{ github.run_id }}" --allow-empty
+          git commit -q -m "News digest + material-events state from run ${{ github.run_id }}" --allow-empty
           git push origin HEAD:bot-state-live
 
       # No "Generate held-symbol price history" (prices.py) step here --

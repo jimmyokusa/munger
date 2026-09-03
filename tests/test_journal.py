@@ -399,6 +399,73 @@ def test_record_fill_rejects_invalid_status() -> None:
         journal.record_fill("some-id", "AAPL", "bogus_status")
 
 
+# --- material_events (M42, Design v2.2 §3.8) ---
+
+
+def test_has_alerted_on_filing_false_for_an_unknown_accession_number() -> None:
+    assert journal.has_alerted_on_filing("0001193125-26-000123") is False
+
+
+def test_record_material_event_and_has_alerted_on_filing_roundtrip() -> None:
+    journal.record_material_event("0001193125-26-000123", "HRMY", "2026-02-20", "1.03", "Critical")
+    assert journal.has_alerted_on_filing("0001193125-26-000123") is True
+
+
+def test_record_material_event_rejects_a_duplicate_accession_number() -> None:
+    # Plain INSERT, not an upsert: material_events.py always checks
+    # has_alerted_on_filing first, so a second call for the same
+    # accession_number is a caller bug the primary key should surface,
+    # not silently swallow.
+    journal.record_material_event("acc-1", "HRMY", "2026-02-20", "1.03", "Critical")
+    with pytest.raises(sqlite3.IntegrityError):
+        journal.record_material_event("acc-1", "HRMY", "2026-02-20", "1.03", "Critical")
+
+
+def test_get_material_event_counts_by_quarter_keys_by_filing_date_not_alerted_timestamp() -> None:
+    # A filing made 2026-03-31 (Q1) alerted on 2026-04-01 (Q2) must still
+    # count against Q1 -- the quarter the underlying event happened in.
+    journal.record_material_event("acc-1", "HRMY", "2026-03-31", "1.03", "Critical")
+    journal.record_material_event("acc-2", "HRMY", "2026-04-15", "5.02", "Medium")
+    journal.record_material_event("acc-3", "GNTX", "2026-03-15", "4.01", "High")
+
+    counts = journal.get_material_event_counts_by_quarter()
+
+    assert counts == {"HRMY-2026Q1": 1, "HRMY-2026Q2": 1, "GNTX-2026Q1": 1}
+
+
+def test_get_material_event_counts_by_quarter_filters_by_ticker() -> None:
+    journal.record_material_event("acc-1", "HRMY", "2026-03-31", "1.03", "Critical")
+    journal.record_material_event("acc-2", "GNTX", "2026-03-15", "4.01", "High")
+
+    counts = journal.get_material_event_counts_by_quarter(ticker="HRMY")
+
+    assert counts == {"HRMY-2026Q1": 1}
+
+
+def test_get_material_event_counts_by_quarter_empty_when_nothing_recorded() -> None:
+    assert journal.get_material_event_counts_by_quarter() == {}
+
+
+def test_record_manual_override_and_get_manual_override_count_roundtrip() -> None:
+    journal.record_manual_override("HRMY", "Acting on the litigation-ruling alert; holding anyway")
+    journal.record_manual_override("HRMY", "Second override, different reason")
+    journal.record_manual_override("GNTX", "Unrelated override")
+
+    assert journal.get_manual_override_count() == 3
+    assert journal.get_manual_override_count(ticker="HRMY") == 2
+    assert journal.get_manual_override_count(ticker="GNTX") == 1
+    assert journal.get_manual_override_count(ticker="AAPL") == 0
+
+
+def test_record_manual_override_defaults_account_from_config_paper_trading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    journal.record_manual_override("HRMY", "a reason")
+    assert journal.get_manual_override_count(account="live") == 1
+    assert journal.get_manual_override_count(account="paper") == 0
+
+
 def test_archive_screen_results_copies_the_current_csv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

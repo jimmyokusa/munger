@@ -1678,3 +1678,91 @@ elsewhere, not left implicit.
 Revisit this default once staging/prod namespaces (still "designed, not
 built" per the workflow skill) actually exist -- that's the point where
 staged, incremental deploys stop costing extra operator effort.
+
+## Design v2.2 execution: M42-M43 -- material-event monitoring (added 2026-09-03, Epic E, continuing the same `/goal`)
+
+Epic E ("no dependency on Epic A, C, or D... can be built any time" per
+`DESIGN_V2.md` §5) -- deterministic 8-K polling for held tickers, closed
+item-number taxonomy, alert-only enforcement, and manual-override
+journaling. All-new module, no changes to `bot.py`/`execution.py`/
+`portfolio.py`'s trading path.
+
+`pm-reviewer` finding, confirmed: `DESIGN_V2.md` recommends (not
+requires) landing Epic E before the paper-account restart (M32) so the
+"alerts per holding per quarter" process metric has a real baseline
+from day one rather than starting mid-window. M32 has not started --
+this file has no M32 entry anywhere, and M32 is itself gated on Epic A
++ Epic C + Epic D all complete (Epic D is currently only partially done
+at M36; Epic C hasn't started). So landing Epic E now does capture that
+intended benefit, not miss it.
+
+**M42 -- 8-K polling + classification + alert-only enforcement, shipped
+together per the design doc's own requirement.** New `material_events.py`:
+polls SEC EDGAR's `submissions/CIK{cik}.json` for each held ticker (held
+symbols read from `pnl.json`, the same read-only source `news_update.py`/
+`prices.py` already use -- this module never imports `execution.py` or
+`portfolio.py` at all, the structural half of "alert-only, never
+trade-triggering"), classifies any new 8-K/8-K-A by item number against
+the closed taxonomy in `DESIGN_V2.md` §3.8's own table (4.02/1.03
+Critical, 4.01 High, 5.02/2.01/2.05/2.06 Medium, 2.02 Low-and-suppressed-
+by-default), and alerts to a dedicated Discord webhook
+(`DISCORD_MATERIAL_EVENT_WEBHOOK_URL`). Idempotent across runs/restarts
+via SEC's own globally-unique accession number as the primary key in a
+new `journal.material_events` table (`has_alerted_on_filing`/
+`record_material_event`) -- a filing already alerted on is never
+re-alerted. `xbrl.py`'s SEC-EDGAR rate limiter (`_throttled_get`, renamed
+`throttled_get` for this cross-module reuse) and CIK lookup are shared,
+not reimplemented, so both modules' request rates stay under one shared
+limit against SEC's servers. Wired into both `daily-trade.yml` and
+`daily-trade-live.yml` as a new step after `pnl.py` (needs its
+`pnl.json`), `if: always()`, no `ALPACA_*` secrets (this module can't
+place an order even by accident, so it doesn't need the credentials
+that would let it). `journal.db` is now re-copied by the existing
+"Persist news digest state" step (renamed in intent, not in YAML step
+name, to keep the diff minimal) -- it already runs after the earlier
+"Persist bot state" step, and this module's writes need the same
+late-persist treatment `news_digest_state.json` already gets, or every
+alerted event's dedup record would vanish at job end and re-alert the
+next day.
+
+**M43 -- manual-override journaling + rate limiting.** New
+`journal.record_manual_override`/`get_manual_override_count` (a new
+`manual_overrides` table, never written by any automated code path --
+confirmed by grep, not just by convention) and
+`get_material_event_counts_by_quarter` (keyed `TICKER-YYYYQN`, derived
+from the filing's own date, not when this system happened to poll it --
+the process metric §3.8 calls for: "alerts per holding per quarter
+tracked, with a rising rate treated as a taxonomy defect"). New
+`record_override.py` CLI (`python record_override.py TICKER "reason"`)
+-- the actual write path a human uses, added after the first review pass
+found `record_manual_override` had no caller anywhere outside tests
+(see finding table below).
+
+**`staff-engineer-reviewer` pass (real findings, all fixed):**
+
+| Finding | Fixed |
+|---|---|
+| `xbrl.load_cik_lookup`'s network fetch was the one uncaught EDGAR call in that module -- dead code until this milestone made it the first real production caller. GitHub Actions' ephemeral runners don't restore `config.DATA_RAW_CACHE_DIR` between runs, so the disk cache is cold on every single scheduled run, meaning the unguarded fetch path executes daily, not as a rare edge case. Any transient SEC hiccup would crash the whole job -- directly contradicting the "can't fail the job" claim made in both workflow files' own comments and `run()`'s own docstring | `load_cik_lookup` now fails soft (returns `{}`, logs) on a fetch/parse/cache-write failure, matching `fetch_company_facts`'s existing convention; `get_cik`/`poll_holdings` already degrade correctly per-ticker on an empty lookup, so no caller-side change was needed |
+| 8-K amendments (`8-K/A`) were silently excluded by a naive `form != "8-K"` filter -- demonstrated live against this module's own fixture data: a real AAPL `8-K/A` in the sample carries a taxonomy-matching item (5.02), and amendments can carry corrected/restated information including exactly the Critical-severity 4.02 case this taxonomy exists to catch | Filter now accepts `("8-K", "8-K/A")`; new pinned regression test asserts the real fixture's `8-K/A` entry is included with its correct item |
+| `config.MATERIAL_EVENT_STATE_PATH` described a file-based idempotency mechanism ("atomic writes, same temp-file + rename pattern as StateTracker") that was never actually built or read anywhere -- the real, correct mechanism is the SQLite `material_events` table keyed on accession number. Stale, misleading dead config | Removed; replaced with a comment pointing to the actual mechanism, so a future debugger doesn't look in the wrong place during a re-alert incident |
+| `journal.record_manual_override` existed, was correctly guarded (grep-confirmed no automated caller), and was fully tested -- but had zero usable write path for an actual human, so `manual_overrides` would in practice stay permanently empty regardless of real override behavior, silently defeating the process metric this milestone exists to establish (worse than not having the field: it would read as "no overrides happened" when the truth is "nobody could record one") | New `record_override.py` CLI, tested |
+| Recording a `material_events` row happens before the Discord POST; a hard process kill between the two (OOM, a workflow timeout, `kill -9`) permanently marks a filing "already alerted" via `has_alerted_on_filing` with no notification ever having gone out, and nothing reconciles this later -- for a Critical-severity event this is a silent, permanent miss | Not fixed -- recorded as a known, low-probability gap. The record-before-alert ordering is the correct tradeoff (the alternative, alert-before-record, risks double-alerting on a crash between the two, which §3.8 treats as the worse failure mode); closing the gap needs a delivery-confirmation column and a reconciliation pass, real scope for a future increment, not a same-session patch |
+| M43's process metrics (`get_material_event_counts_by_quarter`, `get_manual_override_count`) are implemented and tested at the library level but have no operator-facing surface -- no `report.py` section, no periodic digest mention, no CLI query | Not fixed -- and deliberately not attempted as a `report.py` page, since that would inherit the exact same pre-existing reporting-pipeline gap already documented under M29c (the process that publishes the real site never has `journal.db` access at all). Recorded as a known gap alongside that one, not a new, separate problem to solve twice |
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| M42: `material_events.py` (8-K polling, closed taxonomy, alert-only) | done | 2026-09-03 |
+| M42: `journal.material_events` table + idempotent accession-number keying | done | 2026-09-03 |
+| M42: wired into `daily-trade.yml`/`daily-trade-live.yml`, `journal.db` re-persisted | done | 2026-09-03 -- YAML validated (`yaml.safe_load`); not yet exercised by a real dispatched run (same caveat class as M24/M27's own dispatched-workflow gap -- see M27's write-up above). |
+| M43: `journal.manual_overrides` table + `record_manual_override`/`get_manual_override_count` | done | 2026-09-03 |
+| M43: `journal.get_material_event_counts_by_quarter` | done, library-level only | 2026-09-03 -- `pm-reviewer` finding: the underlying mechanism works and is tested, but the milestone's actual purpose (a human noticing a rising alert rate and judging "taxonomy defect vs. real signal") can't yet happen -- there is no surface where anyone would see this number without a manual DB query. Not the same as "done" at the product level; see the two new `todo` rows below. |
+| M43: `record_override.py` CLI (the actual human write path) | done | 2026-09-03 -- added after the review finding above; the milestone would have been hollow without it. |
+| Give a human an actual way to see the quarterly alert-rate metric (report.py page, periodic digest mention, or a query CLI) | todo | `pm-reviewer` finding: recorded only as prose in the staff-engineer-reviewer table above, not tracked here, which risked losing it -- moved into the tracked list per that finding. Deliberately not attempted as a `report.py` page (would inherit M29c's already-documented reporting-pipeline gap); a periodic Discord digest mention (piggybacking on `news_update.py`'s existing monthly post, which does reach production) is the more promising unblocked option, not yet scoped. |
+| Close the record-before-alert crash-window gap (a kill between the two leaves a filing marked "already alerted" with no notification ever sent, unreconciled) | todo | `pm-reviewer` finding: same as above, moved from prose-only into the tracked list. Needs a delivery-confirmation column on `material_events` plus a reconciliation pass -- real scope, not attempted here. Low-probability but a silent, permanent miss on exactly the Critical-severity tier this milestone exists to catch, so it shouldn't sit untracked. |
+| `staff-engineer-reviewer` pass + 4 of 6 findings fixed, 2 recorded as known gaps | done | 2026-09-03 -- see table above. |
+| Real-fixture regression tests (`tests/fixtures/sec_submissions_aapl_sample.json`, real AAPL SEC EDGAR submissions data fetched live 2026-09-03) | done | 2026-09-03 -- `tests/test_material_events.py`, 33 tests; `tests/test_record_override.py`, 6 tests; `tests/test_journal.py` +7 tests for the two new tables. |
+| Synthetic per-item-type fixture tests (`DESIGN_V2.md`'s own M42 exit-criteria bar: "a synthetic/injected 8-K fixture per item type") | done | 2026-09-03 -- `pm-reviewer` finding: this existed in `tests/test_material_events.py` (one test per taxonomy item -- 1.03/4.02/4.01/5.02/2.01/2.05/2.06/2.02, plus the unrecognized-item and 2.02-suppression cases) but wasn't called out in this write-up alongside the real-fixture tests, so a reader checking this file alone against the design doc's own stated bar couldn't confirm it was met. Named explicitly here. |
+| Full suite green, `ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` clean | done | 2026-09-03 -- 553 passing (was 506 before this M42/M43 batch). |
+| `DISCORD_MATERIAL_EVENT_WEBHOOK_URL` GitHub Actions secret provisioned | todo | Operator action, not something I can do -- the code is config-gated off (no-op) until this secret is set on the repo, same as every other optional Discord integration here. |
+| M44-M49 (Tranche 4, Tier 2/3 model-assisted event extraction) | todo | Explicitly out of scope for M42/M43 -- gated far later per `DESIGN_V2.md`'s own tranche plan; not started. |
+| Push to `main` and GCP redeploy | todo | Next step this session. |

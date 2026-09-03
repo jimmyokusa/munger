@@ -43,7 +43,7 @@ def _real_companyfacts() -> dict[str, object]:
 
 
 def test_load_cik_lookup_fetches_and_parses_when_uncached(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(xbrl, "_throttled_get", lambda url: _real_ticker_index_bytes())
+    monkeypatch.setattr(xbrl, "throttled_get", lambda url: _real_ticker_index_bytes())
     lookup = xbrl.load_cik_lookup()
     assert lookup["AAPL"] == "0000320193"
 
@@ -51,7 +51,7 @@ def test_load_cik_lookup_fetches_and_parses_when_uncached(monkeypatch: pytest.Mo
 def test_load_cik_lookup_real_gntx_and_hrmy_ciks(monkeypatch: pytest.MonkeyPatch) -> None:
     # The two tickers central to the whole redesign's motivating case --
     # confirms the real fixture actually contains them, not just AAPL.
-    monkeypatch.setattr(xbrl, "_throttled_get", lambda url: _real_ticker_index_bytes())
+    monkeypatch.setattr(xbrl, "throttled_get", lambda url: _real_ticker_index_bytes())
     lookup = xbrl.load_cik_lookup()
     assert "GNTX" in lookup
     assert "HRMY" in lookup
@@ -67,7 +67,7 @@ def test_load_cik_lookup_uses_disk_cache_on_second_call(monkeypatch: pytest.Monk
         call_count += 1
         return _real_ticker_index_bytes()
 
-    monkeypatch.setattr(xbrl, "_throttled_get", _fake_get)
+    monkeypatch.setattr(xbrl, "throttled_get", _fake_get)
 
     xbrl.load_cik_lookup()
     xbrl.load_cik_lookup()
@@ -83,7 +83,7 @@ def test_load_cik_lookup_force_refresh_bypasses_cache(monkeypatch: pytest.Monkey
         call_count += 1
         return _real_ticker_index_bytes()
 
-    monkeypatch.setattr(xbrl, "_throttled_get", _fake_get)
+    monkeypatch.setattr(xbrl, "throttled_get", _fake_get)
 
     xbrl.load_cik_lookup()
     xbrl.load_cik_lookup(force_refresh=True)
@@ -104,7 +104,7 @@ def test_get_cik_is_case_insensitive() -> None:
 
 def test_fetch_company_facts_returns_real_parsed_json(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        xbrl, "_throttled_get", lambda url: json.dumps(_real_companyfacts()).encode()
+        xbrl, "throttled_get", lambda url: json.dumps(_real_companyfacts()).encode()
     )
     facts = xbrl.fetch_company_facts("0000320193")
     assert facts is not None
@@ -117,19 +117,19 @@ def test_fetch_company_facts_returns_none_on_404(monkeypatch: pytest.MonkeyPatch
     def _raise_404(url: str) -> bytes:
         raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(xbrl, "_throttled_get", _raise_404)
+    monkeypatch.setattr(xbrl, "throttled_get", _raise_404)
     assert xbrl.fetch_company_facts("0000000000") is None
 
 
 def test_fetch_company_facts_returns_none_on_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(xbrl, "_throttled_get", MagicMock(side_effect=ConnectionError("no route")))
+    monkeypatch.setattr(xbrl, "throttled_get", MagicMock(side_effect=ConnectionError("no route")))
     assert xbrl.fetch_company_facts("0000320193") is None
 
 
 def test_fetch_company_facts_returns_none_on_malformed_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(xbrl, "_throttled_get", lambda url: b"not valid json{{{")
+    monkeypatch.setattr(xbrl, "throttled_get", lambda url: b"not valid json{{{")
     assert xbrl.fetch_company_facts("0000320193") is None
 
 

@@ -567,3 +567,21 @@ SETTLEMENT_BLOCKED_FLAG_FILE_PATH: Path = DATA_DIR / "SETTLEMENT_BLOCKED"
 GLOBAL_ORDER_BUDGET = 20  # max orders per run
 GLOBAL_NOTIONAL_BUDGET_PCT = 0.25  # max fraction of equity moved per run
 MIN_UNIVERSE_FETCH_FRACTION = 0.90  # abort if fewer tickers than this fetch cleanly
+
+# --- Material-event monitoring (material_events.py, Design v2.2 §3.8, M42-M43) ---
+# Idempotency (which 8-K accession numbers have already been alerted on)
+# is tracked in journal.db's material_events table, keyed on SEC's own
+# globally-unique accession_number -- not a separate state.json-style
+# file. (An earlier draft of this milestone planned a dedicated
+# MATERIAL_EVENT_STATE_PATH file for this; removed before it was ever
+# read anywhere, per a staff-engineer-reviewer finding that the constant
+# and its comment had gone stale relative to what actually shipped.)
+#
+# Third dedicated Discord webhook (alongside DISCORD_WEBHOOK_URL's loss
+# alerts and DISCORD_NEWS_WEBHOOK_URL's monthly digest) -- same reasoning
+# as that split: a material-event alert is a distinct, rare, high-signal
+# notification a user may want on a different channel from routine
+# digests, and keeping it on its own env var means silencing one doesn't
+# silence the others. Config-gated off by default, same shape as every
+# other optional integration here.
+DISCORD_MATERIAL_EVENT_WEBHOOK_URL = os.environ.get("DISCORD_MATERIAL_EVENT_WEBHOOK_URL", "")
