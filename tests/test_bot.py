@@ -19,6 +19,8 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
+from alpaca.trading.enums import OrderStatus
+from alpaca.trading.models import Order
 
 import bot
 import config
@@ -28,6 +30,15 @@ import journal
 import portfolio
 import screener
 import universe
+
+
+def _fake_filled_order(symbol: str = "AAPL") -> MagicMock:
+    order = MagicMock(spec=Order)
+    order.status = OrderStatus.FILLED
+    order.symbol = symbol
+    order.filled_qty = 1.0
+    order.filled_avg_price = 100.0
+    return order
 
 
 def _screen_results(rows: list[dict[str, Any]]) -> pd.DataFrame:
@@ -53,6 +64,17 @@ class _FakeExecutionModule:
         self.get_available_cash = MagicMock(return_value=100_000.0)
         self.liquidate = MagicMock(return_value=MagicMock(client_order_id="liq-id"))
         self.market_buy = MagicMock(return_value=MagicMock(client_order_id="buy-id"))
+        # M26c: settlement.settle_order calls this after every liquidate/
+        # market_buy -- defaults to an immediate clean fill so existing
+        # tests exercise the intended "confirmed fill" path, not an
+        # AttributeError-as-query-failure (which settle_order's broad
+        # except Exception would otherwise silently swallow as a real
+        # broker failure, burning real retry-backoff sleep time).
+        self.get_order_status = MagicMock(return_value=_fake_filled_order())
+        # M29b: passed to process_sells as corporate_action_check --
+        # defaults to "never a corporate action" so existing tests get
+        # the pre-M29 behavior unless a test explicitly overrides it.
+        self.is_corporate_action = MagicMock(return_value=False)
 
 
 @pytest.fixture(autouse=True)
@@ -71,6 +93,15 @@ def _isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     (tmp_path / "screen_results.csv").write_text("symbol,buyable,score,fail_reasons\n")
     monkeypatch.setattr(config, "SCREEN_RESULTS_ARCHIVE_DIR", tmp_path / "archive")
     monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    # M26b: no real sleeping on a settlement query retry in tests.
+    monkeypatch.setattr(config, "SETTLEMENT_QUERY_RETRY_BACKOFF_SECONDS", 0.0)
+    # M26d: same reasoning as KILL_SWITCH_FLAG_FILE_PATH above -- without
+    # this, a test that genuinely exercises the settlement query-failure
+    # path would touch a real file in the real repo-root-relative
+    # DATA_DIR, not a throwaway tmp_path.
+    monkeypatch.setattr(
+        config, "SETTLEMENT_BLOCKED_FLAG_FILE_PATH", tmp_path / "SETTLEMENT_BLOCKED"
+    )
 
 
 def test_kill_switch_active_via_config_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -325,13 +356,18 @@ def test_run_full_happy_path_places_liquidations_and_buys(monkeypatch: pytest.Mo
     )
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
     monkeypatch.setattr(
-        portfolio, "process_sells", lambda holdings, metrics, state: (["LIQUIDATE_ME"], [])
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, corp_check=None: (["LIQUIDATE_ME"], [], []),
     )
 
     captured_buy_queue_holdings: dict[str, float] = {}
 
     def _fake_generate_buy_queue(
-        holdings: dict[str, float], results: pd.DataFrame, cash: float
+        holdings: dict[str, float],
+        results: pd.DataFrame,
+        cash: float,
+        exclude: set[str] | None = None,
     ) -> list[tuple[str, float]]:
         captured_buy_queue_holdings.update(holdings)
         return [("HIGH", 5000.0)]
@@ -364,8 +400,64 @@ def test_run_full_happy_path_places_liquidations_and_buys(monkeypatch: pytest.Mo
         "sell",
         f"SELL strikes={config.STRIKES_TO_LIQUIDATE}",
     ) in recorded_orders
-    assert any(symbol == "HIGH" and side == "buy" for symbol, side, _ in recorded_orders)
+    assert ("HIGH", "buy", "NEW_POSITION score=90.0") in recorded_orders  # genuinely new
     assert exit_code == 1  # a liquidation occurred this run -- always alert-worthy
+
+
+def test_run_journals_a_top_up_buy_distinctly_from_a_new_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M28 (Design v2.2 §3.3, RC3): the real bug -- every buy journaled
+    # as NEW_POSITION regardless of whether the symbol was already
+    # held, which is how six real top-ups got recorded as new
+    # positions. "KEEP" is already held going into this run and gets
+    # topped up; "NEW" is opened fresh -- the journal must distinguish
+    # them.
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["KEEP", "NEW"]),
+    )
+    screen = _screen_results(
+        [
+            {"symbol": "KEEP", "buyable": True, "score": 70.0, "fail_reasons": ""},
+            {"symbol": "NEW", "buyable": True, "score": 85.0, "fail_reasons": ""},
+        ]
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: screen)
+    monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
+    monkeypatch.setattr(
+        data, "fetch_all_metrics", lambda symbols, **_kwargs: {s: MagicMock() for s in symbols}
+    )
+    monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
+    monkeypatch.setattr(
+        portfolio, "process_sells", lambda holdings, metrics, state, corp_check=None: ([], [], [])
+    )
+    monkeypatch.setattr(
+        portfolio,
+        "generate_buy_queue",
+        lambda holdings, results, cash, exclude=None: [("KEEP", 500.0), ("NEW", 3000.0)],
+    )
+
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    fake_exec.get_current_holdings = MagicMock(return_value={"KEEP": 2000.0})
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    recorded_orders: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        journal,
+        "record_order",
+        lambda symbol, side, reason, **kwargs: recorded_orders.append((symbol, side, reason)),
+    )
+
+    bot.run(run_date="2026-07-21")
+
+    assert ("KEEP", "buy", "TOP_UP score=70.0") in recorded_orders
+    assert ("NEW", "buy", "NEW_POSITION score=85.0") in recorded_orders
+    # Never the old hardcoded behavior for the top-up.
+    assert not any(
+        symbol == "KEEP" and "NEW_POSITION" in reason for symbol, _, reason in recorded_orders
+    )
 
 
 def test_run_alerts_on_unreadable_holdings_without_selling_them(
@@ -385,8 +477,14 @@ def test_run_alerts_on_unreadable_holdings_without_selling_them(
         data, "fetch_all_metrics", lambda symbols, **_kwargs: {s: MagicMock() for s in symbols}
     )
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
-    monkeypatch.setattr(portfolio, "process_sells", lambda holdings, metrics, state: ([], ["ACQD"]))
-    monkeypatch.setattr(portfolio, "generate_buy_queue", lambda holdings, results, cash: [])
+    monkeypatch.setattr(
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, corp_check=None: ([], ["ACQD"], []),
+    )
+    monkeypatch.setattr(
+        portfolio, "generate_buy_queue", lambda holdings, results, cash, exclude=None: []
+    )
 
     fake_exec = _FakeExecutionModule("2026-07-21")
     fake_exec.get_current_holdings = MagicMock(return_value={"ACQD": 1000.0})
@@ -396,6 +494,347 @@ def test_run_alerts_on_unreadable_holdings_without_selling_them(
 
     fake_exec.liquidate.assert_not_called()
     assert exit_code == 1  # alert-worthy, even though nothing was sold
+
+
+def test_run_alerts_on_corporate_action_without_selling_or_topping_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M29 (Design v2.2 §3.2): a confirmed corporate action is never
+    # auto-traded, in either direction -- not liquidated (same as
+    # UNREADABLE) but also not topped up (unlike UNREADABLE, since a
+    # confirmed corporate action is a stronger, more specific signal
+    # than a merely-unreadable ticker, distinct enough that this test
+    # exists separately from the unresolved-holdings test above).
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+    monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
+    monkeypatch.setattr(
+        data, "fetch_all_metrics", lambda symbols, **_kwargs: {s: MagicMock() for s in symbols}
+    )
+    monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
+    monkeypatch.setattr(
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, corp_check=None: ([], [], ["MRGD"]),
+    )
+    captured_buy_queue_holdings: dict[str, float] = {}
+    captured_exclude: set[str] | None = None
+
+    def _fake_generate_buy_queue(
+        holdings: dict[str, float],
+        results: pd.DataFrame,
+        cash: float,
+        exclude: set[str] | None = None,
+    ) -> list[tuple[str, float]]:
+        nonlocal captured_exclude
+        captured_buy_queue_holdings.update(holdings)
+        captured_exclude = exclude
+        return []
+
+    monkeypatch.setattr(portfolio, "generate_buy_queue", _fake_generate_buy_queue)
+
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    fake_exec.get_current_holdings = MagicMock(return_value={"MRGD": 1000.0, "KEEP": 2000.0})
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    fake_exec.liquidate.assert_not_called()
+    fake_exec.market_buy.assert_not_called()  # nothing to buy in this test, but confirms no crash
+    assert "MRGD" not in captured_buy_queue_holdings  # never topped up either
+    assert "KEEP" in captured_buy_queue_holdings  # an unrelated holding is unaffected
+    # staff-engineer-reviewer finding: omission from current_holdings
+    # alone isn't enough -- generate_buy_queue must also receive an
+    # explicit exclude set, or a corporate-action ticker that's also
+    # `buyable=True` in this run's screen could be selected as a fresh
+    # NEW_POSITION purchase.
+    assert captured_exclude == {"MRGD"}
+    assert exit_code == 1  # alert-worthy
+
+
+def test_run_reproduces_the_fox_lpg_shape_and_does_not_reset_strikes_on_an_unfilled_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # M26c regression test (Design v2.2 §3.3, RC3): reproduces the exact
+    # real FOX/LPG failure shape end to end, with the REAL
+    # portfolio.process_sells and portfolio.StateTracker (not mocked, as
+    # every other test in this file uses) -- an order is submitted and
+    # journaled, but the broker never confirms it filled. Before this
+    # fix, strikes were reset the moment liquidation was *decided*
+    # (inside process_sells), so the position's state.json entry was
+    # wiped even though the order never actually filled -- exactly what
+    # happened for real on 2026-08-08.
+    state_path = tmp_path / "state.json"
+    # StateTracker's default path is bound at class-definition time
+    # (config.STATE_FILE_PATH read once, not re-read per call), so
+    # redirecting it for this test means replacing the constructor
+    # bot.run() calls, not patching the config value it already
+    # captured -- the same reason every other test in this file that
+    # wants the real StateTracker's behavior does this via
+    # portfolio.StateTracker, never via config.STATE_FILE_PATH alone.
+    _real_state_tracker = portfolio.StateTracker  # captured before patching -- avoid self-reference
+    monkeypatch.setattr(portfolio, "StateTracker", lambda: _real_state_tracker(path=state_path))
+    # One strike short of the threshold -- this run's failing check
+    # pushes FOX over the line, so process_sells decides to liquidate.
+    state_path.write_text(f'{{"FOX": {config.STRIKES_TO_LIQUIDATE - 1}}}')
+
+    monkeypatch.setattr(
+        universe, "get_universe_with_diagnostics", lambda: universe.UniverseResult(tickers=["FOX"])
+    )
+    monkeypatch.setattr(
+        screener,
+        "run_screen",
+        lambda tickers: _screen_results(
+            [{"symbol": "FOX", "buyable": False, "score": 0.0, "fail_reasons": ""}]
+        ),
+    )
+    monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
+    failing_metrics = data.Metrics(
+        symbol="FOX",
+        market_cap=1_000_000_000.0,
+        trailing_pe=10.0,
+        price_to_book=1.0,
+        current_ratio=2.0,
+        debt_to_equity=0.5,
+        return_on_equity=0.02,  # fails MIN_ROE -- a real quality floor failure
+        gross_margin=0.3,
+        operating_margin=0.1,
+        free_cash_flow=1_000_000.0,
+        dividend_yield=0.0,
+        consecutive_positive_earnings_years=3,
+    )
+    monkeypatch.setattr(
+        data, "fetch_all_metrics", lambda symbols, **_kwargs: {"FOX": failing_metrics}
+    )
+    monkeypatch.setattr(
+        portfolio, "generate_buy_queue", lambda holdings, results, cash, exclude=None: []
+    )
+
+    fake_exec = _FakeExecutionModule("2026-08-08")
+    fake_exec.get_current_holdings = MagicMock(return_value={"FOX": 6667.16})
+    # The real FOX order: submitted, but the broker never confirms a
+    # fill -- reported as still open (NEW) every time settlement polls
+    # it, the same as a DAY limit order that's genuinely still pending.
+    unfilled_order = MagicMock(spec=Order)
+    unfilled_order.status = OrderStatus.NEW
+    unfilled_order.symbol = "FOX"
+    unfilled_order.filled_qty = None
+    unfilled_order.filled_avg_price = None
+    fake_exec.get_order_status = MagicMock(return_value=unfilled_order)
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    recorded_orders: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        journal,
+        "record_order",
+        lambda symbol, side, reason, **kwargs: recorded_orders.append((symbol, side, reason)),
+    )
+
+    exit_code = bot.run(run_date="2026-08-08")
+
+    # The order was submitted and journaled -- this part of the old
+    # behavior was already correct and stays correct.
+    fake_exec.liquidate.assert_called_once_with("FOX")
+    assert any(symbol == "FOX" and side == "sell" for symbol, side, _ in recorded_orders)
+
+    # The bug, fixed: strikes must NOT be reset just because liquidation
+    # was decided and an order submitted -- the order never confirmed
+    # filling. A future run must still see FOX at (or past) the
+    # threshold, not a wiped-clean streak that would let a genuinely
+    # still-held, still-failing position quietly stop being evaluated
+    # as urgent.
+    final_state = _real_state_tracker(path=state_path)
+    assert final_state.get_strikes("FOX") >= config.STRIKES_TO_LIQUIDATE
+
+    # And it's alert-worthy -- an unconfirmed liquidation is exactly the
+    # kind of thing this fix exists to surface, not silently swallow.
+    assert exit_code == 1
+
+
+def test_run_sets_kill_switch_and_settlement_blocked_on_a_query_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M26d (Design v2.2 §3.3): a genuine settlement query failure (not
+    # merely a pending order) fails closed -- both the existing
+    # KILL_SWITCH mechanism (so the *next* run doesn't place orders on a
+    # position picture this run couldn't verify) and a second marker
+    # file recording that it was settlement, not a human, that set it.
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+    monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
+    monkeypatch.setattr(
+        data, "fetch_all_metrics", lambda symbols, **_kwargs: {s: MagicMock() for s in symbols}
+    )
+    monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
+    monkeypatch.setattr(
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, corp_check=None: (["A"], [], []),
+    )
+    monkeypatch.setattr(
+        portfolio, "generate_buy_queue", lambda holdings, results, cash, exclude=None: []
+    )
+
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    fake_exec.get_current_holdings = MagicMock(return_value={"A": 1000.0})
+    fake_exec.get_order_status = MagicMock(side_effect=ConnectionError("broker unreachable"))
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    assert exit_code == 1
+    assert config.KILL_SWITCH_FLAG_FILE_PATH.exists()
+    assert config.SETTLEMENT_BLOCKED_FLAG_FILE_PATH.exists()
+
+
+def test_run_halts_remaining_liquidations_and_all_buys_after_a_query_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # staff-engineer-reviewer finding: setting the kill-switch flag alone
+    # only takes effect on the *next* run -- without stopping the rest
+    # of THIS run too, a query failure on the first of several
+    # liquidations would still let the remaining liquidations and the
+    # entire buy queue place orders in the same run, directly
+    # contradicting the reason the flag was just set.
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+    monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
+    monkeypatch.setattr(
+        data, "fetch_all_metrics", lambda symbols, **_kwargs: {s: MagicMock() for s in symbols}
+    )
+    monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
+    monkeypatch.setattr(
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, corp_check=None: (["A", "B"], [], []),
+    )
+    monkeypatch.setattr(
+        portfolio,
+        "generate_buy_queue",
+        lambda holdings, results, cash, exclude=None: [("HIGH", 1000.0)],
+    )
+
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    fake_exec.get_current_holdings = MagicMock(return_value={"A": 1000.0, "B": 1000.0})
+    # A's settlement query fails every retry; B's would succeed if
+    # reached, and so would HIGH's buy -- neither should be reached.
+    fake_exec.get_order_status = MagicMock(side_effect=ConnectionError("broker unreachable"))
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    assert exit_code == 1
+    # Both liquidations were attempted (A submitted, failed settlement,
+    # loop broke before B) -- exactly one liquidate() call, not two.
+    fake_exec.liquidate.assert_called_once_with("A")
+    fake_exec.market_buy.assert_not_called()
+
+
+def test_run_halts_remaining_buys_after_a_buy_settlement_query_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # staff-engineer-reviewer finding: the buy-side settlement call used
+    # to discard its return value entirely -- a query failure raised no
+    # alert, set no kill switch, and silently left `fills` incomplete.
+    # Same fail-closed treatment as the liquidation side now.
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+    monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
+    monkeypatch.setattr(
+        data, "fetch_all_metrics", lambda symbols, **_kwargs: {s: MagicMock() for s in symbols}
+    )
+    monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
+    monkeypatch.setattr(
+        portfolio, "process_sells", lambda holdings, metrics, state, corp_check=None: ([], [], [])
+    )
+    monkeypatch.setattr(
+        portfolio,
+        "generate_buy_queue",
+        lambda holdings, results, cash, exclude=None: [("HIGH", 1000.0), ("LOW", 500.0)],
+    )
+
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    fake_exec.get_order_status = MagicMock(side_effect=ConnectionError("broker unreachable"))
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    assert exit_code == 1
+    assert config.KILL_SWITCH_FLAG_FILE_PATH.exists()
+    assert config.SETTLEMENT_BLOCKED_FLAG_FILE_PATH.exists()
+    # HIGH was attempted (submitted, failed settlement, loop broke
+    # before LOW) -- exactly one market_buy() call, not two.
+    fake_exec.market_buy.assert_called_once_with("HIGH", 1000.0)
+
+
+def test_reset_stale_strikes_clears_a_tracked_ticker_no_longer_held(tmp_path: Path) -> None:
+    # staff-engineer-reviewer finding on M26c: a ticker's liquidation
+    # settling *after* this run's own synchronous check (never revisited
+    # -- a real deferred settlement pass is M34) leaves a stale nonzero
+    # strike count in state.json forever, poisoning a future rebuy's
+    # first bad check into instant re-liquidation. Fixed by reconciling
+    # tracked tickers against the broker's own current holdings directly
+    # -- absence from current_holdings is real, broker-confirmed
+    # evidence the position is gone, independent of whether settlement
+    # ever resolved that specific order.
+    state_path = tmp_path / "state.json"
+    state_path.write_text('{"GONE": 10, "STILL_HELD": 3}')
+    state = portfolio.StateTracker(path=state_path)
+
+    bot._reset_stale_strikes_for_tickers_no_longer_held(state, {"STILL_HELD": 1000.0})
+
+    assert state.get_strikes("GONE") == 0
+    assert state.get_strikes("STILL_HELD") == 3  # untouched -- still genuinely held
+
+    reloaded = portfolio.StateTracker(path=state_path)
+    assert reloaded.get_strikes("GONE") == 0  # persisted, not just in-memory
+
+
+def test_run_escalates_to_critical_when_a_stale_settlement_block_persists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The converse of the routine kill-switch test above: when
+    # SETTLEMENT_BLOCKED is also present (meaning it was a prior run's
+    # unresolved settlement failure, not a deliberate pause), the run
+    # must escalate loudly (alert-worthy) rather than log the same quiet
+    # routine message a deliberate pause gets.
+    config.KILL_SWITCH_FLAG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    config.KILL_SWITCH_FLAG_FILE_PATH.touch()
+    config.SETTLEMENT_BLOCKED_FLAG_FILE_PATH.touch()
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+    construct_calls: list[str] = []
+
+    def _fake_execution_module(run_date: str) -> MagicMock:
+        construct_calls.append(run_date)
+        return MagicMock()
+
+    monkeypatch.setattr(execution, "ExecutionModule", _fake_execution_module)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    assert construct_calls == []  # still never touches the broker
+    assert exit_code == 1  # unlike a routine, deliberate pause -- this is alert-worthy
 
 
 def test_run_defers_buy_orders_but_still_liquidates_when_order_budget_exceeded(
@@ -420,11 +859,15 @@ def test_run_defers_buy_orders_but_still_liquidates_when_order_budget_exceeded(
         data, "fetch_all_metrics", lambda symbols, **_kwargs: {s: MagicMock() for s in symbols}
     )
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
-    monkeypatch.setattr(portfolio, "process_sells", lambda holdings, metrics, state: (["A"], []))
+    monkeypatch.setattr(
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, corp_check=None: (["A"], [], []),
+    )
     monkeypatch.setattr(
         portfolio,
         "generate_buy_queue",
-        lambda holdings, results, cash: [("HIGH", 1000.0)],
+        lambda holdings, results, cash, exclude=None: [("HIGH", 1000.0)],
     )
 
     fake_exec = _FakeExecutionModule("2026-07-21")
@@ -453,11 +896,13 @@ def test_run_defers_buy_order_when_notional_budget_exceeded(
     monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
     monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {})
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
-    monkeypatch.setattr(portfolio, "process_sells", lambda holdings, metrics, state: ([], []))
+    monkeypatch.setattr(
+        portfolio, "process_sells", lambda holdings, metrics, state, corp_check=None: ([], [], [])
+    )
     monkeypatch.setattr(
         portfolio,
         "generate_buy_queue",
-        lambda holdings, results, cash: [("HIGH", 50_000.0)],
+        lambda holdings, results, cash, exclude=None: [("HIGH", 50_000.0)],
     )
 
     fake_exec = _FakeExecutionModule("2026-07-21")
@@ -487,11 +932,13 @@ def test_run_does_not_journal_a_failed_order_and_continues(monkeypatch: pytest.M
     monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
     monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {})
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
-    monkeypatch.setattr(portfolio, "process_sells", lambda holdings, metrics, state: ([], []))
+    monkeypatch.setattr(
+        portfolio, "process_sells", lambda holdings, metrics, state, corp_check=None: ([], [], [])
+    )
     monkeypatch.setattr(
         portfolio,
         "generate_buy_queue",
-        lambda holdings, results, cash: [("HIGH", 5000.0), ("LOW", 3000.0)],
+        lambda holdings, results, cash, exclude=None: [("HIGH", 5000.0), ("LOW", 3000.0)],
     )
 
     fake_exec = _FakeExecutionModule("2026-07-21")
@@ -586,13 +1033,15 @@ def test_run_skips_sell_evaluation_when_holdings_data_mostly_missing(
     process_sells_calls: list[dict[str, float]] = []
 
     def _fake_process_sells(
-        holdings: dict[str, float], metrics: dict[str, Any], state: Any
-    ) -> tuple[list[str], list[str]]:
+        holdings: dict[str, float], metrics: dict[str, Any], state: Any, corp_check: Any = None
+    ) -> tuple[list[str], list[str], list[str]]:
         process_sells_calls.append(holdings)
-        return ["A"], []
+        return ["A"], [], []
 
     monkeypatch.setattr(portfolio, "process_sells", _fake_process_sells)
-    monkeypatch.setattr(portfolio, "generate_buy_queue", lambda holdings, results, cash: [])
+    monkeypatch.setattr(
+        portfolio, "generate_buy_queue", lambda holdings, results, cash, exclude=None: []
+    )
 
     fake_exec = _FakeExecutionModule("2026-07-21")
     fake_exec.get_current_holdings = MagicMock(return_value={"A": 100.0, "B": 100.0, "C": 100.0})
@@ -706,12 +1155,21 @@ def test_run_clean_when_nothing_notable_happens(monkeypatch: pytest.MonkeyPatch)
     assert bot.run(run_date="2026-07-21") == 0
 
 
-def test_run_logs_reconciliation_warnings_without_aborting(
+def test_run_aborts_on_reconciliation_mismatch_for_the_paper_account(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # config.PAPER_TRADING is left at its real default (True) here --
-    # this is specifically the paper-account posture (M10, unchanged by
-    # M20): warn and continue, never the live-account abort added below.
+    # config.PAPER_TRADING is left at its real default (True) here.
+    #
+    # M27 update (Design v2.2 §3.3: "Reconciliation is authoritative...
+    # it should have teeth"): this used to be the paper-account posture
+    # that warned and continued (M10, unchanged by M20's live-only
+    # abort) -- was
+    # test_run_logs_reconciliation_warnings_without_aborting, asserting
+    # the old behavior. Inverted, not deleted: the real FOX/LPG bug was
+    # exactly a paper-account divergence this check would have caught
+    # if it had been allowed to actually stop the run instead of only
+    # logging, so the warn-and-continue carve-out for paper no longer
+    # holds.
     monkeypatch.setattr(
         universe,
         "get_universe_with_diagnostics",
@@ -728,31 +1186,29 @@ def test_run_logs_reconciliation_warnings_without_aborting(
         return {}
 
     monkeypatch.setattr(data, "fetch_all_metrics", _fake_fetch_all_metrics)
-    monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
-    monkeypatch.setattr(portfolio, "process_sells", lambda holdings, metrics, state: ([], []))
-    monkeypatch.setattr(portfolio, "generate_buy_queue", lambda holdings, results, cash: [])
 
     fake_exec = _FakeExecutionModule("2026-07-21")
     monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
 
-    exit_code = bot.run(run_date="2026-07-21")  # must not raise despite the mismatch
+    exit_code = bot.run(run_date="2026-07-21")
 
     fake_exec.verify_account_access.assert_called_once()
-    assert exit_code == 1  # logged, not aborted, but still alert-worthy (DESIGN.md 3.6)
-    # Proves this actually continued past the mismatch (not just that the
-    # exit code happens to be 1, which an abort would also produce) --
-    # fetch_all_metrics is the very next real call after the
-    # reconciliation check.
-    assert fetch_calls == [[]]
+    assert exit_code == 1
+    # Never got as far as evaluating holdings for sells/buys -- this is
+    # what distinguishes "aborted" from "warned and continued."
+    assert fetch_calls == []
+    fake_exec.liquidate.assert_not_called()
+    fake_exec.market_buy.assert_not_called()
 
 
 def test_run_aborts_on_reconciliation_mismatch_for_the_live_account(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # M20 (DESIGN_REAL_MONEY.md §3.3): the live account gets the stricter
-    # posture -- a mismatch stops the run before any sell/buy evaluation,
-    # rather than warning and proceeding to place orders on top of state
-    # this run can't currently trust.
+    # M20 originally gave the live account a stricter posture than paper
+    # here (abort vs. warn-and-continue); M27 (Design v2.2 §3.3) removed
+    # that distinction -- both accounts abort now, see the sibling
+    # paper-account test above for why. This test confirms live keeps
+    # working the same way, not that it's uniquely strict anymore.
     monkeypatch.setattr(config, "PAPER_TRADING", False)
     # M24: LIVE_TRADING_ENABLED must be set for a live-account run to get
     # this far at all now (Fix 4) -- set True here since this test is
@@ -844,8 +1300,12 @@ def test_run_trades_live_when_the_live_trading_flag_is_set(
     monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
     monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {})
     monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
-    monkeypatch.setattr(portfolio, "process_sells", lambda holdings, metrics, state: ([], []))
-    monkeypatch.setattr(portfolio, "generate_buy_queue", lambda holdings, results, cash: [])
+    monkeypatch.setattr(
+        portfolio, "process_sells", lambda holdings, metrics, state, corp_check=None: ([], [], [])
+    )
+    monkeypatch.setattr(
+        portfolio, "generate_buy_queue", lambda holdings, results, cash, exclude=None: []
+    )
 
     fake_exec = _FakeExecutionModule("2026-07-21")
     monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)

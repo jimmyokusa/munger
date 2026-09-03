@@ -105,10 +105,7 @@ def test_live_trading_enabled_never_reads_alpaca_live_credentials() -> None:
     # which do name ALPACA_LIVE_API_KEY to explain what NOT to do) never
     # actually reads such a variable.
     assert config.__file__ is not None
-    code_lines = [
-        line.split("#", 1)[0]
-        for line in Path(config.__file__).read_text().splitlines()
-    ]
+    code_lines = [line.split("#", 1)[0] for line in Path(config.__file__).read_text().splitlines()]
     assert not any("ALPACA_LIVE" in line for line in code_lines)
 
 

@@ -104,8 +104,7 @@ _GATE_REASON_TOOLTIPS: dict[str, str] = {
     "zero/negative (unprofitable).",
     "graham_pe_times_pb": "Combined P/E x P/B above Graham's gate 7 "
     f"maximum ({config.MAX_PE_TIMES_PB}), or non-positive.",
-    "munger_roe": "Return on equity below Munger's quality floor "
-    f"({config.MIN_ROE:.0%}).",
+    "munger_roe": f"Return on equity below Munger's quality floor ({config.MIN_ROE:.0%}).",
     "munger_gross_margin": "Gross margin below Munger's quality floor "
     f"({config.MIN_GROSS_MARGIN:.0%}).",
     "munger_fcf": "Free cash flow is not positive -- only checked when the "
@@ -136,6 +135,7 @@ def _fail_reason_tooltip(token: str) -> str:
         if prefix == "data_invalid_outlier":
             return f"{label}'s value was an implausible outlier and excluded."
     return ""
+
 
 # A rounded-square "M" monogram in the site's own gradient (matching the
 # body background below) -- inlined as a data URI so the favicon needs no
@@ -615,10 +615,7 @@ def _render_badges(metrics_row: pd.Series | None) -> str:
     # not "no debt" -- and would otherwise satisfy "<= 0.0" too. Same trap
     # screener.py's own gate/score logic already guards against (see its
     # comments on negative debt_to_equity); staff-engineer-reviewer finding.
-    if (
-        _is_numeric(debt_to_equity)
-        and 0.0 <= float(debt_to_equity) <= _BADGE_ZERO_DEBT_MAX
-    ):
+    if _is_numeric(debt_to_equity) and 0.0 <= float(debt_to_equity) <= _BADGE_ZERO_DEBT_MAX:
         badges.append('<span class="badge badge-green">Zero debt</span>')
     if _is_numeric(roe) and float(roe) >= _BADGE_HIGH_ROE_MIN:
         badges.append('<span class="badge badge-green">High ROE</span>')
@@ -628,7 +625,7 @@ def _render_badges(metrics_row: pd.Series | None) -> str:
 
 
 def _render_methodology_drawer() -> str:
-    """"How scoring & screening works" section (user request).
+    """The "How scoring & screening works" section (user request).
 
     Collapsed by default via native <details> -- same zero-JS pattern as
     each pick's own expandable panel. Content mirrors DESIGN.md 3.3
@@ -1368,8 +1365,7 @@ def _pnl_staleness_note(generated_at: object) -> str:
             if age_hours <= config.PNL_STALENESS_MAX_HOURS:
                 return ""
             banner_body = (
-                f"is {age_hours:.0f} hours old (expected within "
-                f"{config.PNL_STALENESS_MAX_HOURS}h)"
+                f"is {age_hours:.0f} hours old (expected within {config.PNL_STALENESS_MAX_HOURS}h)"
             )
     return (
         '<div class="glass" style="padding: 0.75rem 1rem; margin-bottom: 1rem; '
@@ -1677,13 +1673,13 @@ def _render_pnl(
             else None
         )
         positions_raw = snapshot.get("positions")
-        positions = [p for p in positions_raw if isinstance(p, dict)] if isinstance(
-            positions_raw, list
-        ) else []
+        positions = (
+            [p for p in positions_raw if isinstance(p, dict)]
+            if isinstance(positions_raw, list)
+            else []
+        )
         total_unrealized = sum(
-            float(p["unrealized_pl"])
-            for p in positions
-            if _is_numeric(p.get("unrealized_pl"))
+            float(p["unrealized_pl"]) for p in positions if _is_numeric(p.get("unrealized_pl"))
         )
 
         today_pl_class = _pnl_class(today_pl)
@@ -1694,11 +1690,11 @@ def _render_pnl(
         tiles = f"""<div class="stat-tiles">
 <div class="glass stat-tile">
   <div class="stat-label">Equity</div>
-  <div class="stat-value" id="pnl-tile-equity">{_format_dollars(equity).lstrip('+')}</div>
+  <div class="stat-value" id="pnl-tile-equity">{_format_dollars(equity).lstrip("+")}</div>
 </div>
 <div class="glass stat-tile">
   <div class="stat-label">Cash</div>
-  <div class="stat-value" id="pnl-tile-cash">{_format_dollars(cash).lstrip('+')}</div>
+  <div class="stat-value" id="pnl-tile-cash">{_format_dollars(cash).lstrip("+")}</div>
 </div>
 <div class="glass stat-tile">
   <div class="stat-label">Today&rsquo;s P&amp;L</div>
@@ -1960,9 +1956,7 @@ def generate_report() -> None:
         # calendar (user request, M17) -- feed.json/rss.xml are no longer
         # written at all.
         if config.GRAFANA_BASE_URL:
-            _write_text_atomically(
-                config.REPORT_DIR / "dashboards.html", _render_dashboards()
-            )
+            _write_text_atomically(config.REPORT_DIR / "dashboards.html", _render_dashboards())
         else:
             _write_text_atomically(config.REPORT_DIR / "calendar.html", _render_calendar())
         _write_text_atomically(config.REPORT_DIR / "pnl.html", _render_pnl(_load_pnl_snapshot()))

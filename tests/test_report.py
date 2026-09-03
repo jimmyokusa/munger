@@ -113,9 +113,7 @@ def test_tickers_page_gives_each_fail_reason_its_own_tooltip() -> None:
     # explain themselves, especially confusing on a high-scoring ticker
     # that's still non-buyable (e.g. HCI: score 97.8, buyable False,
     # fail_reasons "graham_current_ratio,graham_earnings_stability").
-    _write_screen_results(
-        "HCI,False,97.8,\"graham_current_ratio,graham_earnings_stability\",,,\n"
-    )
+    _write_screen_results('HCI,False,97.8,"graham_current_ratio,graham_earnings_stability",,,\n')
     results = report._load_screen_results()
 
     html_out = report._render_tickers(results, held_symbols=set())
@@ -682,9 +680,7 @@ def test_render_pnl_handles_no_open_positions() -> None:
 
 
 def test_render_pnl_shows_no_staleness_warning_for_a_fresh_snapshot() -> None:
-    fresh = (
-        datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)
-    ).isoformat()
+    fresh = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)).isoformat()
     snapshot: dict[str, object] = {
         "mode": "paper",
         "generated_at": fresh,
@@ -704,9 +700,7 @@ def test_render_pnl_warns_when_snapshot_is_stale() -> None:
     # pm-reviewer finding: without a staleness check, a broken bridge (a
     # rotated key, a stopped workflow) just leaves gramunger.com showing
     # an old snapshot that looks identical to a fresh one.
-    stale = (
-        datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=100)
-    ).isoformat()
+    stale = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=100)).isoformat()
     snapshot: dict[str, object] = {
         "mode": "paper",
         "generated_at": stale,
@@ -994,9 +988,9 @@ def test_generate_report_links_to_real_money_html_from_every_existing_page(
     )
     report.generate_report()
     for filename in ("index.html", "tickers.html", "calendar.html"):
-        assert 'href="real-money.html"' in (
-            config.REPORT_DIR / filename
-        ).read_text(), f"{filename} has no link to real-money.html"
+        assert 'href="real-money.html"' in (config.REPORT_DIR / filename).read_text(), (
+            f"{filename} has no link to real-money.html"
+        )
 
 
 def test_sitemap_pages_omits_real_money_html_by_default() -> None:
@@ -1034,7 +1028,7 @@ def test_pages_are_noindex_with_no_canonical_when_site_url_unset(
     for filename in _HTML_PAGES:
         html_out = (config.REPORT_DIR / filename).read_text()
         assert 'content="noindex,nofollow"' in html_out
-        assert "rel=\"canonical\"" not in html_out
+        assert 'rel="canonical"' not in html_out
         assert "og:title" not in html_out
 
 

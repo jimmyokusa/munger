@@ -65,6 +65,16 @@ jobs:
       - name: Ruff
         run: .venv/bin/ruff check .
 
+      - name: Ruff format
+        # M30 (Design v2.2 §5): ruff check and ruff format had been
+        # allowed to diverge -- `ruff check` was green in this CI while
+        # `ruff format --check` had 3 real, unfixed diffs on main
+        # (report.py, tests/test_config.py, tests/test_report.py),
+        # invisible here because nothing ran it. Fixed those 3 files and
+        # added this step so formatting can't silently drift from
+        # linting again.
+        run: .venv/bin/ruff format --check .
+
       - name: Mypy
         run: .venv/bin/mypy . --config-file mypy.ini
 

@@ -1341,3 +1341,273 @@ rather than assuming the plan is right until the very end.
 | Integrate the review round's fixes into `DESIGN_V2.md` | done | 2026-09-02 -- commit `404b3ba`. |
 | `pm-reviewer` planning pass: split M26/M29, resequence Epic D, fix the restart-gate inconsistency, re-derive the time estimate | done | 2026-09-02 -- commit `06e1cfb`. |
 | Merge `design/v2.2` into `main` | done | 2026-09-02 -- `--no-ff` merge commit `2147830`; branch deleted. |
+
+## Design v2.2 execution: M26a-e, M27, M28 (added 2026-09-02, user request -- "implement all milestones and push to GCP")
+
+First real implementation slice of `DESIGN_V2.md`'s §5 forward plan.
+Epic A (Tranche 1) is being worked in the sequence the plan lays out;
+recorded here as one section covering the milestones actually landed
+this session rather than one row per milestone, since they shipped as a
+single reviewed, tested unit and splitting the write-up after the fact
+would just duplicate the design doc's own per-milestone descriptions.
+
+**M26a-e -- closed-loop execution (Design v2.2 §3.3).** `journal.py`'s
+single `journal` table split into `orders` (submitted) and `fills`
+(settled), via a real `ALTER TABLE RENAME` migration -- tested against
+`tests/fixtures/real_bot_state_journal.db`, a byte-for-byte copy of the
+actual persisted paper-account journal, not only a synthetic fixture.
+New `settlement.py` module polls order status, classifies into
+pending/partially_filled/filled/expired/canceled, retries a query
+failure with backoff, and journals the outcome idempotently
+(`fills.client_order_id` as primary key, upserted). `portfolio.process_sells`
+no longer resets a strike streak the moment liquidation is *decided* --
+the real FOX/LPG root cause -- `bot.run` now resets only after
+settlement confirms `"filled"`. A settlement query failure sets the
+existing `KILL_SWITCH_FLAG_FILE_PATH` (reused, not reinvented) plus a
+new `SETTLEMENT_BLOCKED_FLAG_FILE_PATH` marker so a later run can tell
+a stuck settlement apart from a deliberate pause and escalate to a
+Critical alert if the block outlives one cycle. `execution.py`'s
+limit-price band widened 2% -> 5%, plus a new average-daily-volume
+ceiling (`config.MAX_ORDER_PCT_OF_ADV`) on both buys and liquidations,
+fetched from real Alpaca bars.
+
+**M27 -- reconciliation gets teeth.** A broker/journal mismatch now
+aborts for *both* accounts, not just live -- M20's original paper
+carve-out (warn-and-continue) didn't anticipate this being the exact
+check that would have caught the real FOX/LPG bug if it had been
+allowed to actually stop the run. New regression test reproduces the
+real divergence directly against the real fixture journal.
+**Not fully closed** (`pm-reviewer` finding): `DESIGN_V2.md`'s own exit
+criteria for M27 carries forward M24's open finding (b) -- "the
+`bot-state-live` reconciliation path gets a dispatched-workflow
+regression test, not only direct-call coverage." What actually shipped
+is a direct-call unit-level regression test against the real fixture
+journal; a `workflow_dispatch`-level test (the same live-verification
+pattern M24 itself used) has not been built. Recorded here as
+outstanding, not silently marked complete -- do before treating M27 as
+fully meeting its own stated bar.
+
+**M28 -- journal reason strings derived, not hardcoded.** Every buy
+used to journal as `NEW_POSITION` regardless of whether the symbol was
+already held -- the real bug that mislabeled six top-ups (HIG x2, ASO,
+LPG, HRMY x2) as new positions. `bot.run` now checks membership in
+`remaining_holdings` and journals `TOP_UP` vs `NEW_POSITION` correctly.
+
+**`staff-engineer-reviewer` pass on the M26a-e diff, before continuing
+to M27+ (real findings, all fixed, not just noted):**
+
+| Finding | Fixed |
+|---|---|
+| Setting the kill-switch flag on a query failure only took effect on the *next* run -- the rest of *this* run (remaining liquidations, the entire buy queue) still placed orders on the same now-unverifiable position picture | `bot.run`'s liquidation and buy loops now both stop immediately on a genuine query failure, via a shared `_settle_and_react` helper's return value |
+| Buy-side settlement failures were silently discarded -- no alert, no kill switch, `fills` left incomplete forever with zero signal | Same fail-closed treatment as the liquidation side now |
+| A ticker whose liquidation fills *after* this run's synchronous settlement check (a real gap until M34's deferred settlement pass exists) left a stale nonzero strike count in `state.json` forever -- poisoning a future rebuy's first bad check into instant re-liquidation | New `StateTracker.tracked_tickers()` + `bot._reset_stale_strikes_for_tickers_no_longer_held`: reconciles tracked tickers against the broker's own current holdings directly every run: absence from `current_holdings` is real, broker-confirmed evidence the position is gone, independent of whether settlement ever resolved that specific order |
+| `settle_order`'s `float()` conversion of Alpaca's response fields ran outside the retry/error handling -- a malformed numeric field crashed the whole run instead of going through the structured kill-switch path | Guarded individually; a bad field is recorded as `None` (unknown), not crashed on or silently coerced |
+| ADV ceiling fails open (doesn't block) when volume data is missing, applied to liquidations too -- flagged as a real, disclosed tradeoff rather than a bug: a data gap on a thin, deteriorating name is exactly where the one control meant to prevent an oversized forced sale is most likely to fail open | Not changed -- accepted as-is per the code's own stated reasoning (secondary control, not primary defense; blocking every order on a data gap is judged worse than occasionally missing this one check). Recorded here as a live, not a resolved, tradeoff -- revisit if a real oversized-liquidation-on-thin-volume incident ever occurs |
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| M26a: orders/fills schema split + real migration | done | 2026-09-02 -- tested against the real fixture journal, not only synthetic. |
+| M26b: settlement.py polling/classification/idempotent upsert | done | 2026-09-02 |
+| M26c: strikes reset only on confirmed fill | done | 2026-09-02 -- regression test reproduces the exact FOX/LPG shape. |
+| M26d: kill-switch + SETTLEMENT_BLOCKED + stale-block escalation | done | 2026-09-02 |
+| M26e: wider limit-price band + ADV ceiling | done | 2026-09-02 |
+| M27: reconciliation aborts both accounts | partially done | 2026-09-02 -- both-accounts abort + fixture-journal regression test done; dispatched-workflow-level test (M24's carried-forward finding (b)) still outstanding, see write-up above. |
+| M28: TOP_UP vs NEW_POSITION derived correctly | done | 2026-09-02 |
+| `staff-engineer-reviewer` pass + all findings fixed | done | 2026-09-02 -- 5 findings, 4 fixed, 1 accepted tradeoff (see table above). |
+| Full suite green, `ruff check`/`ruff format`/`mypy . --config-file mypy.ini` clean | done | 2026-09-02 -- 439 passing (was 406 pre-M26). |
+| Push to `main` and GCP redeploy | todo | Landing together with M29-M30/M36 below in one push; see that section's push/redeploy row. |
+
+## Design v2.2 execution: M29a-c, M30 (added 2026-09-03, continuing the same `/goal` -- "all milestones are implemented and pushed into GCP")
+
+Holding-state machine + corporate-action detection (Design v2.2 §3.2),
+and the CI gap that let an unformatted diff slip through despite a
+clean `ruff check`.
+
+**M29a -- `HoldingState` enum + classifier.** New `portfolio.HoldingState`
+(`HEALTHY`, `DETERIORATING`, `UNREADABLE`, `CORPORATE_ACTION`) and
+`classify_holding_state(metrics, is_corporate_action)`. Corporate-action
+status is checked *before* the metrics-quality checks, per §3.2 -- a
+ticker mid corporate-action (halt, delisting, symbol change) is a
+distinct failure mode from merely-bad or merely-missing fundamentals,
+and conflating them would let the ordinary "unreadable data" strike
+machinery run against a name where strikes are the wrong response.
+
+**M29b -- corporate-action detection.** New
+`execution.is_corporate_action(symbol)`, using Alpaca's own Assets API
+(`asset.status != ACTIVE or not asset.tradable`) rather than a
+yfinance-side signal -- the point of the check is to catch exactly the
+case where the broker's view of a symbol has diverged from the market
+data source's. Fails open on a query exception, consistent with the
+project's existing fail-open convention for secondary risk signals
+(documented in the function's own docstring, alongside the ADV ceiling).
+
+**M29c -- wire detection into the sell/buy loop.**
+`portfolio.process_sells` gains a `corporate_action_check` callback
+parameter and now returns a 3-tuple (`to_liquidate, unresolved,
+corporate_action`) instead of 2 -- a corporate-action ticker is neither
+liquidated (the position may not even be sellable) nor topped up, it is
+alerted on and left alone. `bot.run` excludes corporate-action tickers
+from `remaining_holdings` (so they can't accidentally top up) and now
+also passes them to `generate_buy_queue`'s new `exclude` parameter (see
+the review finding below) so they can't be picked up as a *new*
+position either.
+
+**Not fully closed** (`pm-reviewer` finding, correcting my own
+misreading of the design note): the safety-critical half of M29c's exit
+criteria -- a corporate-action holding is never liquidated or topped
+up -- is done and tested. The other half of the same exit criteria
+("all four states are distinguishable in the persisted evaluate-run
+artifact and on the corresponding site page") is **not** done. I had
+written this off as deferred to M34; re-reading `DESIGN_V2.md`'s own
+note (§5 Epic A table) says the opposite -- the display belongs in the
+*existing* single daily loop's output now, and M34 only relocates its
+cadence later, it does not create the display. `to_liquidate`/
+`unresolved`/`corporate_action` are local lists inside `bot.run`,
+surfaced only via Discord alert text, not persisted anywhere
+`report.py` reads. Closing this needs: persisting a per-ticker holding
+state somewhere `report.py` can read (state.json via `StateTracker` is
+the natural place, alongside strikes) and a site-page rendering pass --
+real scope, correctly its own reviewed increment, not a same-session
+bolt-on. Tracked here as the concrete next step on M29c specifically,
+ahead of general Epic A/D continuation.
+
+**M30 -- CI format-check gap.** CI ran `ruff check` but never `ruff
+format --check`, so a correctly-linted-but-inconsistently-formatted
+diff could still merge. Added a "Ruff format" step to
+`.github/workflows/ci.yml` between the existing "Ruff" and "Mypy"
+steps.
+
+**Second `staff-engineer-reviewer` pass, on the M29a-c diff (real
+finding, fixed before proceeding):**
+
+| Finding | Fixed |
+|---|---|
+| `generate_buy_queue`'s new-position loop could select a `CORPORATE_ACTION` ticker as a fresh `NEW_POSITION` buy. Removing it from `remaining_holdings` (passed in as `current_holdings`) makes it indistinguishable from "never held" to the loop's own `if ticker in current_holdings: continue` guard -- and because `is_corporate_action` is Alpaca-Assets-API-driven while `buyable` is yfinance-driven, a ticker can genuinely be both flagged as a corporate action *and* pass the ordinary buyability screen | Added `exclude: set[str] \| None = None` to `generate_buy_queue`, checked in both the top-up and the new-position loops; `bot.run` now calls it with `exclude=set(corporate_action)`. Also fixed a stale docstring on `journal.check_reconciliation` still describing M20's live-only abort instead of M27's both-accounts behavior. |
+| No "outlived one cycle" escalation for a stuck *reconciliation* mismatch, unlike the parity mechanism `SETTLEMENT_BLOCKED_FLAG_FILE_PATH` already gives settlement query failures | Not fixed -- recorded as a known, live gap. A reconciliation abort already halts the run every time it recurs (fail-closed), so the gap is escalation-to-Critical-alert on persistence, not silent risk; revisit alongside M34's workflow split rather than as a standalone patch. |
+
+**Third `staff-engineer-reviewer` pass, on the full M26-M30/M36 diff
+before the combined push (real findings, all fixed):**
+
+| Finding | Fixed |
+|---|---|
+| `journal.record_order` was a plain `INSERT`, not an upsert, unlike `record_fill`. `execution.py`'s `market_buy`/`liquidate` recover from a crash-and-restart by returning the *existing* broker order (not `None`), and `bot.py` unconditionally journals any non-`None` order -- a restart on the same run-date re-inserted a second `orders` audit row for the one broker order actually placed, silently duplicating the audit trail the docstring calls append-only-but-accurate | Added an idempotency guard: `record_order` now skips the insert (logs and returns) when a row for that `client_order_id` already exists; a `None` client_order_id (no idempotency key) always inserts, unchanged from every pre-M25 row's behavior |
+| `market_buy`'s ADV-ceiling estimate divided notional by the buy's own (higher) limit price, not last trade price -- the inline comment claimed this made the estimate more conservative, but the arithmetic runs the opposite direction: dividing by a higher ceiling price yields *fewer* implied shares, understating what a same- or lower-price fill (which a DAY limit order routinely produces) would actually buy | Split `_last_trade_price` out of `_limit_price`; the ADV estimate now uses last trade price, reserving the wider limit price only for the order request itself. Comment corrected to state the real direction of the bias. Pinned regression test (`test_market_buy_adv_check_uses_last_trade_price_not_the_wider_limit_price`) proves a specific order that would wrongly pass the ceiling under the old (limit-price) estimate now correctly fails it |
+| `xbrl.py`'s module docstring stated in the present tense that shadow-mode "runs alongside data.py" -- true of the design intent, not of the code: nothing calls `shadow_compare`/`fetch_company_facts` outside `tests/test_xbrl.py` yet, so a reader planning M37's hand-review step could wrongly believe there's already production log data to review | Reworded to state plainly that M36 builds and fixture-tests the module only; wiring it into a real run and accumulating a disagreement log to review is explicitly M37's job |
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| M29a: `HoldingState` enum + `classify_holding_state` | done | 2026-09-03 |
+| M29b: `execution.is_corporate_action` (Alpaca Assets API, fails open) | done | 2026-09-03 |
+| M29c: wired into `process_sells` / `bot.run`, buy-queue exclusion | partially done | 2026-09-03 -- exclusion + alerting done and tested; persisted-artifact + site-page display of holding state still outstanding, see write-up above (corrected from an earlier, wrong "deferred to M34" read of the design note). |
+| M30: `ruff format --check` added to CI | done | 2026-09-03 |
+| 2nd `staff-engineer-reviewer` pass + real finding fixed | done | 2026-09-03 -- corporate-action buy-queue leak closed via `generate_buy_queue(exclude=...)`; reconciliation-escalation-parity gap recorded, not fixed (see table above). |
+| 3rd `staff-engineer-reviewer` pass (full M26-M30/M36 diff) + all 3 findings fixed | done | 2026-09-03 -- `record_order` idempotency, ADV last-trade-price estimate, `xbrl.py` docstring overstatement (see table above). |
+| `pm-reviewer` pass on this TASKS.md write-up + findings corrected | done | 2026-09-03 -- M27/M29c/M36 "done" rows corrected to accurately reflect the design doc's own exit criteria; see each section's write-up. |
+| Full suite green, `ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` clean | done | 2026-09-03 -- 479 passing (was 474 pre-3rd-review). |
+| Push M26-M30 to `main` and GCP redeploy | todo | Next step this session. Landing all three sections (M26-M30, M36) as one combined push -- see the note below M36's table for why. |
+
+## Design v2.2 execution: M36 -- XBRL shadow mode (added 2026-09-03, Epic D start)
+
+First slice of Epic D (data integrity, §3.4). Builds the SEC EDGAR
+client and the shadow-comparison mechanism; does not yet switch XBRL
+to be the primary data source anywhere (that's M37).
+
+**M36 -- `xbrl.py`: CIK lookup, companyfacts fetch, annual-value
+extraction, gross-margin shadow comparison.** New module:
+`load_cik_lookup` (disk-cached `company_tickers.json` ->
+ticker-to-CIK), `fetch_company_facts` (fails soft on 404/network/JSON
+errors -- a filer with no XBRL data, or a transient SEC outage, is not
+a reason to abort a screen), `annual_values` (extracts 10-K annual
+values for a concept), `gross_margin_from_xbrl`, and `shadow_compare`
+(logs a `FieldDisagreement` when XBRL and yfinance disagree by more
+than `config.XBRL_DISAGREEMENT_RELATIVE_TOLERANCE` /
+`_ABSOLUTE_TOLERANCE_PP`, whichever bound is larger). Rate-limited to
+`config.SEC_EDGAR_MAX_REQUESTS_PER_SECOND` (empirically verified live
+against the real SEC EDGAR API as sustainable for a full ~1500-ticker
+universe pass before this was hardcoded). Tested against real SEC
+fixture data (`tests/fixtures/sec_company_tickers_sample.json`,
+`sec_companyfacts_aapl_sample.json` -- trimmed real API responses, not
+synthetic), following the project's existing precedent of testing
+against real production/external data snapshots
+(`tests/fixtures/real_bot_state_journal.db`).
+
+**Two real data-correctness bugs found and fixed against the real AAPL
+fixture, not merely noted:**
+
+| Bug | Fixed |
+|---|---|
+| `annual_values` treated XBRL's `fp == "FY"` tag alone as proof of an annual period. Real 10-Ks embed quarterly sub-disclosures also tagged `fp: "FY"` -- extracted 55 "years" for AAPL instead of the real 19 | Added a date-span check: the concept's `start`-to-`end` interval must be 350-380 days |
+| `gross_margin_from_xbrl` computed AAPL's margin as ~73.5% instead of the real ~46%, because it took each concept's independently-most-recent value. Apple stopped tagging `Revenues` after FY2018 (switched to `RevenueFromContractWithCustomerExcludingAssessedTax` under ASC 606), so a real FY2025 `GrossProfit` got divided by a stale FY2018 `Revenues` | Rewrote to match the same fiscal year across both concepts (with a fallback concept chain for revenue), not each concept's own latest value |
+
+**Not fully closed against `DESIGN_V2.md`'s own M36 exit criteria**
+(`pm-reviewer` finding): the design doc's bar for M36 is "both sources
+then run a full cycle in parallel; per-field disagreement report ...
+reviewed by hand before switchover" (M37). What actually shipped is the
+`xbrl.py` module itself, live-verified against the real EDGAR rate
+limit, and unit-tested against real fixture data for two names --
+nothing in `bot.py`/`daily_screen.py`/`screener.py` calls
+`shadow_compare` yet, so no full-universe parallel cycle has run and no
+disagreement report exists to review. The module's own docstring
+previously overstated this in the present tense ("runs alongside
+data.py") -- corrected (see the review finding above). Marking M36
+`partially done`: the client/extraction/comparison mechanism is real,
+correct (two genuine bugs caught and fixed against real data), and
+tested; wiring it into an actual run and producing the hand-reviewed
+disagreement report is real remaining work, not administrative
+follow-up, and is M37's actual prerequisite, not merely its neighbor.
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| M36: `xbrl.py` (CIK lookup, companyfacts fetch, annual-value extraction, gross-margin shadow compare) | partially done | 2026-09-03 -- module built, correct, and fixture-tested; not yet wired into any real run (see write-up above). |
+| Live rate-limit verification against real SEC EDGAR API | done | 2026-09-03 -- confirmed sustainable for a full universe pass at the configured rate. |
+| Real-fixture regression tests for both data-correctness bugs found | done | 2026-09-03 -- `tests/test_xbrl.py`, 21 tests. |
+| `ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` clean | done | 2026-09-03 |
+| Wire `shadow_compare` into a real run, accumulate + hand-review a full-universe disagreement report | todo | Owner: whoever continues Design v2.2 execution next (this session, if the `/goal` directive is still standing when work resumes) -- scheduled as the immediate next Epic D item after this push, not an indefinitely-deferred gap. The "hand-review" step specifically needs the user, not an agent, since it's the human checkpoint the design doc puts in front of making XBRL authoritative. |
+| Push to `main` and GCP redeploy | todo | Next step this session -- landing together with M26-M30 (see note below). |
+| M37: switch XBRL to primary + resolve GNTX margin discrepancy | todo | Blocked on the disagreement-report row above, not just sequentially next. |
+
+**Why M26-M30 and M36 land as one combined push** (`pm-reviewer`
+finding: three independently-reviewed slices -- Epic A execution
+safety, Epic A cleanup, and the start of an unrelated Epic D module --
+collapsed into one push makes isolating a post-deploy regression to one
+slice harder than it needs to be, since everything upstream of this
+point was otherwise kept separate: separate reviews, separate diffs,
+separate write-ups). Judgment call, made explicitly rather than
+silently: `GLOBAL_KILL_SWITCH_FLAG_FILE_PATH` remains active through
+this entire push, so none of it can place a live order regardless of
+deploy state -- the real safety net a staged rollout would otherwise
+exist to provide is already in place independent of how these commits
+are grouped. Weighed against that, splitting into three separate
+branches/PRs/redeploys is solo-operator overhead (no second reviewer
+gating a merge here) that doesn't buy additional safety given the kill
+switch. If a post-deploy issue does surface, `git bisect` across the
+three sections' own commits (each section's work is being committed
+as a single deliberate commit) remains the fallback for isolating it.
+
+**Scope of the kill-switch argument, stated precisely** (`pm-reviewer`
+verification-pass finding): it only contains the *order-placement*
+failure mode -- an accidental live buy/sell. It says nothing about a
+non-order-placement regression from this same push (a `report.py`
+display bug, a `journal.py` migration issue, `screener.py` reading
+`xbrl.py` incorrectly once M37 wires it in): those aren't gated by the
+kill switch at all, and `git bisect`/`git revert` across the three
+sections' own separate commits is the actual fallback for that class of
+issue, not the kill switch. Recorded explicitly so this isn't read as
+broader coverage than it is.
+
+**Authorization for this push, stated explicitly** (`pm-reviewer`
+verification-pass finding: other pushes in this file name the user's
+explicit go-ahead, e.g. line ~1168's "User explicitly confirmed adding
+it before it was pushed" -- this one didn't). This push and GCP
+redeploy are made under the user's own standing session-scoped `/goal`
+directive, set explicitly by the user: "all milestones are implemented
+and pushed into GCP." That directive's own stated instruction is to
+"treat the condition itself as your directive and do not pause to ask
+the user what to do" -- i.e. the goal itself *is* the go-ahead for
+exactly this action, not a substitute for one that's still being
+sought. Named here so the record matches this file's own convention
+elsewhere, not left implicit.
+
+Revisit this default once staging/prod namespaces (still "designed, not
+built" per the workflow skill) actually exist -- that's the point where
+staged, incremental deploys stop costing extra operator effort.

@@ -98,12 +98,66 @@ def test_state_tracker_corrupt_file_falls_back_to_empty(tmp_path: Path) -> None:
     assert tracker.get_strikes("AAPL") == 0
 
 
+def test_state_tracker_tracked_tickers_lists_only_nonzero_strikes(tmp_path: Path) -> None:
+    tracker = portfolio.StateTracker(path=tmp_path / "state.json")
+    tracker.add_strike("AAPL")
+    tracker.add_strike("MSFT")
+    tracker.reset_strikes("MSFT")
+
+    assert tracker.tracked_tickers() == ["AAPL"]
+
+
+# --- HoldingState / classify_holding_state (Design v2.2 §3.2, M29a) ---
+
+
+def test_classify_holding_state_healthy_when_data_passes_quality_floors() -> None:
+    assert (
+        portfolio.classify_holding_state(_quality_metrics(), is_corporate_action=False)
+        is portfolio.HoldingState.HEALTHY
+    )
+
+
+def test_classify_holding_state_deteriorating_when_data_fails_quality_floors() -> None:
+    failing = _quality_metrics(return_on_equity=0.02)  # fails MIN_ROE
+    assert (
+        portfolio.classify_holding_state(failing, is_corporate_action=False)
+        is portfolio.HoldingState.DETERIORATING
+    )
+
+
+def test_classify_holding_state_unreadable_when_no_data_and_no_corporate_action() -> None:
+    assert (
+        portfolio.classify_holding_state(None, is_corporate_action=False)
+        is portfolio.HoldingState.UNREADABLE
+    )
+
+
+def test_classify_holding_state_corporate_action_when_actively_detected() -> None:
+    assert (
+        portfolio.classify_holding_state(None, is_corporate_action=True)
+        is portfolio.HoldingState.CORPORATE_ACTION
+    )
+
+
+def test_classify_holding_state_corporate_action_takes_priority_over_data_presence() -> None:
+    # A ticker can have both real (stale) metrics AND a confirmed
+    # corporate action -- CORPORATE_ACTION is the more specific, more
+    # useful classification of the two either way (§3.2's own reasoning:
+    # UNREADABLE should mean "unexplained absence," not "absence with a
+    # known cause" -- and the same logic extends to "presence with a
+    # known cause").
+    assert (
+        portfolio.classify_holding_state(_quality_metrics(), is_corporate_action=True)
+        is portfolio.HoldingState.CORPORATE_ACTION
+    )
+
+
 # --- process_sells ---
 
 
 def test_process_sells_clean_check_no_strike(tmp_path: Path) -> None:
     state = portfolio.StateTracker(path=tmp_path / "state.json")
-    to_liquidate, unresolved = portfolio.process_sells(
+    to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
         {"AAPL": 1000.0}, {"AAPL": _quality_metrics(symbol="AAPL")}, state
     )
     assert to_liquidate == []
@@ -121,7 +175,9 @@ def test_process_sells_one_strike_then_clean_resets(tmp_path: Path) -> None:
     assert state.get_strikes("AAPL") == 1
 
     state2 = portfolio.StateTracker(path=state_path)  # reload, like the next run would
-    to_liquidate, unresolved = portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": passing}, state2)
+    to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
+        {"AAPL": 1000.0}, {"AAPL": passing}, state2
+    )
     assert to_liquidate == []
     assert unresolved == []
     assert state2.get_strikes("AAPL") == 0
@@ -136,18 +192,20 @@ def test_process_sells_liquidates_only_after_the_configured_streak(tmp_path: Pat
     to_liquidate: list[str] = []
     for _ in range(config.STRIKES_TO_LIQUIDATE):
         state = portfolio.StateTracker(path=state_path)
-        to_liquidate, unresolved = portfolio.process_sells(
+        to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
             {"AAPL": 1000.0}, {"AAPL": failing}, state
         )
         assert unresolved == []
 
     assert to_liquidate == ["AAPL"]
-    # Strikes reset to zero on liquidation, not left at the streak length
-    # -- see the regression test below for why (a stale count would
-    # liquidate a future re-buy after just one bad check instead of a
-    # full fresh streak).
+    # M26c (Design v2.2 §3.3): process_sells no longer resets strikes
+    # the moment liquidation is *decided* -- that used to be exactly the
+    # mechanism behind the real FOX/LPG bug (reset before the order ever
+    # confirmed filling). The streak is left exactly where it was;
+    # resetting it is now the caller's job (bot.run), and only once
+    # settlement confirms the order actually filled.
     final_state = portfolio.StateTracker(path=state_path)
-    assert final_state.get_strikes("AAPL") == 0
+    assert final_state.get_strikes("AAPL") == config.STRIKES_TO_LIQUIDATE
 
 
 def test_process_sells_does_not_liquidate_before_the_configured_streak(tmp_path: Path) -> None:
@@ -157,7 +215,7 @@ def test_process_sells_does_not_liquidate_before_the_configured_streak(tmp_path:
     to_liquidate: list[str] = []
     for _ in range(config.STRIKES_TO_LIQUIDATE - 1):
         state = portfolio.StateTracker(path=state_path)
-        to_liquidate, _unresolved = portfolio.process_sells(
+        to_liquidate, _unresolved, _corporate_action = portfolio.process_sells(
             {"AAPL": 1000.0}, {"AAPL": failing}, state
         )
 
@@ -175,22 +233,32 @@ def test_process_sells_resets_strikes_after_liquidation_for_a_future_rebuy(
     # bad check instead of a full fresh streak -- silently violating the
     # streak contract for what is, from the position's perspective, a
     # brand new holding.
+    #
+    # M26c update: process_sells itself no longer performs this reset
+    # (see the sibling test above) -- it's now bot.run's job, done only
+    # after settlement confirms the liquidation filled. This test now
+    # exercises the same underlying contract one level out: once the
+    # caller has reset the streak (simulating a confirmed fill), a
+    # future re-buy's first bad check must start a fresh streak, not
+    # inherit the pre-liquidation count.
     state_path = tmp_path / "state.json"
     failing = _quality_metrics(symbol="AAPL", return_on_equity=0.05)
 
     to_liquidate: list[str] = []
     for _ in range(config.STRIKES_TO_LIQUIDATE):
         state = portfolio.StateTracker(path=state_path)
-        to_liquidate, _unresolved = portfolio.process_sells(
+        to_liquidate, _unresolved, _corporate_action = portfolio.process_sells(
             {"AAPL": 1000.0}, {"AAPL": failing}, state
         )
     assert to_liquidate == ["AAPL"]  # confirms liquidation actually happened first
+    state.reset_strikes("AAPL")  # simulates bot.run's post-confirmed-fill reset
+    state.save()
 
     # AAPL is re-bought later; its very first quality check after that
     # fails once -- this must be treated as strike 1 of a fresh streak,
     # not a continuation of the already-liquidated streak.
     state_next = portfolio.StateTracker(path=state_path)
-    to_liquidate, _unresolved = portfolio.process_sells(
+    to_liquidate, _unresolved, _corporate_action = portfolio.process_sells(
         {"AAPL": 1000.0}, {"AAPL": failing}, state_next
     )
 
@@ -206,7 +274,9 @@ def test_process_sells_missing_ticker_is_unresolved_not_struck(tmp_path: Path) -
     # (Was test_process_sells_missing_ticker_counts_as_strike, asserting
     # the buggy behavior -- inverted, not deleted.)
     state = portfolio.StateTracker(path=tmp_path / "state.json")
-    to_liquidate, unresolved = portfolio.process_sells({"AAPL": 1000.0}, {}, state)
+    to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
+        {"AAPL": 1000.0}, {}, state
+    )
     assert to_liquidate == []
     assert unresolved == ["AAPL"]
     assert state.get_strikes("AAPL") == 0
@@ -216,7 +286,9 @@ def test_process_sells_none_metrics_is_unresolved_not_struck(tmp_path: Path) -> 
     # Was test_process_sells_none_metrics_counts_as_strike -- inverted,
     # not deleted; see the sibling test above for why.
     state = portfolio.StateTracker(path=tmp_path / "state.json")
-    to_liquidate, unresolved = portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": None}, state)
+    to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
+        {"AAPL": 1000.0}, {"AAPL": None}, state
+    )
     assert to_liquidate == []
     assert unresolved == ["AAPL"]
     assert state.get_strikes("AAPL") == 0
@@ -233,7 +305,9 @@ def test_process_sells_unreadable_check_holds_an_existing_streak_steady(tmp_path
     assert state.get_strikes("AAPL") == 1
 
     state2 = portfolio.StateTracker(path=state_path)
-    to_liquidate, unresolved = portfolio.process_sells({"AAPL": 1000.0}, {"AAPL": None}, state2)
+    to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
+        {"AAPL": 1000.0}, {"AAPL": None}, state2
+    )
     assert to_liquidate == []
     assert unresolved == ["AAPL"]
     assert state2.get_strikes("AAPL") == 1  # neither incremented nor reset
@@ -241,7 +315,7 @@ def test_process_sells_unreadable_check_holds_an_existing_streak_steady(tmp_path
     # And a clean check after that still works normally -- the frozen
     # streak isn't stuck, just untouched by the unreadable check itself.
     state3 = portfolio.StateTracker(path=state_path)
-    to_liquidate, unresolved = portfolio.process_sells(
+    to_liquidate, unresolved, _corporate_action = portfolio.process_sells(
         {"AAPL": 1000.0}, {"AAPL": _quality_metrics(symbol="AAPL")}, state3
     )
     assert unresolved == []
@@ -399,6 +473,41 @@ def test_generate_buy_queue_holding_absent_from_screen_is_not_topped_up() -> Non
         {"AAPL": holding_value}, _screen_results([]), available_cash
     )
     assert orders == []
+
+
+def test_generate_buy_queue_exclude_blocks_a_buyable_new_position() -> None:
+    # M29 staff-engineer-reviewer finding: the real bug -- a confirmed
+    # corporate-action ticker that's *also* buyable=True in the same
+    # run's screen (a real possibility, since is_corporate_action is
+    # driven by Alpaca's Assets API, independent of the yfinance-based
+    # fundamentals that drive buyable) must not be selected as a fresh
+    # NEW_POSITION purchase just because it's absent from
+    # current_holdings. `exclude` is the explicit fix.
+    screen_results = _screen_results([{"symbol": "MRGD", "buyable": True, "score": 99.0}])
+    orders = portfolio.generate_buy_queue({}, screen_results, 10_000.0, exclude={"MRGD"})
+    assert orders == []
+
+
+def test_generate_buy_queue_exclude_also_blocks_a_top_up() -> None:
+    # Defense-in-depth: the same rule applies even if a caller didn't
+    # pre-filter current_holdings (the top-up loop's own membership
+    # check alone would otherwise still top it up).
+    screen_results = _screen_results([{"symbol": "MRGD", "buyable": True, "score": 50.0}])
+    orders = portfolio.generate_buy_queue(
+        {"MRGD": 100.0}, screen_results, 10_000.0, exclude={"MRGD"}
+    )
+    assert orders == []
+
+
+def test_generate_buy_queue_exclude_does_not_affect_other_tickers() -> None:
+    screen_results = _screen_results(
+        [
+            {"symbol": "MRGD", "buyable": True, "score": 99.0},
+            {"symbol": "GOOD", "buyable": True, "score": 50.0},
+        ]
+    )
+    orders = portfolio.generate_buy_queue({}, screen_results, 10_000.0, exclude={"MRGD"})
+    assert [ticker for ticker, _ in orders] == ["GOOD"]
 
 
 def test_generate_buy_queue_self_limits_to_the_notional_budget_on_a_cold_start(

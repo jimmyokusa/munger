@@ -178,7 +178,38 @@ STRIKES_TO_LIQUIDATE = 10
 # catastrophically" flag (the paper/live API-key mismatch assertion):
 # fail toward the safe default, not away from it.
 PAPER_TRADING = os.environ.get("MUNGER_PAPER_TRADING", "true").strip().lower() != "false"
-LIMIT_PRICE_BAND_PCT = 0.02  # +/-2% of last trade, applied to every order
+# M26e (Design v2.2 §3.3): widened from 2% -- the real FOX/LPG orders
+# both went unfilled on a -2% DAY limit, on names not thin enough that a
+# 2% band should have been a real problem, which is itself evidence 2%
+# wasn't marketable enough to reliably cross the spread. 5% keeps the
+# same protective *direction* (a buy still has a ceiling, a sell still
+# has a floor -- never an unconstrained market order) while giving a
+# real fill a much better chance of actually crossing during the DAY
+# window, which is the whole point of a "marketable" limit as opposed to
+# a passive one sitting at the top of the book.
+LIMIT_PRICE_BAND_PCT = 0.05
+
+# M26e (Design v2.2 §3.3): "no order exceeds a small fraction of ADV" --
+# an order sized against a stock's own recent average daily volume,
+# rather than a bare dollar figure, so the ceiling scales with how much
+# of that name actually trades: the same $10k order is trivial for a
+# high-volume large-cap and a real chunk of a thin one. 20 trading days
+# (~1 calendar month) is the standard ADV window; 1% keeps any single
+# order small enough to have a realistic chance of filling within one
+# DAY session without materially moving the stock's own price against
+# itself, which a much larger clip risks doing on a thin name.
+ADV_LOOKBACK_TRADING_DAYS = 20
+MAX_ORDER_PCT_OF_ADV = 0.01
+
+# M26b (Design v2.2 §3.3): the settlement pass's own retry budget for a
+# single order-status query. Small and fast -- a settlement pass covers
+# every order from one execution window, so a slow per-order retry
+# policy compounds across all of them. 3 attempts, 2s apart, is enough
+# to ride out a single transient blip without meaningfully slowing the
+# pass; anything past that is treated as a genuine query failure (M26d
+# blocks the next execution window on it), not silently retried forever.
+SETTLEMENT_QUERY_RETRY_ATTEMPTS = 3
+SETTLEMENT_QUERY_RETRY_BACKOFF_SECONDS = 2.0
 
 # --- State, audit, and observability (DESIGN.md 3.6) ---
 # Anchored to BASE_DIR (not bare relative filenames) so a scheduler
@@ -299,6 +330,29 @@ POSITION_LOSS_ALERT_THRESHOLD_PCT = -0.10
 # rule. Shared by pnl.py's _send_discord_alert and news_update.py's
 # _post_discord_message so the fix (and its value) lives in one place.
 DISCORD_USER_AGENT = "munger-trading-bot/1.0 (+https://gramunger.com)"
+
+# M36 (Design v2.2 §3.4): SEC EDGAR's own fair-access policy requires a
+# User-Agent identifying the requester (a real contact, not a bare
+# product string like DISCORD_USER_AGENT above) -- "Sample Company Name
+# AdminContact@sample.com" is SEC's own documented example format.
+# Confirmed live: this exact value returns 200 against both the
+# company_tickers.json index and companyfacts endpoints, no throttling
+# across a real sequential batch (2026-09-02).
+SEC_EDGAR_USER_AGENT = "munger-trading-bot jimmyokusa@gmail.com"
+# 10 requests/second is SEC's own documented fair-access ceiling.
+# Deliberately paced under it (not at it) -- courtesy margin, not a
+# measured necessity; real sequential request latency (~0.3-0.6s each,
+# confirmed live) already keeps well under 10 req/s in practice.
+SEC_EDGAR_MAX_REQUESTS_PER_SECOND = 8
+SEC_EDGAR_REQUEST_TIMEOUT_SECONDS = 15
+
+# M36 (Design v2.2 §3.4): "a field disagrees if it differs from the
+# XBRL-derived value by more than the larger of 5% relative or 1
+# percentage point absolute" -- a starting default the shadow cycle
+# itself calibrates, not a number derived from data that doesn't exist
+# yet (see DESIGN_V2.md §3.4's own note on this).
+XBRL_DISAGREEMENT_RELATIVE_TOLERANCE = 0.05
+XBRL_DISAGREEMENT_ABSOLUTE_TOLERANCE_PP = 0.01
 # --- News/commentary digest (news_update.py, user request, M22; cadence
 # changed daily -> monthly, user request, M23) ---
 # Second Discord webhook, deliberately separate from DISCORD_WEBHOOK_URL
@@ -496,6 +550,20 @@ KILL_SWITCH_FLAG_FILE_PATH: Path = DATA_DIR / "KILL_SWITCH"
 # accounts; removing it resumes both. The per-account flags above remain
 # for stopping just one account without touching the other.
 GLOBAL_KILL_SWITCH_FLAG_FILE_PATH: Path = BASE_DIR / "GLOBAL_KILL_SWITCH"
+
+# M26d (Design v2.2 §3.3): a settlement-pass query failure sets BOTH this
+# file and KILL_SWITCH_FLAG_FILE_PATH above -- KILL_SWITCH_FLAG_FILE_PATH
+# is what actually blocks order placement (reusing the existing,
+# already-trusted mechanism rather than inventing new blocking behavior,
+# per the design doc's own explicit reasoning), and this second, distinct
+# file exists purely so a later run can tell *why* the kill switch is
+# set: a human deliberately pausing trading (KILL_SWITCH alone) reads
+# differently from an unresolved settlement failure (both files) that
+# has now persisted across a full cycle and warrants a Critical escalation
+# rather than the routine screen-only log line. Clearing a stale block
+# means removing both files, not just one -- documented in the escalation
+# alert itself.
+SETTLEMENT_BLOCKED_FLAG_FILE_PATH: Path = DATA_DIR / "SETTLEMENT_BLOCKED"
 GLOBAL_ORDER_BUDGET = 20  # max orders per run
 GLOBAL_NOTIONAL_BUDGET_PCT = 0.25  # max fraction of equity moved per run
 MIN_UNIVERSE_FETCH_FRACTION = 0.90  # abort if fewer tickers than this fetch cleanly

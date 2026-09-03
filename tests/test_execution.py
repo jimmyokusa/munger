@@ -11,8 +11,8 @@ from unittest.mock import MagicMock
 import pytest
 from alpaca.common.exceptions import APIError
 from alpaca.data.models.trades import Trade
-from alpaca.trading.enums import OrderSide, OrderStatus, TimeInForce
-from alpaca.trading.models import Order, Position, TradeAccount
+from alpaca.trading.enums import AssetStatus, OrderSide, OrderStatus, TimeInForce
+from alpaca.trading.models import Asset, Order, Position, TradeAccount
 
 import config
 import execution
@@ -44,6 +44,14 @@ def _fake_trade(price: float) -> MagicMock:
     trade = MagicMock(spec=Trade)
     trade.price = price
     return trade
+
+
+def _fake_bar_set(symbol: str, volumes: list[float]) -> SimpleNamespace:
+    """Stand-in for Alpaca's BarSet -- this code only ever reads
+    `.data[symbol]` and each bar's `.volume`, so a bare SimpleNamespace
+    is enough without pulling in the real (heavier) Bar/BarSet models."""
+    bars = [SimpleNamespace(volume=v) for v in volumes]
+    return SimpleNamespace(data={symbol: bars})
 
 
 def _fake_position(symbol: str, market_value: float, qty: float) -> MagicMock:
@@ -101,15 +109,18 @@ def test_client_order_id_is_tagged_live_when_paper_trading_is_false(
 
 
 def test_limit_price_buy_is_above_last_trade(setup: _Setup) -> None:
-    setup.data.get_stock_latest_trade.return_value = {"AAPL": _fake_trade(100.0)}
-    price = setup.module._limit_price("AAPL", "buy")
+    price = setup.module._limit_price("AAPL", "buy", 100.0)
     assert price == pytest.approx(100.0 * (1 + config.LIMIT_PRICE_BAND_PCT))
 
 
 def test_limit_price_sell_is_below_last_trade(setup: _Setup) -> None:
-    setup.data.get_stock_latest_trade.return_value = {"AAPL": _fake_trade(100.0)}
-    price = setup.module._limit_price("AAPL", "sell")
+    price = setup.module._limit_price("AAPL", "sell", 100.0)
     assert price == pytest.approx(100.0 * (1 - config.LIMIT_PRICE_BAND_PCT))
+
+
+def test_last_trade_price_returns_the_raw_unadjusted_price(setup: _Setup) -> None:
+    setup.data.get_stock_latest_trade.return_value = {"AAPL": _fake_trade(100.0)}
+    assert setup.module._last_trade_price("AAPL") == pytest.approx(100.0)
 
 
 def test_has_already_submitted_true_when_order_found(setup: _Setup) -> None:
@@ -204,6 +215,146 @@ def test_market_buy_returns_none_when_order_is_rejected_without_raising(
     result = setup.module.market_buy("AAPL", 500.0)
 
     assert result is None
+
+
+# --- M26e: average daily volume + the ADV ceiling ---
+
+
+def test_average_daily_volume_averages_recent_bars(setup: _Setup) -> None:
+    setup.data.get_stock_bars.return_value = _fake_bar_set("AAPL", [100.0, 200.0, 300.0])
+    assert setup.module._average_daily_volume("AAPL") == pytest.approx(200.0)
+
+
+def test_average_daily_volume_returns_none_when_no_bars_at_all(setup: _Setup) -> None:
+    setup.data.get_stock_bars.return_value = _fake_bar_set("AAPL", [])
+    assert setup.module._average_daily_volume("AAPL") is None
+
+
+def test_exceeds_adv_ceiling_true_past_the_configured_fraction(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "MAX_ORDER_PCT_OF_ADV", 0.01)
+    setup.data.get_stock_bars.return_value = _fake_bar_set("AAPL", [1_000_000.0])
+    assert setup.module._exceeds_adv_ceiling("AAPL", 10_001.0) is True  # just past 1% of 1M
+    assert setup.module._exceeds_adv_ceiling("AAPL", 9_999.0) is False  # just under
+
+
+def test_exceeds_adv_ceiling_fails_open_when_adv_is_unknown(setup: _Setup) -> None:
+    # A missing/empty bars response must not block every order for a
+    # symbol it happens to fail on -- ADV is a secondary risk control,
+    # not the primary defense (see the docstring's own reasoning).
+    setup.data.get_stock_bars.return_value = _fake_bar_set("AAPL", [])
+    assert setup.module._exceeds_adv_ceiling("AAPL", 1_000_000.0) is False
+
+
+def test_market_buy_skipped_when_it_exceeds_the_adv_ceiling(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "MAX_ORDER_PCT_OF_ADV", 0.01)
+    setup.data.get_stock_latest_trade.return_value = {"AAPL": _fake_trade(100.0)}
+    # ~1% of 1,000 shares/day ADV is ~10 shares -- a $5,000 order at
+    # ~$100/share (last trade, what the estimate is sized against) implies
+    # ~50 shares, well past it.
+    setup.data.get_stock_bars.return_value = _fake_bar_set("AAPL", [1_000.0])
+
+    result = setup.module.market_buy("AAPL", 5_000.0)
+
+    assert result is None
+    setup.trading.submit_order.assert_not_called()  # never even reaches the broker
+
+
+def test_market_buy_adv_check_uses_last_trade_price_not_the_wider_limit_price(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Staff-engineer-reviewer finding: sizing the ADV estimate off the
+    # (higher, for a buy) limit price understates the real share count
+    # for any fill that lands below that ceiling -- exactly what a DAY
+    # limit order routinely does. Pinned numbers: ADV=1,000 -> ceiling is
+    # 10 shares. A $1,050 order at last_price=$100 implies 10.5 shares
+    # (over the ceiling), but at limit_price=$105 (last_price * 1.05, the
+    # default 5% band) it implies exactly 10.0 shares (not over -- the
+    # check is a strict `>`). If the estimate used limit_price, this
+    # order would wrongly be allowed through.
+    monkeypatch.setattr(config, "MAX_ORDER_PCT_OF_ADV", 0.01)
+    monkeypatch.setattr(config, "LIMIT_PRICE_BAND_PCT", 0.05)
+    setup.data.get_stock_latest_trade.return_value = {"AAPL": _fake_trade(100.0)}
+    setup.data.get_stock_bars.return_value = _fake_bar_set("AAPL", [1_000.0])
+
+    result = setup.module.market_buy("AAPL", 1_050.0)
+
+    assert result is None
+    setup.trading.submit_order.assert_not_called()
+
+
+def test_market_buy_proceeds_when_within_the_adv_ceiling(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "MAX_ORDER_PCT_OF_ADV", 0.01)
+    setup.data.get_stock_latest_trade.return_value = {"AAPL": _fake_trade(100.0)}
+    # 1% of a 10M-share ADV is 100,000 shares -- a $5,000 order (~47
+    # shares) is nowhere close.
+    setup.data.get_stock_bars.return_value = _fake_bar_set("AAPL", [10_000_000.0])
+    fake_order = _fake_accepted_order()
+    setup.trading.submit_order.return_value = fake_order
+
+    result = setup.module.market_buy("AAPL", 5_000.0)
+
+    assert result is fake_order
+
+
+def test_liquidate_skipped_when_it_exceeds_the_adv_ceiling(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "MAX_ORDER_PCT_OF_ADV", 0.01)
+    setup.trading.get_open_position.return_value = _fake_position("AAPL", 1000.0, 500.0)
+    # 1% of a 1,000-share ADV is 10 shares -- the 500-share position is
+    # far past it.
+    setup.data.get_stock_bars.return_value = _fake_bar_set("AAPL", [1_000.0])
+
+    result = setup.module.liquidate("AAPL")
+
+    assert result is None
+    setup.trading.submit_order.assert_not_called()
+    # The position remains open (nothing submitted) -- must NOT be
+    # journaled/treated as sold; the caller (bot.run) sees None and
+    # simply doesn't call journal.record_order, same as any other
+    # failed liquidation attempt.
+
+
+# --- M29b: is_corporate_action (Alpaca Assets API) ---
+
+
+def _fake_asset(status: AssetStatus, tradable: bool) -> MagicMock:
+    asset = MagicMock(spec=Asset)
+    asset.status = status
+    asset.tradable = tradable
+    return asset
+
+
+def test_is_corporate_action_false_for_a_normal_active_tradable_asset(setup: _Setup) -> None:
+    setup.trading.get_asset.return_value = _fake_asset(AssetStatus.ACTIVE, True)
+    assert setup.module.is_corporate_action("AAPL") is False
+
+
+def test_is_corporate_action_true_when_inactive(setup: _Setup) -> None:
+    setup.trading.get_asset.return_value = _fake_asset(AssetStatus.INACTIVE, False)
+    assert setup.module.is_corporate_action("DELISTED") is True
+
+
+def test_is_corporate_action_true_when_active_but_not_tradable(setup: _Setup) -> None:
+    # A real, specific case Alpaca can report: still ACTIVE status but
+    # tradable flipped False (e.g. a halted symbol pending a corporate
+    # action) -- either signal alone is enough.
+    setup.trading.get_asset.return_value = _fake_asset(AssetStatus.ACTIVE, False)
+    assert setup.module.is_corporate_action("HALTED") is True
+
+
+def test_is_corporate_action_fails_open_on_a_lookup_failure(setup: _Setup) -> None:
+    # Deliberately the opposite fail direction from get_current_holdings/
+    # has_already_submitted -- a broken Assets lookup for one symbol
+    # must not block evaluation of every other holding.
+    setup.trading.get_asset.side_effect = Exception("network error")
+    assert setup.module.is_corporate_action("AAPL") is False
 
 
 def test_liquidate_submits_a_sell_limit_order_for_the_full_position(setup: _Setup) -> None:

@@ -23,14 +23,16 @@ sell LIMIT order for the full position quantity instead of using
 
 from __future__ import annotations
 
+import datetime
 import logging
 
 from alpaca.common.exceptions import APIError
 from alpaca.data.historical.stock import StockHistoricalDataClient
-from alpaca.data.requests import StockLatestTradeRequest
+from alpaca.data.requests import StockBarsRequest, StockLatestTradeRequest
+from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, OrderStatus, TimeInForce
-from alpaca.trading.models import Order, Position, TradeAccount
+from alpaca.trading.enums import AssetStatus, OrderSide, OrderStatus, TimeInForce
+from alpaca.trading.models import Asset, Order, Position, TradeAccount
 from alpaca.trading.requests import LimitOrderRequest
 
 import config
@@ -97,7 +99,20 @@ class ExecutionModule:
         mode = "paper" if config.PAPER_TRADING else "live"
         return f"{mode}-{self._run_date}-{symbol}-{side}"
 
-    def _limit_price(self, symbol: str, side: str) -> float:
+    def _last_trade_price(self, symbol: str) -> float:
+        """The symbol's last trade price, unadjusted by any band.
+
+        Split out from _limit_price (staff-engineer-reviewer finding) so
+        the ADV ceiling check can size its implied-shares estimate off
+        the price a fill is actually likely to land near, not off the
+        limit price -- see market_buy's own comment on why those two are
+        not interchangeable for that specific estimate.
+        """
+        request = StockLatestTradeRequest(symbol_or_symbols=symbol)
+        trades = self._data.get_stock_latest_trade(request)
+        return float(trades[symbol].price)
+
+    def _limit_price(self, symbol: str, side: str, last_price: float) -> float:
         """Last trade price adjusted by the configured band.
 
         Buys get a ceiling above last trade (won't pay more than that);
@@ -105,12 +120,60 @@ class ExecutionModule:
         the band always works in the requester's favor for slippage
         protection, not against it.
         """
-        request = StockLatestTradeRequest(symbol_or_symbols=symbol)
-        trades = self._data.get_stock_latest_trade(request)
-        last_price = float(trades[symbol].price)
         if side == "buy":
             return last_price * (1 + config.LIMIT_PRICE_BAND_PCT)
         return last_price * (1 - config.LIMIT_PRICE_BAND_PCT)
+
+    def _average_daily_volume(self, symbol: str) -> float | None:
+        """Mean daily volume over config.ADV_LOOKBACK_TRADING_DAYS.
+
+        None if no bars came back (fails open on the ADV check itself --
+        see _exceeds_adv_ceiling for why).
+
+        M26e (Design v2.2 §3.3). Fetches roughly 1.5x the lookback in
+        calendar days to comfortably cover weekends/holidays and still
+        land at least `ADV_LOOKBACK_TRADING_DAYS` trading days, then
+        averages whatever bars actually came back (not a fixed-size
+        slice) -- a newly-listed name with fewer bars than the lookback
+        still gets a real, if noisier, average rather than an index
+        error.
+        """
+        end = datetime.datetime.now(datetime.UTC)
+        start = end - datetime.timedelta(days=int(config.ADV_LOOKBACK_TRADING_DAYS * 1.5))
+        request = StockBarsRequest(
+            symbol_or_symbols=symbol, timeframe=TimeFrame.Day, start=start, end=end
+        )
+        bar_set = self._data.get_stock_bars(request)
+        bars = bar_set.data.get(symbol, []) if hasattr(bar_set, "data") else []
+        # len(bars) == 0, not "not bars" -- a falsy-vs-empty distinction
+        # that only matters against an unconfigured test double (a bare
+        # MagicMock is truthy by default regardless of its length), but
+        # checking length explicitly is correct either way and avoids
+        # depending on a mock's default __bool__ behavior.
+        if len(bars) == 0:
+            return None
+        return sum(float(bar.volume) for bar in bars) / len(bars)
+
+    def _exceeds_adv_ceiling(self, symbol: str, shares: float) -> bool:
+        """True if `shares` exceeds the ADV ceiling for `symbol`.
+
+        More than config.MAX_ORDER_PCT_OF_ADV of the symbol's own recent
+        average daily volume. Fails open (returns False, i.e. does NOT
+        block the order) when
+        ADV can't be determined -- deliberately the opposite fail
+        direction from this module's broker-state checks
+        (get_current_holdings, has_already_submitted), which fail
+        closed because they gate on facts this module cannot safely
+        guess. ADV is a secondary risk control layered on top of the
+        limit-price band, not the primary defense against a bad fill;
+        a missing bars response (a new listing, a data-provider gap)
+        blocking every order for that symbol would be a worse outcome
+        than occasionally submitting one this check couldn't evaluate.
+        """
+        adv = self._average_daily_volume(symbol)
+        if adv is None or adv <= 0:
+            return False
+        return shares > adv * config.MAX_ORDER_PCT_OF_ADV
 
     def verify_account_access(self) -> None:
         """Abort-worthy startup check: keys must match the configured mode.
@@ -155,6 +218,63 @@ class ExecutionModule:
             if e.status_code == 404:
                 return False
             raise
+
+    def get_order_status(self, client_order_id: str) -> Order:
+        """Fetch the current broker-side status of one submitted order.
+
+        M26b (Design v2.2 §3.3): the settlement pass's own query
+        primitive -- a thin, public wrapper around the same
+        `get_order_by_client_id` call `has_already_submitted` already
+        makes internally, exposed here so `settlement.py` can query
+        without reaching into this module's private `_trading` client.
+        Deliberately has no try/except of its own: the caller
+        (`settlement.py`) is the one that decides how to classify and
+        retry a query failure (§3.3's "query failure vs. genuinely
+        pending" distinction), which requires seeing the raised
+        exception, not a swallowed `None`.
+        """
+        order = self._trading.get_order_by_client_id(client_order_id)
+        if not isinstance(order, Order):
+            raise TypeError(f"unexpected get_order_by_client_id response: {type(order)}")
+        return order
+
+    def is_corporate_action(self, symbol: str) -> bool:
+        """True if `symbol` is reported inactive or untradable.
+
+        Active detection of a delisting/symbol change/merger/spin-off,
+        per Design v2.2 §3.2 (M29b), via Alpaca's own Assets API.
+
+        RC2 (Design v2.2 §2): absence of data used to be the only signal
+        a corporate action existed, indistinguishable from a transient
+        fetch failure -- exactly what let a delisting strike a holding
+        toward liquidation the same way a genuine quality failure would.
+        This checks the fact directly instead of inferring it: Alpaca's
+        `status` field goes INACTIVE and `tradable` goes False when the
+        exchange delists/suspends a symbol, independent of whether
+        yfinance (this system's fundamentals source) can still fetch
+        anything for it.
+
+        Fails open (returns False) on a lookup failure -- deliberately
+        the same fail direction as _exceeds_adv_ceiling (a secondary
+        signal, not this module's primary broker-state check) and
+        deliberately the OPPOSITE of get_current_holdings/
+        has_already_submitted, which fail closed because a broken check
+        there would corrupt the primary buy/sell decision itself. Here,
+        failing open just means a genuine corporate action gets
+        classified as UNREADABLE instead of CORPORATE_ACTION for one
+        run (still no strike, no auto-trade either way -- see
+        portfolio.classify_holding_state) rather than blocking every
+        other holding's evaluation on one broken Assets lookup.
+        """
+        try:
+            asset = self._trading.get_asset(symbol)
+        except Exception:
+            logger.error("%s: corporate-action check (Assets API) failed", symbol, exc_info=True)
+            return False
+        if not isinstance(asset, Asset):
+            logger.error("%s: unexpected get_asset response type: %s", symbol, type(asset))
+            return False
+        return asset.status != AssetStatus.ACTIVE or not bool(asset.tradable)
 
     def get_current_holdings(self) -> Holdings:
         """Live portfolio fetch: ticker -> current market value (dollars).
@@ -233,7 +353,27 @@ class ExecutionModule:
             existing = self._trading.get_order_by_client_id(client_order_id)
             return existing if isinstance(existing, Order) else None
         try:
-            limit_price = self._limit_price(symbol, "buy")
+            last_price = self._last_trade_price(symbol)
+            limit_price = self._limit_price(symbol, "buy", last_price)
+            # M26e (Design v2.2 §3.3): notional has no share count until
+            # priced -- estimate it against last trade price, not the
+            # (higher, for a buy) limit price. Staff-engineer-reviewer
+            # finding: dividing by the limit-price ceiling understates
+            # the real share count for any fill that lands below that
+            # ceiling, which a DAY limit order routinely does -- last
+            # trade price is the better estimate of what a fill is
+            # actually likely to cost per share, even though the order
+            # itself is still submitted at the wider limit price above.
+            implied_shares = notional / last_price
+            if self._exceeds_adv_ceiling(symbol, implied_shares):
+                logger.error(
+                    "%s: buy order (~%.0f shares) exceeds %.1f%% of average daily volume -- "
+                    "skipping this run, not resubmitting at a smaller size automatically",
+                    symbol,
+                    implied_shares,
+                    config.MAX_ORDER_PCT_OF_ADV * 100,
+                )
+                return None
             request = LimitOrderRequest(
                 symbol=symbol,
                 notional=round(notional, 2),
@@ -267,10 +407,29 @@ class ExecutionModule:
             position = self._trading.get_open_position(symbol)
             if not isinstance(position, Position):
                 raise TypeError(f"unexpected get_open_position response type: {type(position)}")
-            limit_price = self._limit_price(symbol, "sell")
+            qty = abs(float(position.qty))
+            # M26e (Design v2.2 §3.3): applied to liquidations too, not
+            # just buys, matching the design's own undifferentiated
+            # wording -- a real tradeoff, since blocking a quality-
+            # driven sell leaves a deteriorating position open rather
+            # than reducing risk. Accepted anyway for consistency and
+            # because the failure mode is the same one process_sells
+            # already tolerates for an unconfirmed order (see M26c):
+            # the position stays held, un-struck, and gets a fresh
+            # look next run rather than silently vanishing from view.
+            if self._exceeds_adv_ceiling(symbol, qty):
+                logger.error(
+                    "%s: liquidation (%.0f shares) exceeds %.1f%% of average daily volume -- "
+                    "skipping this run; position remains held and will be re-evaluated next run",
+                    symbol,
+                    qty,
+                    config.MAX_ORDER_PCT_OF_ADV * 100,
+                )
+                return None
+            limit_price = self._limit_price(symbol, "sell", self._last_trade_price(symbol))
             request = LimitOrderRequest(
                 symbol=symbol,
-                qty=abs(float(position.qty)),
+                qty=qty,
                 side=OrderSide.SELL,
                 time_in_force=TimeInForce.DAY,
                 limit_price=round(limit_price, 2),

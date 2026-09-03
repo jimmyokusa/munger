@@ -15,8 +15,10 @@ holds only the strike-streak counters, nothing else (DESIGN.md 3.6).
 
 from __future__ import annotations
 
+import enum
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -28,6 +30,48 @@ import screener
 logger = logging.getLogger(__name__)
 
 Holdings = dict[str, float]
+
+
+class HoldingState(enum.Enum):
+    """The four states a currently-held ticker can be in, per one evaluation.
+
+    Design v2.2 §3.2, M29a. Deliberately not collapsible: RC2 (Design v2.2 §2) was that "no
+    data," "bad data," and "bad business" were all treated identically
+    as a quality failure, which is what let a delisting/symbol-change/
+    acquisition-close strike a holding toward liquidation the same way a
+    genuine quality failure would. Each state below has its own strike
+    rule, enforced by classify_holding_state and process_sells together.
+    """
+
+    HEALTHY = "healthy"  # data retrieved, quality floors passed -- reset strikes
+    DETERIORATING = "deteriorating"  # data retrieved, quality floors failed -- add a strike
+    UNREADABLE = "unreadable"  # no data, no confirmed corporate action -- no strike, no reset
+    CORPORATE_ACTION = "corporate_action"  # actively detected -- never auto-traded, no strike
+
+
+def classify_holding_state(metrics: data.Metrics | None, is_corporate_action: bool) -> HoldingState:
+    """Classify one currently-held ticker into exactly one HoldingState.
+
+    Pure function, no side effects -- process_sells (below) is the
+    caller that turns this classification into strike/liquidation
+    decisions, and M29c's evaluate-output wiring is the caller that
+    turns it into a display value. `is_corporate_action` is computed by
+    the caller (execution.ExecutionModule.is_corporate_action, M29b) --
+    this module stays broker-free by design (DESIGN.md 3.4), so the
+    signal is passed in rather than fetched here.
+
+    Checked before the metrics-is-None branch, not after: a ticker can
+    be both data-missing AND actively confirmed as delisted/inactive at
+    the broker, and CORPORATE_ACTION is the more specific, more useful
+    classification of the two in that case -- UNREADABLE should mean
+    "unexplained absence," not "absence with a known cause."
+    """
+    if is_corporate_action:
+        return HoldingState.CORPORATE_ACTION
+    if metrics is None:
+        return HoldingState.UNREADABLE
+    passed = screener.pass_munger_quality_floors(metrics)[0]
+    return HoldingState.HEALTHY if passed else HoldingState.DETERIORATING
 
 
 class StateTracker:
@@ -68,6 +112,24 @@ class StateTracker:
         """Clear `ticker`'s strike count back to zero (a clean check)."""
         self._strikes.pop(ticker, None)
 
+    def tracked_tickers(self) -> list[str]:
+        """Every ticker with a nonzero strike count right now.
+
+        M26c follow-up (staff-engineer-reviewer finding): a ticker's
+        streak only ever resets on a *confirmed* fill now, not on
+        submission -- correct for closing the FOX/LPG bug, but it means
+        a ticker whose liquidation eventually fills asynchronously
+        (after this run's own synchronous settlement check already gave
+        up on a "pending" result) has nothing left to reset its stale
+        count, since it's no longer in current_holdings for
+        process_sells to ever look at again. The caller (bot.run) uses
+        this to reconcile against the broker's own current holdings
+        directly: any tracked ticker no longer actually held is real,
+        broker-confirmed evidence the position is gone, whatever
+        Alpaca's order-status API says about *why*.
+        """
+        return list(self._strikes.keys())
+
     def save(self) -> None:
         """Atomically write the current strike counters to disk (temp file + rename)."""
         tmp_path = self._path.with_suffix(self._path.suffix + ".tmp")
@@ -76,8 +138,11 @@ class StateTracker:
 
 
 def process_sells(
-    current_holdings: Holdings, new_market_data: dict[str, data.Metrics | None], state: StateTracker
-) -> tuple[list[str], list[str]]:
+    current_holdings: Holdings,
+    new_market_data: dict[str, data.Metrics | None],
+    state: StateTracker,
+    corporate_action_check: Callable[[str], bool] | None = None,
+) -> tuple[list[str], list[str], list[str]]:
     """Re-check every current holding against the Munger quality floors only.
 
     Graham's entry gates (P/E, P/E x P/B, size) deliberately do NOT apply
@@ -85,37 +150,74 @@ def process_sells(
     (DESIGN.md 3.4). A hard-failing check earns a strike; a clean check
     resets the streak. `config.STRIKES_TO_LIQUIDATE` consecutive strikes
     means liquidate. Mutates and saves `state` as a side effect; returns
-    `(to_liquidate, unresolved)`.
+    `(to_liquidate, unresolved, corporate_action)`.
 
-    A ticker missing from `new_market_data` is NOT struck. `fetch_metrics`
-    returns None identically for a genuine quality-relevant data problem
-    and for a delisting, symbol change, or acquisition close -- absence of
-    data is not evidence of failing quality, and striking it as if it were
-    can liquidate a position that was never actually re-evaluated (M24
-    fix: reproduced against a real acquisition-close scenario, where two
-    consecutive unreadable checks alone -- no quality read at all --
-    liquidated the position). Unreadable holdings are collected separately
-    as `unresolved`; their strike streak is held steady (neither
-    incremented nor reset -- an unreadable check is no evidence either
-    way), and the caller is expected to alert on them for manual review.
+    Each ticker is classified via `classify_holding_state` (§3.2, M29a)
+    into exactly one of HEALTHY/DETERIORATING/UNREADABLE/
+    CORPORATE_ACTION, and only HEALTHY/DETERIORATING ever touch the
+    strike counter:
+
+    - HEALTHY resets the streak; DETERIORATING adds a strike, and
+      `to_liquidate` fires past `config.STRIKES_TO_LIQUIDATE`.
+    - UNREADABLE (no data, no confirmed corporate action) never strikes
+      or resets -- `fetch_metrics` returns None identically for a
+      genuine quality-relevant data problem and for a delisting, symbol
+      change, or acquisition close (M24 fix: reproduced against a real
+      acquisition-close scenario where two consecutive unreadable
+      checks alone liquidated the position). Collected as `unresolved`
+      for the caller to alert on.
+    - CORPORATE_ACTION (M29b: actively confirmed via
+      `corporate_action_check`, e.g. execution.ExecutionModule.
+      is_corporate_action) never strikes or resets either, and is never
+      auto-traded -- always a human decision (§3.2). Collected
+      separately from `unresolved`, not folded into it: an unreadable
+      check with no known cause and a confirmed delisting call for
+      different next actions from a human, even though neither one
+      trades automatically. `corporate_action_check` defaults to `None`
+      (always CORPORATE_ACTION=False), so a caller that doesn't wire in
+      a broker check gets exactly the pre-M29 UNREADABLE-only behavior.
 
     Reconciliation against the previous run's journal-expected holdings
     (DESIGN.md 3.4/3.6) is not implemented here -- it depends on the
     trade journal, which doesn't exist yet (M9). Tracked in TASKS.md.
 
-    Caller contract (relevant once M8 wires this together): a liquidated
-    ticker's strikes are reset to zero here, on the assumption the
-    position is actually closed this run. If a ticker in `to_liquidate`
-    is then also passed to generate_buy_queue's `current_holdings` in
-    the same run (topping it back up instead of letting the sell
-    happen), that's a caller bug this function has no visibility into --
-    exclude `to_liquidate` tickers from the buy queue's inputs.
+    Caller contract (relevant once M8 wires this together): if a ticker
+    in `to_liquidate` is then also passed to generate_buy_queue's
+    `current_holdings` in the same run (topping it back up instead of
+    letting the sell happen), that's a caller bug this function has no
+    visibility into -- exclude `to_liquidate` tickers from the buy
+    queue's inputs.
+
+    M26c fix (Design v2.2 §3.3, RC3): strikes for a `to_liquidate`
+    ticker are deliberately NOT reset here anymore. The previous
+    behavior reset the streak the moment the *decision* to liquidate was
+    made, before any order was even submitted -- this is the exact
+    mechanism that produced the real FOX/LPG bug (the journal recorded
+    both as sold and their strikes were reset on 2026-08-08, but their
+    DAY limit orders never actually filled; the position was still held,
+    with no memory that a liquidation was ever pending). State now
+    transitions on confirmed outcome, not decision: the caller
+    (`bot.run`) resets a `to_liquidate` ticker's strikes only after
+    `settlement.settle_order` confirms the corresponding order actually
+    filled.
     """
     to_liquidate = []
     unresolved = []
+    corporate_action = []
     for ticker in current_holdings:
         metrics = new_market_data.get(ticker)
-        if metrics is None:
+        is_corp_action = corporate_action_check(ticker) if corporate_action_check else False
+        holding_state = classify_holding_state(metrics, is_corp_action)
+
+        if holding_state is HoldingState.CORPORATE_ACTION:
+            corporate_action.append(ticker)
+            logger.error(
+                "%s: confirmed corporate action (delisting/symbol change/merger) -- "
+                "not striking, never auto-traded, needs manual review",
+                ticker,
+            )
+            continue
+        if holding_state is HoldingState.UNREADABLE:
             unresolved.append(ticker)
             logger.error(
                 "%s: held position returned no data -- not striking; "
@@ -123,27 +225,45 @@ def process_sells(
                 ticker,
             )
             continue
-        passed = screener.pass_munger_quality_floors(metrics)[0]
-        if passed:
+
+        if holding_state is HoldingState.HEALTHY:
             state.reset_strikes(ticker)
         else:
             state.add_strike(ticker)
         if state.get_strikes(ticker) >= config.STRIKES_TO_LIQUIDATE:
             to_liquidate.append(ticker)
-            # Reset now, not just on the next clean check: the position
-            # is being closed this run, so a future re-buy of the same
-            # ticker must start its strike streak fresh rather than
-            # inheriting a stale count and liquidating after just one
-            # bad check instead of two.
-            state.reset_strikes(ticker)
+            # M26c: strikes are NOT reset here anymore -- see the
+            # docstring above. The caller resets them only once
+            # settlement confirms the liquidation order actually filled.
     state.save()
-    return to_liquidate, unresolved
+    return to_liquidate, unresolved, corporate_action
 
 
 def generate_buy_queue(
-    current_holdings: Holdings, screen_results: pd.DataFrame, available_cash: float
+    current_holdings: Holdings,
+    screen_results: pd.DataFrame,
+    available_cash: float,
+    exclude: set[str] | None = None,
 ) -> list[tuple[str, float]]:
     """Build the priority-ordered list of buy orders for this run.
+
+    `exclude` (M29 staff-engineer-reviewer finding): tickers that must
+    never be bought this run regardless of buyability or score --
+    concretely, a confirmed CORPORATE_ACTION ticker. Omitting a
+    corporate-action ticker from `current_holdings` alone (the caller's
+    existing pattern for `to_liquidate`) is NOT sufficient here: the
+    new-position loop below only checks `ticker in current_holdings` to
+    avoid double-buying an existing top-up candidate, so a ticker simply
+    absent from `current_holdings` looks identical to "never held" to
+    that loop -- if it also happens to be `buyable=True` in this run's
+    screen (a real possibility: `is_corporate_action` is driven by
+    Alpaca's Assets API, a signal independent of the yfinance-based
+    fundamentals that drive `buyable`), it could be selected as a fresh
+    NEW_POSITION buy for a security this same run just flagged as a
+    confirmed corporate action. `exclude` closes that gap explicitly,
+    checked in both loops, rather than relying on `current_holdings`
+    membership to imply "eligible to buy," which is the assumption that
+    broke here.
 
     Priority order (DESIGN.md 3.4): top up existing holdings sitting
     below target weight first, then open new positions from the top of
@@ -185,6 +305,7 @@ def generate_buy_queue(
     topped up, since buyability can't be confirmed for a ticker the
     screen can't see.
     """
+    exclude = exclude or set()
     buyable_now = set(screen_results.loc[screen_results["buyable"], "symbol"].astype(str))
     portfolio_value = available_cash + sum(current_holdings.values())
     buffer = portfolio_value * config.CASH_BUFFER_PCT
@@ -201,6 +322,10 @@ def generate_buy_queue(
     for ticker in sorted(current_holdings):
         if deployable_cash < config.MIN_ORDER_NOTIONAL:
             break
+        if ticker in exclude:
+            # Defense-in-depth: same rule even if a caller didn't
+            # pre-filter current_holdings.
+            continue
         if ticker not in buyable_now:
             logger.info(
                 "%s: holding not buyable in the current screen -- holding, not topping up",
@@ -225,6 +350,8 @@ def generate_buy_queue(
         ticker = str(row["symbol"])
         if ticker in current_holdings:
             continue  # already considered for a top-up above, not a new position
+        if ticker in exclude:
+            continue  # confirmed corporate action -- never auto-traded, in either direction
         order_amount = min(per_position_cap, deployable_cash)
         if order_amount < config.MIN_ORDER_NOTIONAL:
             continue
