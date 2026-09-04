@@ -5320,3 +5320,234 @@ ValueError: no data returned for 'CWEN-A' (provider response didn't match; 1 key
 2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: PRDO: expected to hold (per journal) but broker reports no position
 2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: TROW: expected to hold (per journal) but broker reports no position
 2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Aborting: reconciliation mismatch against current holdings
+2026-09-04T14:00:16+0000 INFO __main__: Starting run for 2026-09-04 (paper=True)
+2026-09-04T14:01:05+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:01:05+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:01:05+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:01:05+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:01:05+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:01:05+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:01:50+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-09-04T14:01:50+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:01:50+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:01:50+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:01:50+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:01:50+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:01:50+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:01:50+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:02:35+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-09-04T14:02:35+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:02:35+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:02:35+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:02:49+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:02:49+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:02:49+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:02:49+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:02:49+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:02:49+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-09-04T14:03:34+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:03:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:03:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:03:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:03:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:03:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:03:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:04:19+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-09-04T14:04:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:04:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:04:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:04:31+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-09-04T14:04:34+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-09-04T14:04:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:04:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:04:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:04:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:04:34+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:04:38+0000 INFO data: Waiting 41.1s for a shared yfinance rate limit to clear.
+2026-09-04T14:05:19+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:05:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:05:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:05:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:05:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:05:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:05:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:06:04+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-09-04T14:06:04+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:06:04+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:06:04+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:06:05+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-09-04T14:06:05+0000 WARNING data: CWEN-A: fetch failed after 4 attempts
+Traceback (most recent call last):
+  File "/home/runner/work/munger/munger/data.py", line 357, in _fetch_metrics_inner
+    info, net_income = _fetch_raw(symbol)
+                       ^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/data.py", line 261, in _fetch_raw
+    raise ValueError(
+ValueError: no data returned for 'CWEN-A' (provider response didn't match; 1 keys returned, {'trailingPegRatio': None})
+2026-09-04T14:06:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:06:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:06:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:06:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:06:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:06:19+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:04+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:04+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:04+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:04+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:04+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:04+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:04+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:04+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:04+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:49+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:49+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:49+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:49+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:07:49+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-04T14:08:04+0000 INFO screener: Screen complete: 1506 tickers, 13 buyable.
+2026-09-04T14:08:04+0000 INFO __main__: Screen complete: 1506 tickers, 13 buyable.
+2026-09-04T14:08:04+0000 ERROR execution: NMIH: buy order failed
+Traceback (most recent call last):
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 198, in _one_request
+    response.raise_for_status()
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://data.alpaca.markets/v2/stocks/bars?start=2026-08-05T14%3A08%3A04.534490%2B00%3A00&end=2026-09-04T14%3A08%3A04.534490%2B00%3A00&timeframe=1Day&symbols=NMIH&limit=10000
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/runner/work/munger/munger/execution.py", line 368, in market_buy
+    if self._exceeds_adv_ceiling(symbol, implied_shares):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/execution.py", line 173, in _exceeds_adv_ceiling
+    adv = self._average_daily_volume(symbol)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/execution.py", line 146, in _average_daily_volume
+    bar_set = self._data.get_stock_bars(request)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/data/historical/stock.py", line 87, in get_stock_bars
+    raw_bars = self._get_marketdata(
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 393, in _get_marketdata
+    response = self.get(path=path, data=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 225, in get
+    return self._request("GET", path, data, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 131, in _request
+    return self._one_request(method, url, opts, retry)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 207, in _one_request
+    raise APIError(error, http_error)
+alpaca.common.exceptions.APIError: {"message":"subscription does not permit querying recent SIP data"}
+
+2026-09-04T14:08:04+0000 ERROR execution: TROW: buy order failed
+Traceback (most recent call last):
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 198, in _one_request
+    response.raise_for_status()
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://data.alpaca.markets/v2/stocks/bars?start=2026-08-05T14%3A08%3A04.593147%2B00%3A00&end=2026-09-04T14%3A08%3A04.593147%2B00%3A00&timeframe=1Day&symbols=TROW&limit=10000
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/runner/work/munger/munger/execution.py", line 368, in market_buy
+    if self._exceeds_adv_ceiling(symbol, implied_shares):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/execution.py", line 173, in _exceeds_adv_ceiling
+    adv = self._average_daily_volume(symbol)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/execution.py", line 146, in _average_daily_volume
+    bar_set = self._data.get_stock_bars(request)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/data/historical/stock.py", line 87, in get_stock_bars
+    raw_bars = self._get_marketdata(
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 393, in _get_marketdata
+    response = self.get(path=path, data=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 225, in get
+    return self._request("GET", path, data, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 131, in _request
+    return self._one_request(method, url, opts, retry)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 207, in _one_request
+    raise APIError(error, http_error)
+alpaca.common.exceptions.APIError: {"message":"subscription does not permit querying recent SIP data"}
+
+2026-09-04T14:08:04+0000 ERROR execution: EOG: buy order failed
+Traceback (most recent call last):
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 198, in _one_request
+    response.raise_for_status()
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://data.alpaca.markets/v2/stocks/bars?start=2026-08-05T14%3A08%3A04.678023%2B00%3A00&end=2026-09-04T14%3A08%3A04.678023%2B00%3A00&timeframe=1Day&symbols=EOG&limit=10000
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/runner/work/munger/munger/execution.py", line 368, in market_buy
+    if self._exceeds_adv_ceiling(symbol, implied_shares):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/execution.py", line 173, in _exceeds_adv_ceiling
+    adv = self._average_daily_volume(symbol)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/execution.py", line 146, in _average_daily_volume
+    bar_set = self._data.get_stock_bars(request)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/data/historical/stock.py", line 87, in get_stock_bars
+    raw_bars = self._get_marketdata(
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 393, in _get_marketdata
+    response = self.get(path=path, data=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 225, in get
+    return self._request("GET", path, data, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 131, in _request
+    return self._one_request(method, url, opts, retry)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 207, in _one_request
+    raise APIError(error, http_error)
+alpaca.common.exceptions.APIError: {"message":"subscription does not permit querying recent SIP data"}
+
+2026-09-04T14:08:04+0000 ERROR execution: PRDO: buy order failed
+Traceback (most recent call last):
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 198, in _one_request
+    response.raise_for_status()
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://data.alpaca.markets/v2/stocks/bars?start=2026-08-05T14%3A08%3A04.704920%2B00%3A00&end=2026-09-04T14%3A08%3A04.704920%2B00%3A00&timeframe=1Day&symbols=PRDO&limit=10000
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/runner/work/munger/munger/execution.py", line 368, in market_buy
+    if self._exceeds_adv_ceiling(symbol, implied_shares):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/execution.py", line 173, in _exceeds_adv_ceiling
+    adv = self._average_daily_volume(symbol)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/execution.py", line 146, in _average_daily_volume
+    bar_set = self._data.get_stock_bars(request)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/data/historical/stock.py", line 87, in get_stock_bars
+    raw_bars = self._get_marketdata(
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 393, in _get_marketdata
+    response = self.get(path=path, data=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 225, in get
+    return self._request("GET", path, data, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 131, in _request
+    return self._one_request(method, url, opts, retry)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/alpaca/common/rest.py", line 207, in _one_request
+    raise APIError(error, http_error)
+alpaca.common.exceptions.APIError: {"message":"subscription does not permit querying recent SIP data"}
+
+2026-09-04T14:08:04+0000 INFO __main__: Run complete: 0 liquidations, 4 buys planned.
