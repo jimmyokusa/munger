@@ -5289,3 +5289,34 @@ ValueError: no data returned for 'CWEN-A' (provider response didn't match; 1 key
 2026-09-03T17:54:18+0000 INFO screener: Screen complete: 1506 tickers, 13 buyable.
 2026-09-03T17:54:18+0000 INFO __main__: Screen complete: 1506 tickers, 13 buyable.
 2026-09-03T17:54:18+0000 WARNING __main__: GLOBAL_KILL_SWITCH active -- screen-only run (all accounts), no orders will be placed.
+2026-09-04T13:36:23+0000 INFO __main__: Starting run for 2026-09-04 (paper=True)
+2026-09-04T13:37:50+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-09-04T13:37:52+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-09-04T13:37:58+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-09-04T13:38:07+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-09-04T13:38:07+0000 WARNING data: CWEN-A: fetch failed after 4 attempts
+Traceback (most recent call last):
+  File "/home/runner/work/munger/munger/data.py", line 357, in _fetch_metrics_inner
+    info, net_income = _fetch_raw(symbol)
+                       ^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/data.py", line 261, in _fetch_raw
+    raise ValueError(
+ValueError: no data returned for 'CWEN-A' (provider response didn't match; 1 keys returned, {'trailingPegRatio': None})
+2026-09-04T13:38:31+0000 INFO screener: Screen complete: 1506 tickers, 13 buyable.
+2026-09-04T13:38:31+0000 INFO __main__: Screen complete: 1506 tickers, 13 buyable.
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: ASO: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: CF: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: EOG: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: G: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: GNTX: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: GRBK: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: HIG: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: HRMY: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: INSW: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: LRN: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: LULU: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: MGY: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: NMIH: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: PRDO: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Reconciliation mismatch: TROW: expected to hold (per journal) but broker reports no position
+2026-09-04T13:38:31+0000 ERROR trading_common: ALERT: Aborting: reconciliation mismatch against current holdings
