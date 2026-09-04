@@ -18,6 +18,7 @@ import pandas as pd
 
 import config
 import data
+import xbrl
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +187,24 @@ def fetched_fraction(results: pd.DataFrame) -> float:
     return 1.0 - (float(fetch_failed.sum()) / len(results))
 
 
+def fetch_metrics_with_xbrl_primary(
+    tickers: list[str], phase: str = "screening"
+) -> dict[str, data.Metrics | None]:
+    """Fetch fundamentals, XBRL primary with yfinance fallback (M37, Design v2.2 §3.4).
+
+    The one shared entry point every gate/score computation in this
+    system should fetch through -- `run_screen` (below) uses it, and
+    `evaluate.py`/`bot.py` call it directly for their own holdings-check
+    fetches (they don't go through `run_screen`, since they already
+    have a fixed ticker list and don't need a fresh universe screen).
+    Centralizing here, not in `data.py` itself, keeps `data.fetch_all_metrics`
+    a pure yfinance fetch -- xbrl_shadow.py's own shadow-comparison
+    still needs two genuinely independent sources to compare, which a
+    silent override baked into `data.py` would break.
+    """
+    return xbrl.apply_primary_metrics(data.fetch_all_metrics(tickers, phase=phase))
+
+
 def run_screen(tickers: list[str]) -> pd.DataFrame:
     """Fetch, gate, and score every ticker; always writes screen_results.csv.
 
@@ -206,7 +225,7 @@ def run_screen(tickers: list[str]) -> pd.DataFrame:
         logger.info("Screen complete: 0 tickers, 0 buyable.")
         return results
 
-    fetched = data.fetch_all_metrics(tickers)
+    fetched = fetch_metrics_with_xbrl_primary(tickers)
     rows: list[dict[str, object]] = []
 
     for symbol in tickers:

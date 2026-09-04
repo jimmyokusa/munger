@@ -111,7 +111,8 @@ def test_run_writes_disagreements_worst_first(monkeypatch: pytest.MonkeyPatch) -
     assert summary.yfinance_fetched == 2
     assert summary.cik_matched == 2
     assert summary.xbrl_facts_fetched == 2
-    assert summary.comparable == 2
+    assert summary.comparable_gross_margin == 2
+    assert summary.comparable_operating_margin == 0  # operating_margin_from_xbrl not mocked here
     assert summary.disagreements == 1
 
     rows = list(csv.DictReader(config.XBRL_SHADOW_REPORT_PATH.open()))
@@ -197,7 +198,8 @@ def test_run_counts_a_ticker_with_no_cik_match_as_uncovered(
     assert summary.xbrl_facts_fetched == 0
     assert summary.xbrl_not_found == 0
     assert summary.xbrl_fetch_failed == 0
-    assert summary.comparable == 0
+    assert summary.comparable_gross_margin == 0
+    assert summary.comparable_operating_margin == 0
     assert summary.disagreements == 0
     assert fetch_calls == []  # never even attempted a companyfacts fetch without a CIK
 
@@ -226,7 +228,8 @@ def test_run_counts_a_confirmed_404_as_not_found_not_fetch_failed(
     assert summary.xbrl_facts_fetched == 0
     assert summary.xbrl_not_found == 1
     assert summary.xbrl_fetch_failed == 0
-    assert summary.comparable == 0
+    assert summary.comparable_gross_margin == 0
+    assert summary.comparable_operating_margin == 0
     assert summary.disagreements == 0
 
 
@@ -254,7 +257,8 @@ def test_run_counts_a_network_failure_as_fetch_failed_not_not_found(
     assert summary.xbrl_facts_fetched == 0
     assert summary.xbrl_not_found == 0
     assert summary.xbrl_fetch_failed == 1
-    assert summary.comparable == 0
+    assert summary.comparable_gross_margin == 0
+    assert summary.comparable_operating_margin == 0
     assert summary.disagreements == 0
 
 
@@ -283,7 +287,8 @@ def test_run_does_not_crash_when_yfinance_metrics_are_missing(
     assert summary.yfinance_fetched == 0
     assert summary.cik_matched == 1
     assert summary.xbrl_facts_fetched == 1
-    assert summary.comparable == 0  # no yfinance value to compare against
+    assert summary.comparable_gross_margin == 0  # no yfinance value to compare against
+    assert summary.comparable_operating_margin == 0
     assert summary.degraded is True  # 0/1 yfinance-fetched is well under the coverage floor
     assert summary.disagreements == 0
 

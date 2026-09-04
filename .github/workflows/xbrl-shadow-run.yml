@@ -1,11 +1,12 @@
-name: XBRL shadow-comparison run (M37 prerequisite, manual)
+name: XBRL shadow-comparison run (manual)
 
 # Design v2.2 §3.4 / M36-M37: runs xbrl_shadow.py -- a full-universe
 # comparison of SEC EDGAR's XBRL companyfacts against yfinance's own
 # figures, writing every per-field disagreement found to a CSV artifact
-# for a human to review by hand. That review, not this workflow, is
-# what actually gates M37's switchover to XBRL as the primary
-# fundamentals source.
+# for a human to review by hand. Built for M37's own pre-switchover
+# review (done -- see TASKS.md's M37 section) and kept as a standing,
+# re-runnable diagnostic for whenever xbrl.py gains a new comparable
+# field or its extraction logic changes.
 #
 # Deliberately dispatch-only (no `schedule:` trigger) and deliberately
 # receives NO Alpaca secrets at all -- xbrl_shadow.py never imports

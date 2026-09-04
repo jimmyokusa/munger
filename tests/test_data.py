@@ -695,3 +695,49 @@ def test_validate_metrics_combines_missing_and_outlier_reasons() -> None:
     metrics = _clean_metrics(market_cap=None, trailing_pe=50_000.0)
     reasons = data.validate_metrics(metrics)
     assert set(reasons) == {"data_missing:market_cap", "data_invalid_outlier:trailing_pe"}
+
+
+def test_validate_metrics_flags_implausible_gross_margin(monkeypatch: pytest.MonkeyPatch) -> None:
+    # M37 (staff-engineer-reviewer + warren-buffett findings): source-
+    # agnostic sanity net -- catches an implausible margin regardless of
+    # whether it came from yfinance or XBRL (the real §1 NMIH case:
+    # yfinance reported an operating margin exceeding its own gross
+    # margin for an insurer with no meaningful COGS line).
+    monkeypatch.setattr(config, "MARGIN_PLAUSIBLE_MIN", -5.0)
+    monkeypatch.setattr(config, "MARGIN_PLAUSIBLE_MAX", 1.0)
+    metrics = _clean_metrics(gross_margin=18.28)  # LHX's real, reproduced buggy value
+    assert data.validate_metrics(metrics) == ["data_invalid_outlier:gross_margin"]
+
+
+def test_validate_metrics_flags_implausible_operating_margin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "MARGIN_PLAUSIBLE_MIN", -5.0)
+    monkeypatch.setattr(config, "MARGIN_PLAUSIBLE_MAX", 1.0)
+    metrics = _clean_metrics(operating_margin=1.5)  # > 100%, definitionally impossible
+    assert data.validate_metrics(metrics) == ["data_invalid_outlier:operating_margin"]
+
+
+def test_validate_metrics_accepts_a_legitimate_distressed_margin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A real, deeply distressed or pre-revenue company's own reported
+    # loss must not be mistaken for a scope-mismatch bug -- only a value
+    # outside the deliberately generous -500% floor should ever flag.
+    monkeypatch.setattr(config, "MARGIN_PLAUSIBLE_MIN", -5.0)
+    monkeypatch.setattr(config, "MARGIN_PLAUSIBLE_MAX", 1.0)
+    metrics = _clean_metrics(operating_margin=-3.0)  # -300%, real but severe
+    assert data.validate_metrics(metrics) == []
+
+
+def test_validate_metrics_flags_both_margins_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "MARGIN_PLAUSIBLE_MIN", -5.0)
+    monkeypatch.setattr(config, "MARGIN_PLAUSIBLE_MAX", 1.0)
+    metrics = _clean_metrics(gross_margin=5.0, operating_margin=5.0)
+    reasons = data.validate_metrics(metrics)
+    assert set(reasons) == {
+        "data_invalid_outlier:gross_margin",
+        "data_invalid_outlier:operating_margin",
+    }

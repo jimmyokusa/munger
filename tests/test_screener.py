@@ -11,6 +11,24 @@ import pytest
 import config
 import data
 import screener
+import xbrl
+
+
+@pytest.fixture(autouse=True)
+def _no_real_xbrl_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default every test to XBRL-primary being a no-op passthrough (M37).
+
+    Without this, every `run_screen`/`fetch_metrics_with_xbrl_primary`
+    call in this file would fall through to a real
+    `xbrl.apply_primary_metrics`, which attempts a real network call to
+    SEC EDGAR (it degrades safely -- an empty CIK lookup on failure --
+    but still reaches out over the network during a test run, which
+    this project's own testing discipline forbids). Tests that actually
+    want to exercise the XBRL-primary override behavior itself
+    monkeypatch `xbrl.apply_primary_metrics` again, locally, to override
+    this default.
+    """
+    monkeypatch.setattr(xbrl, "apply_primary_metrics", lambda metrics_by_symbol: metrics_by_symbol)
 
 
 def _passing_metrics(**overrides: Any) -> data.Metrics:
@@ -320,7 +338,7 @@ def test_run_screen_writes_csv_and_sorts_by_score(
     high_score = _passing_metrics(symbol="HIGH", return_on_equity=config.SCORE_NORMALIZATION_ROE)
     low_score = _passing_metrics(symbol="LOW", return_on_equity=config.MIN_ROE)
     monkeypatch.setattr(
-        data, "fetch_all_metrics", lambda symbols: {"HIGH": high_score, "LOW": low_score}
+        data, "fetch_all_metrics", lambda symbols, **_kwargs: {"HIGH": high_score, "LOW": low_score}
     )
 
     results = screener.run_screen(["HIGH", "LOW"])
@@ -342,7 +360,7 @@ def test_run_screen_scores_a_ticker_that_fails_a_gate(
     monkeypatch.setattr(config, "SCREEN_RESULTS_CSV_PATH", tmp_path / "screen_results.csv")
     failing_gate_metrics = _passing_metrics(symbol="SMALLCAP", market_cap=1_000_000_000.0)
     monkeypatch.setattr(
-        data, "fetch_all_metrics", lambda symbols: {"SMALLCAP": failing_gate_metrics}
+        data, "fetch_all_metrics", lambda symbols, **_kwargs: {"SMALLCAP": failing_gate_metrics}
     )
 
     results = screener.run_screen(["SMALLCAP"])
@@ -376,7 +394,7 @@ def test_run_screen_handles_total_fetch_failure(
 ) -> None:
     monkeypatch.setattr(config, "SCREEN_RESULTS_CSV_PATH", tmp_path / "screen_results.csv")
     ticker_metrics = {"GOOD": _passing_metrics(symbol="GOOD"), "MISSING": None}
-    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols: ticker_metrics)
+    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: ticker_metrics)
 
     results = screener.run_screen(["GOOD", "MISSING"])
 
@@ -397,7 +415,7 @@ def test_run_screen_isolates_a_single_ticker_crash(
         "GOOD": _passing_metrics(symbol="GOOD"),
         "EXPLODES": _passing_metrics(symbol="EXPLODES"),
     }
-    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols: ticker_metrics)
+    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: ticker_metrics)
 
     original_pass_graham_gates = screener.pass_graham_gates
 
@@ -444,3 +462,61 @@ def test_fetched_fraction_some_missing() -> None:
 
 def test_fetched_fraction_empty_results() -> None:
     assert screener.fetched_fraction(pd.DataFrame(columns=["symbol", "fail_reasons"])) == 0.0
+
+
+# --- fetch_metrics_with_xbrl_primary / run_screen's XBRL-primary wiring (M37) ---
+
+
+def test_fetch_metrics_with_xbrl_primary_composes_fetch_and_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        data,
+        "fetch_all_metrics",
+        lambda symbols, **_kwargs: {"AAA": _passing_metrics(symbol="AAA")},
+    )
+    monkeypatch.setattr(
+        xbrl,
+        "apply_primary_metrics",
+        lambda metrics_by_symbol: {
+            s: (m.__class__(**{**m.__dict__, "gross_margin": 0.99}) if m else None)
+            for s, m in metrics_by_symbol.items()
+        },
+    )
+
+    result = screener.fetch_metrics_with_xbrl_primary(["AAA"])
+
+    assert result["AAA"] is not None
+    assert result["AAA"].gross_margin == 0.99
+
+
+def test_run_screen_gates_on_the_xbrl_overridden_value_not_yfinances(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A ticker that passes on yfinance's own gross_margin but XBRL
+    # overrides to below the floor must show up as not-buyable -- proves
+    # run_screen actually gates on the post-override value, not a stale
+    # yfinance-only figure.
+    failing_via_xbrl = _passing_metrics(symbol="AAA", gross_margin=0.40)  # would pass as-is
+    monkeypatch.setattr(
+        data, "fetch_all_metrics", lambda symbols, **_kwargs: {"AAA": failing_via_xbrl}
+    )
+    monkeypatch.setattr(
+        xbrl,
+        "apply_primary_metrics",
+        lambda metrics_by_symbol: {
+            s: (
+                data.Metrics(**{**m.__dict__, "gross_margin": 0.05})  # below MIN_GROSS_MARGIN
+                if m
+                else None
+            )
+            for s, m in metrics_by_symbol.items()
+        },
+    )
+
+    results = screener.run_screen(["AAA"])
+
+    row = results[results["symbol"] == "AAA"].iloc[0]
+    assert bool(row["buyable"]) is False
+    assert "munger_gross_margin" in row["fail_reasons"]
+    assert row["gross_margin"] == 0.05

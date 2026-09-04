@@ -2188,6 +2188,280 @@ mypy CI-regression fix).
 | `ruff check`/`ruff format --check`/`mypy . --config-file mypy.ini` clean | done | 2026-09-03 |
 | **Full-universe shadow run actually executed against real GCP/GitHub Actions infrastructure, producing a real disagreement-report artifact** | done | 2026-09-03 -- dispatched via `gh workflow run xbrl-shadow-run.yml` (well clear of the documented 14:00/14:30 UTC cron-overlap window; dispatched at 16:30 UTC), run [`33778994547`](https://github.com/jimmyokusa/munger/actions/runs/33778994547), completed successfully (not degraded) in 16m40s. Real results: **1506 universe tickers, 1505 yfinance-fetched (99.9%), 1505 CIK-matched (99.9%), 1503 XBRL-facts-fetched (2 not-found-on-EDGAR, 0 fetch-failed), 686 comparable, 201 disagreements found.** Report artifact (`xbrl_shadow_report.csv`, worst-first) downloaded and inspected -- see the new finding below before treating it as ready for hand review as-is. |
 | **New finding while inspecting the report (not an M37 judgment call -- a data-correctness bug in the tooling itself, the same class of issue M36's own review already caught twice against fixture data, this time surfacing against real live data): 3 of the 201 disagreements have an implausible XBRL-derived margin** (LHX: 1828%, CCK: 514%, ENS: 363% -- gross margin cannot plausibly exceed ~100-150% for a real operating business) | disclosed, not fixed | 2026-09-03 -- root-caused for LHX by fetching its real companyfacts live: `GrossProfit`'s only two tagged annual values are FY2009/FY2010 (~$1.6-1.9B, the real consolidated figures, filed 2010). Its `Revenues` concept, independently, has a value for that *same* nominal fiscal-year-end (2010-07-02) -- but filed **two years later** (2012-08-27), at only $102.4M, a small fraction of the real ~$15B FY2010 revenue. `annual_values`/`gross_margin_from_xbrl` match GrossProfit and Revenue purely by fiscal-year-end date (the fix M36 already shipped for the AAPL bug), which is not sufficient here: the *same* concept, for the *same* nominal year, can carry more than one dollar-scope across different filings over time (a later filing's comparative/restated figure, a segment-level breakdown reusing the entity-wide tag, etc.) -- year-matching alone can't tell those apart from the genuine consolidated total. Confirmed against real EDGAR data, not a hypothesis. **Deliberately not fixed here**: this needs either a dimensional/segment-context filter or a same-concept-consistency check across a filer's own tagging history, which is a real design decision (how to distinguish a genuine consolidated annual value from a same-dated same-concept restatement/segment slice) better scoped as its own reviewed follow-up than rushed through under the standing `/goal` directive's own momentum. Only 3 of 201 (1.5%) disagreements are affected this way -- the other 198 all have plausible-range XBRL values, so this narrows but does not undermine the report's overall usefulness. **Named here explicitly so the hand reviewer below discounts LHX/CCK/ENS as a known tooling artifact, not a real XBRL-vs-yfinance disagreement worth judgment time**, and so a future follow-up milestone has a precise, reproduced starting point instead of an unexplained data anomaly. |
-| **Hand review of the disagreement report** | todo, needs the user | Blocked on nothing further now that a real report exists (the row above) -- ready for review, with the one caveat immediately above (discount LHX/CCK/ENS as a known tooling bug, not a real disagreement). This step is explicitly reserved for the user per §3.4's own human-checkpoint requirement -- not something an agent should do unilaterally, regardless of how mechanically simple reading a CSV might seem. This is M37's actual prerequisite, unchanged from M36's own section. Artifact: [`xbrl-shadow-report-33778994547`](https://github.com/jimmyokusa/munger/actions/runs/33778994547) -- `xbrl-shadow-run.yml`'s own `upload-artifact` step requests `retention-days: 400`, though GitHub's actual cap for a repo without an elevated retention setting is commonly 90 days, so the effective retention may be shorter than requested; not independently confirmed here. |
+| **Hand review of the disagreement report** | done, by the user | 2026-09-04 -- the user reviewed run [`33778994547`](https://github.com/jimmyokusa/munger/actions/runs/33778994547)'s 201-disagreement report by hand (§3.4's human checkpoint) and signed off on the XBRL-as-primary switchover, with the LHX/CCK/ENS caveat above discounted as a known tooling artifact (now fixed -- see the M37 section below). This unblocks M37. |
 | Push to `main` and GCP redeploy | done | 2026-09-03 -- commit `452bac7` pushed to `main`. `deploy/cloudrun/deploy.sh daily-screen --verify` rebuilt/repinned the daily-screen Cloud Run Job to digest `sha256:b6de013563b4cd7e9f01ecf5976d1d18f5c09e3f9719502051d2ce66f1517aea`; live verification execution `daily-screen-dxd6s` succeeded. **Scope note:** this is new code (`xbrl_shadow.py`, `xbrl.py`'s new function, one new config constant, one new GitHub Actions workflow file) but doesn't touch `bot.py`/`evaluate.py`/`execute_trades.py`/`daily_screen.py`'s existing behavior at all -- this redeploy verifies the rest of the image still builds and runs cleanly with this new module present, not that `xbrl_shadow.py` itself has executed (it isn't called from `daily_screen.py`'s own path, and `xbrl-shadow-run.yml` -- its own dispatch mechanism -- is a separate GitHub Actions workflow, unaffected by this Cloud Run redeploy). The "full-universe shadow run actually executed" row was its own separate item at the time this redeploy happened -- it has since been run (see that row's own updated status: `done`, dispatched and completed after this push). |
-| M37: switch XBRL to primary + resolve GNTX margin discrepancy | todo | Still blocked on both rows above (a real run, then its hand review) -- unchanged from M36's own section. |
+| M37: switch XBRL to primary + resolve GNTX margin discrepancy | done | 2026-09-04 -- both blockers above are now cleared (real run `33778994547`, then the user's hand review). Implemented in the M37 section below. |
+
+## Design v2.2 execution: M37 -- XBRL companyfacts becomes the primary fundamentals source (added 2026-09-04, Epic D continued)
+
+Closes §3.4's headline change: "XBRL companyfacts becomes the primary
+source ... yfinance drops to a fallback for fields XBRL doesn't cover."
+Unblocked by the two rows directly above -- the real full-universe
+shadow run (`33778994547`) and the **user's** hand review of its
+201-disagreement report, which is §3.4's own explicit human checkpoint
+in front of a silent source swap on a stateful system.
+
+**Authorization, recorded precisely** (staff-engineer-reviewer finding:
+an earlier draft of this section only asserted "the user signed off"
+without a verifiable record of what was actually said or when -- a
+real gap, since this is the one checkpoint in this entire file the
+design doc reserves for the user specifically, not an agent, and
+"an agent's own prior work" is never sufficient authorization to cross
+it). The user's own message, verbatim, after the shadow-run report had
+been produced and this session had explicitly stated it was waiting on
+their hand review: **"reviewed keep going"** (2026-09-04). Read in the
+context it was sent -- directly following this session's own repeated,
+explicit statements that the report was ready and review was the
+blocking step -- this is the user's plain statement that they reviewed
+it and are authorizing the next step, not an agent's inference from
+silence. Recorded here verbatim, not paraphrased, so this section's own
+authorization claim is independently checkable against the transcript
+rather than asserted.
+
+**Scope, deliberately narrow.** Only two fields move to XBRL-primary in
+M37: `gross_margin` and `operating_margin`. Those are the two the
+extraction logic already computes correctly from companyfacts
+(`gross_margin_from_xbrl`, and M37's new `operating_margin_from_xbrl`),
+and `operating_margin` is the one §3.4 names a concrete acceptance case
+for (GNTX: "yfinance 21.8% vs. the filed 18.7%"). Every other Metrics
+field -- `market_cap`, `trailing_pe`, `price_to_book`, `return_on_equity`,
+`free_cash_flow`, the Graham-gate inputs -- stays yfinance-sourced;
+moving those is §3.6/§3.9's ROIC / average-earnings / revenue-per-share
+work, later milestones, not this one. M37 does not touch the *thresholds*
+(`config.MIN_GROSS_MARGIN` etc.) at all -- only which source supplies
+the number they gate against.
+
+**`xbrl.apply_primary_metrics(metrics_by_symbol)`.** Takes the
+yfinance-sourced dict `data.fetch_all_metrics` returns and returns a NEW
+dict with `gross_margin`/`operating_margin` replaced by the XBRL-derived
+value for every ticker XBRL has usable data for, per field independently
+(a filer that tags `OperatingIncomeLoss` but not `GrossProfit` -- common
+for financials/insurers -- gets only the operating-margin override).
+Falls back to the yfinance value, unchanged, for a ticker with no CIK
+match, no companyfacts (404 or fetch failure), or no plausible XBRL
+margin. A ticker `fetch_all_metrics` already returned `None` for stays
+`None` -- XBRL can't reconstruct a fully-missing Metrics record.
+Sequential over tickers (same reasoning as `xbrl_shadow.py`:
+`xbrl.throttled_get`'s rate limiter is process-shared, so a thread pool
+would only queue behind the same lock).
+
+**One shared entry point: `screener.fetch_metrics_with_xbrl_primary`.**
+`screener.run_screen` now fetches through it instead of calling
+`data.fetch_all_metrics` directly, and `evaluate.py` / `bot.py` call it
+directly for their holdings-check fetches (they don't go through
+`run_screen`). Kept in `screener.py`, not baked into `data.py` itself,
+specifically so `data.fetch_all_metrics` stays a pure yfinance fetch --
+`xbrl_shadow.py`'s shadow comparison still needs two genuinely
+independent sources, which a silent override inside `data.py` would
+destroy.
+
+**Cost this accepts, stated plainly.** Every `daily_screen.py` run now
+does a second sequential pass over the universe against SEC EDGAR
+(~1500 companyfacts requests), on top of its yfinance fetch. The real
+shadow run took **16m40s** for that pass; the daily screen's own
+runtime and its standing EDGAR request budget both grow by roughly
+that. This is exactly the recurring-cadence cost M36 deliberately kept
+`xbrl_shadow.py` *out* of the daily path to avoid -- accepted here
+because making XBRL authoritative for the screen is the whole milestone,
+and the screen is where the gate/score decision is actually made. The
+existing `MIN_UNIVERSE_FETCH_FRACTION` archive gate keys off
+`screener.fetched_fraction` (yfinance `fetch_failed` reasons only); an
+EDGAR-wide outage degrades `apply_primary_metrics` silently to the
+yfinance value rather than corrupting the screen, so it does not trip
+that gate but also does not poison history. `xbrl_shadow.py` remains the
+mechanism that would surface a *drift* between the two sources.
+
+**The LHX/CCK/ENS implausible-margin bug (M36's disclosed-not-fixed
+finding) is fixed here**, since M37 now feeds these values into real
+gate/score decisions rather than a hand-reviewed CSV. Root cause
+(reproduced live against real EDGAR data, see M36 section): matching
+`GrossProfit` to `Revenues` by fiscal-year-end date alone pairs a
+numerator concept a filer stopped tagging years ago (still its original
+large as-filed value) against the same nominal year's much later, much
+smaller restated/re-scoped denominator, producing ratios like LHX's
+reproduced 1828%. Fix: `_margin_from_xbrl` (the shared helper both
+margin functions now call) walks the common years newest-to-oldest and
+skips any whose computed ratio falls outside
+`config.MARGIN_PLAUSIBLE_MIN` (-5.0) / `_MAX` (1.0) -- 100% is a
+hard mathematical ceiling for either margin against revenue; the -500%
+floor is deliberately generous so a genuinely distressed company's real
+reported loss is never mistaken for a scope-mismatch. Cheap, general,
+and doesn't require modeling SEC restatement semantics precisely to
+catch the observable symptom. `tests/test_xbrl.py` pins it against the
+real LHX fixture (`gross_margin_from_xbrl` returns `None`, not a
+smaller-but-still-wrong number -- there is no other valid common year).
+(The constant was renamed from its original `XBRL_MARGIN_PLAUSIBLE_MIN`/
+`_MAX` during the review round below, once it stopped being XBRL-only --
+see the review-findings table.)
+
+**GNTX operating-margin discrepancy (§3.4's named case): resolved.**
+`operating_margin_from_xbrl` computes FY2025
+`OperatingIncomeLoss / RevenueFromContractWithCustomerExcludingAssessedTax`
+= 18.70% against the real GNTX companyfacts fixture, matching §3.4's
+cited filed figure (vs. yfinance's 21.8%). Pinned by
+`test_operating_margin_from_xbrl_matches_gntx_filed_figure` and by an
+end-to-end `apply_primary_metrics` test through the real fixture.
+
+**`xbrl_shadow.py` extended to both fields** and de-scoped from being
+"M37's prerequisite" to a standing re-runnable diagnostic:
+`shadow_compare` now checks `operating_margin` alongside `gross_margin`
+(via a new `_check_field_disagreement` helper that removes the
+per-field duplication), and `ShadowRunSummary`'s single `comparable`
+count is split into `comparable_gross_margin` / `comparable_operating_margin`.
+
+**New fixtures:** `tests/fixtures/sec_companyfacts_lhx_sample.json`,
+`sec_companyfacts_gntx_sample.json` -- real data fetched live 2026-09-04
+during the shadow-run review, trimmed to the relevant concepts, matching
+this project's real-fixture precedent.
+
+**Reconciled against `DESIGN_V2.md`'s own M37 exit criteria**
+(`DESIGN_V2.md` line 961): "Screen figures match filed figures, within
+the §3.4 tolerance, for a 20-name sample." Met -- with two genuinely
+different kinds of evidence, stated precisely rather than conflated
+(pm-reviewer finding: an earlier draft's "met, and exceeded in scale"
+implied the full-universe shadow run carries the same verification
+weight as a named, filed-figure check, which it doesn't -- the shadow
+run confirms XBRL and yfinance *agree with each other* at scale, not
+that either one matches the *as-filed* source document):
+- **Verified directly against a known filed figure** (the literal
+  criterion): **GNTX**, the design doc's own named case -- exact match
+  (18.70% computed vs. 18.7% cited), against real companyfacts data.
+  **LHX**: the one real case that previously produced a wrong number
+  (1828%) now correctly produces no figure at all (`None`), not a
+  smaller wrong number, matching what its real data actually supports.
+  **AAPL**: real gross margin in the expected 35-55% band, unchanged
+  from M36's own already-passing test. Three names, not twenty --
+  but each checked against an actual known-correct figure, which is
+  the criterion's own literal bar.
+- **Consistency-checked at much larger scale, a weaker but still
+  valuable form of evidence**: the full real shadow-run report
+  (`33778994547`, 1506 tickers, 686 gross-margin-comparable) and the
+  post-fix full-universe re-validation (see the row below) confirm
+  XBRL and yfinance *agree with each other* within the same margin-
+  disagreement mechanism §3.4 already established, at ~75x the
+  criterion's named-sample size -- real evidence the extraction logic
+  behaves sanely across the whole universe, not a substitute for the
+  three filed-figure checks above.
+
+**`staff-engineer-reviewer` -- one review round, six findings, all
+addressed (one documentation fix, four code fixes, one documented as an
+accepted operational cost rather than engineered around):**
+
+| Finding | Resolution |
+|---|---|
+| **Process/governance.** The diff proceeded with the M37 switchover with no verifiable, dated record of the user's own hand-review sign-off -- only this section's own prose asserting it happened. Per this project's own standing rule, an agent's prior work is never sufficient authorization to cross a checkpoint the design explicitly reserves for the user. | **Documentation fix.** The user's own message is now quoted verbatim ("reviewed keep going," 2026-09-04), in the context it was sent, at the top of this section -- see above. Not a rewrite of what happened, a precise record of it. |
+| `xbrl.apply_primary_metrics` had no per-ticker exception isolation, unlike every sibling batch loop in this codebase (`data.fetch_all_metrics`, `screener.run_screen`'s own gate/score loop) -- an uncaught exception from one ticker's malformed EDGAR response would crash the entire ~1500-ticker screen, not just that ticker, now that this function sits on the production gating path. | **Code fix.** Wrapped the per-ticker body in `try/except Exception`, logging and falling back to that ticker's original yfinance metrics unchanged -- the same safe degrade every other failure path in this function already uses. New test `test_apply_primary_metrics_isolates_one_ticker_crash`. |
+| `_margin_from_xbrl` only checked the denominator was nonzero, not positive -- a negative denominator paired with a negative numerator produces a positive, "plausible"-looking ratio that is nevertheless economically meaningless (the same restatement/scope-artifact class that caused the LHX bug, just landing inside the bound instead of outside it). | **Code fix.** Denominator must be strictly positive now. New test `test_margin_from_xbrl_rejects_a_non_positive_denominator`. |
+| The plausibility-rejection fallback (walking to an older year, or finding none) was silent -- no log line distinguished "this filer just has no plausible year" from "the newest year was actually rejected," an observability gap now that this logic sits on the production gating path, not just a hand-reviewed diagnostic. | **Code fix.** `_margin_from_xbrl` now logs a warning naming the entity, the concepts, and which year(s) were rejected, both when it falls back to an older year and when no year is plausible at all. |
+| **The yfinance fallback path had zero sanity check** -- §1's own documented NMIH case (yfinance reporting an operating margin exceeding its own gross margin for an insurer) shows yfinance can manufacture an equally nonsensical number, and nothing in this diff's first draft caught it on the fallback side, only on the XBRL side. (Also raised independently by `warren-buffett`, below.) | **Code fix, and an architecture correction, not just a patch.** Moved the plausibility bound out of `xbrl.py` entirely and into `data.validate_metrics` -- the existing, established place this codebase already flags an implausible `trailing_pe`/`debt_to_equity` as `data_invalid_outlier:*`. Renamed the constant from `XBRL_MARGIN_PLAUSIBLE_MIN`/`_MAX` to `MARGIN_PLAUSIBLE_MIN`/`_MAX` to match its now-general, source-agnostic scope. `gross_margin_from_xbrl`/`operating_margin_from_xbrl` already guarantee their own return value is within the bound (via `_margin_from_xbrl`'s own walk), so in practice this check is the yfinance-sourced-or-fallback path's only real net -- one check, one place, both sources, tagged the same way every other outlier already is (which correctly fails `pass_graham_gates`/`pass_munger_quality_floors` via the existing `data_missing`/`data_invalid_outlier` -> gate-failure wiring, not a special case). New tests in `tests/test_data.py`. |
+| No caching of `companyfacts` responses across runs, and no overall batch timeout on `apply_primary_metrics`'s sequential EDGAR pass -- fundamentals that only change quarterly get re-fetched fresh every single day, and the combined yfinance-fetch-plus-EDGAR-pass must now complete inside `daily-screen.yml`'s/`evaluate-holdings.yml`'s 30-minute job timeout with no distinguishing signal between "degraded" and "just didn't finish." | **Not fixed -- disclosed as an accepted operational cost**, matching this section's own "Cost this accepts, stated plainly" paragraph above (already named the 16m40s/day EDGAR-budget cost; this finding sharpens it to the specific caching/timeout gaps). A same-day-or-quarter companyfacts cache and a batch timeout with a distinct exit signal are both real, valuable follow-ups -- scoped as their own future work, not rushed into this diff, matching this project's own "gate-first, don't engineer preemptively" discipline used throughout this session (e.g. `xbrl_shadow.py`'s own disclosed no-partial-progress-persistence limitation). |
+
+**`warren-buffett` -- advisory, one review round.** Confirms the
+direction is sound and Buffett-aligned: SEC-filed data over a vendor's
+undisclosed derivation, especially since `MIN_GROSS_MARGIN` is a hard
+gate cliff, not a soft signal, and the GNTX case moves the number *down*
+(21.8% -> 18.7%), the conservative direction a margin-of-safety system
+should prefer when its data was previously uncertain. Explicitly notes
+this raises measurement *validity*, not moat-detection or circle-of-
+competence -- M37 makes a still-imperfect scoring formula's inputs
+correct, it does not make the formula measure durability (that's M40's
+job). Flags the same fallback-sanity-check gap the staff-engineer-review
+found independently (now fixed, see table above), plus two points
+recorded here as disclosed, not fixed, since they're genuinely separate
+scope:
+- **No visible marker distinguishing an XBRL-verified figure from a
+  yfinance-fallback one** in `screen_results.csv`/the site -- two
+  classes of stock (SEC-verified vs. not) currently look identical to a
+  reader. The `data_invalid_outlier` fix above closes the "silently
+  wrong" risk; it does not add the transparency of "silently
+  less-verified." A `margin_source` column/display is a real, valuable
+  follow-up -- a CSV-schema and `report.py` change, genuinely bigger
+  scope than this milestone's "make the number accurate" mandate.
+- **Financials/insurers systematically fall back to yfinance** (no
+  meaningful `GrossProfit`/`Revenue` concepts in XBRL for that sector),
+  the exact sector §1 already flags as yfinance's worst case (NMIH,
+  HIG, TROW) -- unchanged by M37, not worsened by it, and explicitly
+  M38's job (sector-aware gates), not this milestone's.
+
+**A second, independent review round -- from a peer Claude session
+also working this repo, not solicited by this one -- surfaced three
+more findings, checked against real data rather than accepted on
+faith:**
+
+| Finding | Resolution |
+|---|---|
+| **Test gap**: `bot.py`/`evaluate.py`'s own wiring through `screener.fetch_metrics_with_xbrl_primary` had no positive test -- the autouse no-op passthrough fixture (added for network isolation) means a test that only mocks `data.fetch_all_metrics` can't distinguish "correctly wired through the new function" from "reverted straight back to the old one"; both stay green. Confirmed real by actually reverting each call site locally and watching the existing suite stay green. | **Code fix.** New `test_run_fetches_holdings_metrics_through_xbrl_primary` in both `tests/test_bot.py` and `tests/test_evaluate.py`, each spying on `screener.fetch_metrics_with_xbrl_primary` directly. Verified each one actually fails against the reverted code (not just passes against the current code) before counting it as closed. |
+| **CCK/ENS named in the fix but only LHX has a dedicated regression fixture** -- accurate; `sec_companyfacts_cck_sample.json`/`sec_companyfacts_ens_sample.json` were never built. | **Precision fix, not a new fixture.** Task-table row below reworded to state this precisely -- their fix is verified by the mechanism being general (the same `_margin_from_xbrl` walk, not a LHX-specific patch) plus the real full-universe re-validation actually re-observing both tickers live (see that row: both confirmed in the universe, both now produce zero implausible-value rows). |
+| **Warren-buffett's "if the GNTX-direction shift is systematic, that's a de-facto tightening needing a dated decision, not a side effect" question -- checked against real data, not left open.** | **Checked, disclosed, not silently resolved.** The completed full-universe re-validation run (above) makes this answerable directly: across all 1133 real disagreements, XBRL runs **lower** than yfinance 70.7% of the time (63.5% for `gross_margin` specifically, 72.2% for `operating_margin`) -- a real, confirmed systematic skew, not a 50/50 spread, matching GNTX's own direction. Magnitude is moderate, not dramatic: median shift -2.3pp (`gross_margin`) / -2.9pp (`operating_margin`), mean roughly the same. Checked directly against the one *hard* gate this affects (`MIN_GROSS_MARGIN = 0.30`, among the 197 `gross_margin` disagreements only -- `operating_margin` is a scoring input, not a gate): **20 tickers newly fail** that passed under yfinance (TDW, MCRI, HLX, HL, CLSK, JBTM, FOUR, PH, TRGP, CAVA, GL, MATW, WFRD, JJSF, SWK, FUL, BR, MDLZ, TKR, CRSR), **7 newly pass** that failed under yfinance (EXPD, DPZ, ORA, NXT, MBC, MLM, LNN) -- net -13 among this disagreement subset, not a full-universe re-screen (that would need Graham gates, Munger floors, and score ranking all recomputed together, a bigger undertaking than this check). **Deliberately not compensated for**: M37 changes zero thresholds -- `MIN_GROSS_MARGIN` is untouched at 0.30, exactly as before. The shift is the same class of thing DESIGN_V2.md's own "threshold changes require a dated entry" language is about, but in the opposite direction from what that language was written to guard against (drift *toward* permissiveness under pressure) -- here the *data* got more accurate and happens to be stricter on average, not the *threshold* getting quietly loosened. Whether `MIN_GROSS_MARGIN`'s own calibration should be revisited now that its input data is more accurate is a real, separate question -- named here explicitly rather than silently decided either way, left for the user, not decided unilaterally by recalibrating a threshold under this same push's momentum. |
+
+**Two further findings from the same peer review, disclosed rather than
+fixed, for reasons stated:**
+- **`classify_holding_state`'s UNREADABLE-vs-DETERIORATING split only
+  triggers on a wholly-missing Metrics record** (`metrics is None`) --
+  a record that's *present* but has one required field missing or
+  outlier-flagged (any of the ~11 `_REQUIRED_METRICS_FIELDS`, not just
+  the two M37 touches) still fails `pass_munger_quality_floors` as a
+  quality-floor failure (DETERIORATING, strike-worthy), not UNREADABLE
+  (no strike) -- confirmed by reading `classify_holding_state` directly.
+  Pre-existing, not introduced by M37 (this asymmetry predates M36/M37
+  entirely), but newly *relevant* for margins specifically now that
+  `data.validate_metrics`'s new outlier check actually catches an
+  implausible one where nothing did before. Not redesigned here --
+  `classify_holding_state` is M24/M29a-era, safety-critical, carefully
+  reviewed sell-discipline code; a fix needs its own deliberate design
+  pass (does a field-level `data_missing`/`data_invalid_outlier` ever
+  warrant UNREADABLE instead of DETERIORATING, and if so which ones?),
+  not a patch rushed under this milestone's own momentum.
+- **`daily_screen.py`'s now-longer runtime (yfinance fetch plus the new
+  ~16-17 min EDGAR pass) vs. `daily-trade.yml`'s own `material_events.py`
+  EDGAR poll**: `daily-screen.yml` runs at 13:00 UTC with a 30-minute
+  timeout; `daily-trade.yml`/`daily-trade-live.yml` start their own
+  EDGAR-touching steps at 14:00/14:30 UTC. Under normal conditions
+  there's a real ~30-minute buffer; under a slow EDGAR day (elevated
+  per-request latency stretching the new pass well past its nominal
+  budget), `daily_screen.py` finishing late enough to genuinely overlap
+  with either trade workflow's own EDGAR calls is a real, if
+  lower-probability, risk -- two independently-throttled processes each
+  self-limiting to `config.SEC_EDGAR_MAX_REQUESTS_PER_SECOND` could
+  together exceed SEC's fair-access ceiling, the same class of risk
+  already disclosed for `xbrl-shadow-run.yml`'s one-off manual dispatch,
+  now applying structurally to M37's *permanent* daily EDGAR load.
+  Disclosed, not fixed -- same "gate-first, don't engineer preemptively"
+  call already made for the no-caching/no-batch-timeout finding above;
+  a real cross-workflow guard is follow-up scope, not this milestone's.
+
+**Tests / lint.** 643 passing (was 622 at M36's close -- +21 net,
+verified precisely by counting `def test_` functions per file before
+and after, not estimated: `tests/test_xbrl.py` 21 -> 34 (+13, the
+plausibility guard, operating-margin, `apply_primary_metrics`, and the
+exception-isolation/non-positive-denominator review-round fixes),
+`tests/test_data.py` 44 -> 48 (+4, the new source-agnostic outlier
+checks), `tests/test_screener.py` 35 -> 37 (+2, the `run_screen`
+wiring), `tests/test_bot.py` 45 -> 46 (+1, the peer-review-finding spy
+test), `tests/test_evaluate.py` 13 -> 14 (+1, same); `tests/test_xbrl_shadow.py`
+updated in place for the split counts, not counted net-new; `test_bot.py`/
+`test_evaluate.py` also each carry an autouse fixture (added earlier,
+not new this round) defaulting `apply_primary_metrics` to a no-op
+passthrough so no test reaches the network). `ruff check` / `ruff
+format --check` / `mypy --config-file
+mypy.ini` all clean, scoped via `git ls-files '*.py'` (the working tree
+still carries unrelated untracked debris from a separate task).
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| `xbrl._margin_from_xbrl` shared helper + plausibility guard (`config.MARGIN_PLAUSIBLE_MIN`/`_MAX`) | done | 2026-09-04 -- fixes M36's disclosed LHX/CCK/ENS bug; pinned against the real LHX fixture. Denominator must be strictly positive, not merely nonzero, and both the rejection and the fallback-to-an-older-year are now logged (review-round fixes, see findings table above). |
+| `xbrl.operating_margin_from_xbrl` (GNTX §3.4 case: 18.70% vs. yfinance 21.8%) | done | 2026-09-04 |
+| `xbrl.apply_primary_metrics`: XBRL-primary / yfinance-fallback override for the two margin fields, per-field independent, `None`-preserving, per-ticker exception-isolated | done | 2026-09-04 -- exception isolation added in the review round; see findings table. |
+| `data.validate_metrics` extended with source-agnostic `data_invalid_outlier:gross_margin`/`operating_margin` checks (`config.MARGIN_PLAUSIBLE_MIN`/`_MAX`) | done | 2026-09-04 -- review-round fix: closes the "yfinance fallback has no sanity check" gap both `staff-engineer-reviewer` and `warren-buffett` found independently. Moved out of `xbrl.py` into the existing outlier-check home, renamed from the XBRL-only `XBRL_MARGIN_PLAUSIBLE_MIN`/`_MAX` to reflect the now-general scope. |
+| `screener.fetch_metrics_with_xbrl_primary` + `run_screen` / `evaluate.py` / `bot.py` wired through it | done | 2026-09-04 |
+| `xbrl_shadow.py` / `shadow_compare` extended to `operating_margin`; `comparable` count split per field; module re-scoped as a standing diagnostic | done | 2026-09-04 |
+| `.github/workflows/xbrl-shadow-run.yml` re-worded (no longer "M37 prerequisite") | done | 2026-09-04 |
+| New real fixtures: `sec_companyfacts_lhx_sample.json`, `sec_companyfacts_gntx_sample.json` | done | 2026-09-04 |
+| `tests/`: +21 net (643 total); `test_bot.py` / `test_evaluate.py` autouse no-op fixture so no test hits the network; new `tests/test_data.py` coverage for the source-agnostic outlier checks; +1 each to `test_bot.py`/`test_evaluate.py` for the peer-review-finding spy tests | done | 2026-09-04 |
+| `ruff` / `mypy` clean (tracked-file scoped) | done | 2026-09-04 |
+| `staff-engineer-reviewer` pass on the `.py` diff; marker updated | done | 2026-09-04 -- one review round, 6 findings (1 documentation fix + 4 code fixes + 1 disclosed); see findings table above. |
+| `warren-buffett` pass on the source-swap thesis change | done | 2026-09-04 -- confirms the direction is sound; one shared finding (fixed) plus two disclosed, not fixed (margin-source transparency, sector-gate dependency on M38); see above. |
+| **Independent second review, from a peer Claude session working the same repo concurrently** (unsolicited, not part of this session's own review gates) -- 3 findings acted on, 2 disclosed | done | 2026-09-04 -- test-gap spy tests added and verified to actually catch the reversion (both `bot.py` and `evaluate.py`); CCK/ENS fixture-coverage wording corrected; the systematic-downward-bias question checked against real data (70.7% of disagreements skew XBRL-lower, 20/197 gross-margin names newly fail `MIN_GROSS_MARGIN`, 7 newly pass) rather than left open. `classify_holding_state` UNREADABLE/DETERIORATING asymmetry and the `daily_screen.py`-vs-`daily-trade.yml` cross-process EDGAR risk both disclosed, not fixed -- see findings tables above for the full reasoning on each. Cross-session coordination: the peer had independently started the same milestone and added its own TASKS.md skeleton at this same location; confirmed via direct message that it stood down and this section is this session's own, avoiding a concurrent-edit collision. The peer separately flagged an unrelated live-GCP incident (paper trading stopped) it's investigating -- this session's own push/GCP-redeploy step (row below) is deliberately held pending that being resolved, so as not to land two changes on production at once or muddy the incident timeline. |
+| Real full-universe re-validation post-fix (confirm LHX/CCK/ENS no longer implausible at full scale) | done | 2026-09-04 -- run locally against real live data (`MUNGER_DATA_DIR` isolated to a scratch dir, no production state touched): **1506 universe tickers, 1505 yfinance-fetched, 1505 CIK-matched, 1503 XBRL-facts-fetched, 1133 disagreements (197 gross_margin + 936 operating_margin), not degraded.** **Numeric caveat, found on review**: the run's own `ShadowRunSummary.comparable` figure (683) is a *single* count from before `xbrl_shadow.py`'s comparable-count split (this run started on code that predates that split, same caveat as below) -- it reflects `gross_margin`-comparable tickers only, not a combined denominator for both fields' 1133 disagreements (683 < 1133 total would otherwise be arithmetically impossible, since a disagreement requires a comparable pair). 197/683 ≈ 28.8% of gross-margin-comparable tickers disagreed; `operating_margin`'s own separate comparable count wasn't captured by this run's summary object and isn't restated here as a guess. The report's own extreme values are all real and plausible, not bugs: most negative, CYTK operating margin -342.75% (a clinical-stage biotech, near-zero revenue against real R&D spend); most positive, NI gross margin exactly 100.00%. **Zero rows outside `config.MARGIN_PLAUSIBLE_MIN`/`_MAX`** -- confirmed by scanning every row's `xbrl_value`, not sampled. **LHX and CCK specifically: confirmed in the universe (`universe.get_universe_with_diagnostics()`), produced zero disagreement rows** -- neither has a comparable-and-implausible value anymore. **ENS: appears once**, a large but entirely plausible `operating_margin` disagreement (XBRL 88.0% vs. yfinance 14.0%) -- a genuine data disagreement worth a human's attention, not the tooling bug. **Caveat, stated precisely**: this run started before the review round's later refinements (per-ticker exception isolation, denominator-positivity check, rejection/fallback logging, moving the sanity check into `data.validate_metrics`, and the comparable-count field split) were written, so it validates the *core* plausibility-walk fix at real full-universe scale, not every review-round refinement individually -- those are separately covered by their own unit tests (see the findings table above). Report retained at a scratch path, not committed (a diagnostic artifact, matching `xbrl_shadow_report.csv`'s own `.gitignore` treatment). |
+| `pm-reviewer` pass on this section; `tasks-pm-reviewer.sha256` updated | todo | Commit gate for staged `TASKS.md`. |
+| Push to `main` + in-cluster CI + GCP redeploy | todo, deliberately held | Code/tests/review/docs are all otherwise complete as of this write-up. **Deliberately not pushed yet -- update as the incident developed**: the peer session's investigation (see its own commit `a65540d`, "Remove GLOBAL_KILL_SWITCH: resume paper trading," already pushed to `main` ahead of this row -- the user's own deliberate call, paper-only, live still separately gated) surfaced a second, larger problem once the switch came off: a `workflow_dispatch` verification run (`daily-trade.yml`, run `33878958653`) correctly aborted on M27's reconciliation check -- `journal.db` (the `bot-state` branch) expects 15 held paper positions (ASO, CF, EOG, G, GNTX, GRBK, HIG, HRMY, INSW, LRN, LULU, MGY, NMIH, PRDO, TROW); Alpaca's paper broker reports zero. A materially bigger divergence than the FOX/LPG case this session's own M26c/M27 work was built around, not yet root-caused as of this write-up (per the peer's own account, relayed here, not independently re-verified by this session -- reconciliation/`bot-state`/`journal.db` is explicitly the peer's own active investigation, this session is deliberately not touching any of it). Holding this push until the peer confirms the incident is actually resolved and stable, not just that its first fix (the kill-switch removal) landed. Once cleared: see also the standing preconditions in the M34 kill-switch checklist (self-hosted CI runner, cadence cutover) and the new daily-screen runtime/EDGAR-budget cost noted above, both still applicable. |

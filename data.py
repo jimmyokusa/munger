@@ -486,5 +486,23 @@ def validate_metrics(metrics: Metrics) -> list[str]:
         and abs(metrics.debt_to_equity) > config.MAX_PLAUSIBLE_DEBT_TO_EQUITY
     ):
         fail_reasons.append("data_invalid_outlier:debt_to_equity")
+    # M37 (staff-engineer-reviewer + warren-buffett findings): source-
+    # agnostic -- catches an implausible margin regardless of whether it
+    # came from yfinance or XBRL. xbrl.gross_margin_from_xbrl/
+    # operating_margin_from_xbrl already guarantee their own return
+    # value is within this same bound (xbrl._margin_from_xbrl's own
+    # plausibility walk), so in practice this is the yfinance-sourced
+    # (or yfinance-fallback) path's only sanity net -- §1's own
+    # documented NMIH case (an insurer's operating margin exceeding its
+    # own gross margin) showed yfinance can manufacture a number this
+    # wrong with nothing else in this codebase ever catching it.
+    if metrics.gross_margin is not None and not (
+        config.MARGIN_PLAUSIBLE_MIN <= metrics.gross_margin <= config.MARGIN_PLAUSIBLE_MAX
+    ):
+        fail_reasons.append("data_invalid_outlier:gross_margin")
+    if metrics.operating_margin is not None and not (
+        config.MARGIN_PLAUSIBLE_MIN <= metrics.operating_margin <= config.MARGIN_PLAUSIBLE_MAX
+    ):
+        fail_reasons.append("data_invalid_outlier:operating_margin")
 
     return fail_reasons

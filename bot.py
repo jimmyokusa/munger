@@ -290,7 +290,9 @@ def run(run_date: str | None = None) -> int:
         _alert(alerts, "Aborting: reconciliation mismatch against current holdings")
         return _finish(alerts)
 
-    holdings_metrics = data.fetch_all_metrics(list(current_holdings), phase="holdings check")
+    holdings_metrics = screener.fetch_metrics_with_xbrl_primary(
+        list(current_holdings), phase="holdings check"
+    )
     state = portfolio.StateTracker()
     _reset_stale_strikes_for_tickers_no_longer_held(state, current_holdings)
     period = portfolio.period_identifier(run_date)

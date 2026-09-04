@@ -20,6 +20,8 @@ import evaluate
 import execution
 import journal
 import portfolio
+import screener
+import xbrl
 
 
 def _quality_metrics(**overrides: Any) -> data.Metrics:
@@ -56,6 +58,9 @@ class _FakeExecutionModule:
 
 @pytest.fixture(autouse=True)
 def _isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # M37: default to XBRL-primary being a no-op passthrough -- see
+    # test_bot.py's own identical fixture comment for why.
+    monkeypatch.setattr(xbrl, "apply_primary_metrics", lambda metrics_by_symbol: metrics_by_symbol)
     monkeypatch.setattr(config, "KILL_SWITCH", False)
     monkeypatch.setattr(config, "KILL_SWITCH_FLAG_FILE_PATH", tmp_path / "KILL_SWITCH")
     monkeypatch.setattr(
@@ -351,3 +356,35 @@ def test_run_resets_stale_strikes_for_a_ticker_no_longer_held(
     reloaded = portfolio.StateTracker(path=state_path)
     assert reloaded.get_strikes("GONE") == 0
     assert reloaded.get_holding_state("GONE") is None
+
+
+def test_run_fetches_holdings_metrics_through_xbrl_primary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression guard (peer-session review finding): the autouse
+    # apply_primary_metrics no-op fixture means a test mocking only
+    # data.fetch_all_metrics can't tell "correctly wired through
+    # screener.fetch_metrics_with_xbrl_primary" from "reverted straight
+    # to data.fetch_all_metrics" -- both would stay green. This test
+    # spies on fetch_metrics_with_xbrl_primary itself, so reverting
+    # evaluate.py's own call back to data.fetch_all_metrics directly
+    # would correctly fail it.
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    fake_exec.get_current_holdings.return_value = {"AAPL": 1000.0}
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+    journal.record_order("AAPL", "buy", "NEW_POSITION score=78.2")
+
+    calls: list[tuple[list[str], str]] = []
+    real_fetch = screener.fetch_metrics_with_xbrl_primary
+
+    def _spy(tickers: list[str], phase: str = "screening") -> dict[str, data.Metrics | None]:
+        calls.append((tickers, phase))
+        return real_fetch(tickers, phase=phase)
+
+    monkeypatch.setattr(screener, "fetch_metrics_with_xbrl_primary", _spy)
+    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {"AAPL": None})
+
+    evaluate.run(run_date="2026-07-21")
+
+    assert len(calls) == 1
+    assert calls[0] == (["AAPL"], "holdings check")

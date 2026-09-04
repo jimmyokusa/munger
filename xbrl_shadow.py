@@ -1,16 +1,16 @@
-"""Full-universe XBRL-vs-yfinance shadow comparison run (M37's prerequisite, Design v2.2 §3.4).
+"""Full-universe XBRL-vs-yfinance shadow comparison run (Design v2.2 §3.4).
 
 "Both sources run in parallel for a full cycle, disagreements are logged
 per field, and the report is inspected by hand before XBRL becomes
-authoritative" (§3.4). `xbrl.py` (M36) built the client and the
-comparison mechanism and proved both out against fixture data only --
-nothing had run them against a real, full universe. This module is that
-run: fetch every universe ticker's fundamentals from both yfinance
-(already the production source) and SEC EDGAR's XBRL companyfacts, run
-`xbrl.shadow_compare` per ticker, and write every disagreement found to
-a CSV for a human to review by hand. That hand review -- not this
-module -- is what actually gates M37's switchover; this module's job
-ends at producing the report, not judging it.
+authoritative" (§3.4). Built for M37's own pre-switchover review (run
+`33778994547`, 2026-09-03: 1506 tickers, 201 disagreements, reviewed by
+hand -- see TASKS.md's M37 section) and kept as a standing, re-runnable
+tool: fetch every universe ticker's fundamentals from both yfinance and
+SEC EDGAR's XBRL companyfacts, run `xbrl.shadow_compare` per ticker, and
+write every disagreement found to a CSV for a human to review by hand.
+Useful again any time `xbrl.py` gains a new comparable field (§3.6/§3.9's
+ROIC/revenue-per-share work) or the extraction logic changes -- this
+module's job is producing the report, not judging it.
 
 Deliberately read-only and broker-free, same as daily_screen.py: never
 imports execution.py, never touches state.json/journal.db. A full
@@ -87,8 +87,9 @@ class ShadowRunSummary:
     applies to its own yfinance fetch) flags a run whose *fetch
     mechanics* had a bad day -- not a run with a lot of genuine XBRL
     non-coverage, which `xbrl_not_found` already accounts for
-    separately. `comparable`/`xbrl_not_found` themselves are NOT part of
-    the degraded check, for exactly that reason: plenty of the universe
+    separately. `comparable_gross_margin`/`comparable_operating_margin`/
+    `xbrl_not_found` themselves are NOT part of the degraded check, for
+    exactly that reason: plenty of the universe
     (financials, insurers, filers that don't tag GrossProfit) is
     expected to have no comparable XBRL value on a perfectly healthy
     run, and gating on that fraction would flag every run as degraded
@@ -105,7 +106,8 @@ class ShadowRunSummary:
     xbrl_facts_fetched: int
     xbrl_not_found: int  # confirmed 404 -- EDGAR has no XBRL data for this filer
     xbrl_fetch_failed: int  # network/timeout/malformed-response failure, not a 404
-    comparable: int  # both a yfinance and an XBRL value were available to compare
+    comparable_gross_margin: int  # both a yfinance and an XBRL gross_margin value existed
+    comparable_operating_margin: int  # both a yfinance and an XBRL operating_margin value existed
     disagreements: int
     degraded: bool
 
@@ -116,7 +118,8 @@ class _TickerResult:
     facts_fetched: bool
     not_found: bool
     fetch_failed: bool
-    compared: bool  # both a yfinance and an XBRL gross_margin value existed to compare
+    comparable_gross_margin: bool
+    comparable_operating_margin: bool
     disagreements: list[xbrl.FieldDisagreement]
 
 
@@ -132,17 +135,31 @@ def _run_one_ticker(
     """
     cik = xbrl.get_cik(ticker, cik_lookup)
     if cik is None:
-        return _TickerResult(False, False, False, False, False, [])
+        return _TickerResult(False, False, False, False, False, False, [])
     result = xbrl.fetch_company_facts_detailed(cik)
     if result.facts is None:
-        return _TickerResult(True, False, result.not_found, not result.not_found, False, [])
-    xbrl_gross_margin = xbrl.gross_margin_from_xbrl(result.facts)
+        return _TickerResult(True, False, result.not_found, not result.not_found, False, False, [])
     yf_gross_margin = yf_metrics.gross_margin if yf_metrics is not None else None
-    compared = xbrl_gross_margin is not None and yf_gross_margin is not None
+    yf_operating_margin = yf_metrics.operating_margin if yf_metrics is not None else None
+    comparable_gross_margin = (
+        xbrl.gross_margin_from_xbrl(result.facts) is not None and yf_gross_margin is not None
+    )
+    comparable_operating_margin = (
+        xbrl.operating_margin_from_xbrl(result.facts) is not None
+        and yf_operating_margin is not None
+    )
     disagreements = (
         xbrl.shadow_compare(ticker, result.facts, yf_metrics) if yf_metrics is not None else []
     )
-    return _TickerResult(True, True, False, False, compared, disagreements)
+    return _TickerResult(
+        cik_matched=True,
+        facts_fetched=True,
+        not_found=False,
+        fetch_failed=False,
+        comparable_gross_margin=comparable_gross_margin,
+        comparable_operating_margin=comparable_operating_margin,
+        disagreements=disagreements,
+    )
 
 
 def run(run_date: str | None = None) -> ShadowRunSummary:
@@ -187,7 +204,8 @@ def run(run_date: str | None = None) -> ShadowRunSummary:
     facts_fetched = 0
     not_found = 0
     fetch_failed = 0
-    comparable = 0
+    comparable_gross_margin = 0
+    comparable_operating_margin = 0
     all_disagreements: list[xbrl.FieldDisagreement] = []
     for ticker in tickers:
         result = _run_one_ticker(ticker, yf_metrics.get(ticker), cik_lookup)
@@ -195,7 +213,8 @@ def run(run_date: str | None = None) -> ShadowRunSummary:
         facts_fetched += result.facts_fetched
         not_found += result.not_found
         fetch_failed += result.fetch_failed
-        comparable += result.compared
+        comparable_gross_margin += result.comparable_gross_margin
+        comparable_operating_margin += result.comparable_operating_margin
         all_disagreements.extend(result.disagreements)
 
     universe_size = len(tickers)
@@ -204,9 +223,9 @@ def run(run_date: str | None = None) -> ShadowRunSummary:
     # reused here rather than a new threshold invented for this module,
     # and deliberately checked only against counts that reflect this
     # run's own fetch mechanics (yfinance, CIK matching, EDGAR
-    # reachability), not against xbrl_facts_fetched/comparable directly,
-    # which are expected to be well under 100% on a perfectly healthy
-    # run (see ShadowRunSummary's own docstring on why).
+    # reachability), not against xbrl_facts_fetched or either comparable_*
+    # count directly, which are expected to be well under 100% on a
+    # perfectly healthy run (see ShadowRunSummary's own docstring on why).
     #
     # `reachable` (staff-engineer-reviewer finding, second pass): a
     # confirmed 404 and a successful facts fetch are both a *resolved*
@@ -218,7 +237,7 @@ def run(run_date: str | None = None) -> ShadowRunSummary:
     # check missed it entirely: a real EDGAR-side outage on the
     # companyfacts endpoint mid-run would have left cik_matched/
     # yfinance_fetched both near 100% (neither depends on this
-    # endpoint) while comparable/xbrl_facts_fetched silently collapsed
+    # endpoint) while comparable_gross_margin/xbrl_facts_fetched silently collapsed
     # to near zero, with degraded staying False and the run exiting 0.
     reachable = facts_fetched + not_found
     # A zero-length universe is degraded too (staff-engineer-reviewer
@@ -246,7 +265,8 @@ def run(run_date: str | None = None) -> ShadowRunSummary:
         xbrl_facts_fetched=facts_fetched,
         xbrl_not_found=not_found,
         xbrl_fetch_failed=fetch_failed,
-        comparable=comparable,
+        comparable_gross_margin=comparable_gross_margin,
+        comparable_operating_margin=comparable_operating_margin,
         disagreements=len(all_disagreements),
         degraded=degraded,
     )
@@ -257,8 +277,8 @@ def run(run_date: str | None = None) -> ShadowRunSummary:
             "XBRL shadow run DEGRADED: yfinance fetched %d/%d (%.1f%%), CIK matched %d/%d "
             "(%.1f%%), EDGAR resolved %d/%d CIK-matched requests (%.1f%%) -- below the "
             "%.0f%% floor. This run's own fetch mechanics had trouble; the report below may "
-            "understate real coverage. Consider re-running before relying on it for M37's "
-            "hand review.",
+            "understate real coverage. Consider re-running before relying on it for a hand "
+            "review.",
             yfinance_fetched,
             universe_size,
             100 * yfinance_fetched / universe_size if universe_size else 0.0,
@@ -274,15 +294,16 @@ def run(run_date: str | None = None) -> ShadowRunSummary:
     logger.info(
         "XBRL shadow run complete: %d universe tickers, %d yfinance-fetched, "
         "%d CIK-matched, %d XBRL-facts-fetched (%d not-found-on-EDGAR, %d fetch-failed), "
-        "%d comparable, %d disagreement(s) found. Report written to %s -- needs hand review "
-        "before M37's switchover.",
+        "%d gross-margin-comparable, %d operating-margin-comparable, %d disagreement(s) "
+        "found. Report written to %s.",
         summary.universe_size,
         summary.yfinance_fetched,
         summary.cik_matched,
         summary.xbrl_facts_fetched,
         summary.xbrl_not_found,
         summary.xbrl_fetch_failed,
-        summary.comparable,
+        summary.comparable_gross_margin,
+        summary.comparable_operating_margin,
         summary.disagreements,
         config.XBRL_SHADOW_REPORT_PATH,
     )

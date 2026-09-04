@@ -1,16 +1,22 @@
-"""SEC EDGAR XBRL companyfacts client (Design v2.2 §3.4, M36).
+"""SEC EDGAR XBRL companyfacts client (Design v2.2 §3.4, M36; primary as of M37).
 
 Primary fundamentals source per the redesign -- SEC's own tagged data,
-straight from filings, free, point-in-time, authoritative. Will replace
-yfinance as primary once the shadow-mode comparison (see
-`shadow_compare`) has run a full cycle and been reviewed by hand (M37).
+straight from filings, free, point-in-time, authoritative. yfinance is
+now the fallback for gross_margin/operating_margin (see
+`apply_primary_metrics`), used only when XBRL has no CIK match, no
+companyfacts, or no plausible value for a ticker.
 
-M36 builds this module and proves it out against real fixture data
-only -- nothing in the running bot calls it yet. No shadow comparison
-has executed against a live ticker outside a test, and there is no
-accumulated per-field disagreement log to review by hand. Wiring this
-alongside data.py for a real full-universe cycle, and doing that
-review, is M37's job, not this one's.
+M36 built this module and proved it out against fixture data only, then
+against a real full-universe shadow-mode cycle (`shadow_compare`,
+xbrl_shadow.py) -- 1506 tickers, 201 disagreements, reviewed by hand
+before M37's switchover. M37 is that switchover: `apply_primary_metrics`
+is now called from screener.py's shared fetch path (`run_screen`) and
+from evaluate.py's/bot.py's own holdings-check paths, so every gate/
+score computed anywhere in the system uses XBRL first. `shadow_compare`
+itself stays independent of this override (see its own docstring) --
+xbrl_shadow.py can still detect a future disagreement even though
+production's own Metrics no longer carry the raw yfinance value for an
+overridden field.
 
 Two-step lookup, matching EDGAR's own API shape: a ticker maps to a CIK
 (Central Index Key) via `company_tickers.json`, and *that* is the key
@@ -302,12 +308,15 @@ def latest_annual_value(facts: dict[str, object], concept: str) -> float | None:
 _REVENUE_CONCEPTS = ("Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax")
 
 
-def gross_margin_from_xbrl(facts: dict[str, object]) -> float | None:
-    """GrossProfit / Revenue for the most recent fiscal year BOTH concepts have a value for.
+def _margin_from_xbrl(
+    facts: dict[str, object], numerator_concept: str, denominator_concepts: tuple[str, ...]
+) -> float | None:
+    """Numerator / denominator for the most recent fiscal year both concepts plausibly agree on.
 
-    Returns None if there's no such year (a sector without a meaningful
-    gross margin -- financials, insurers -- or a filer that doesn't tag
-    GrossProfit at all).
+    Shared by gross_margin_from_xbrl and operating_margin_from_xbrl.
+    Returns None if there's no such year (a sector where the ratio isn't
+    meaningful -- financials, insurers -- or a filer that doesn't tag
+    the numerator concept at all).
 
     Matched by fiscal year, not "most recent value per concept"
     independently -- a real bug caught against the AAPL fixture:
@@ -316,24 +325,107 @@ def gross_margin_from_xbrl(facts: dict[str, object]) -> float | None:
     filer stops tagging one of the two concepts, silently producing a
     nonsensical ratio (a real FY2025 GrossProfit divided by a stale
     FY2018 Revenues came out to ~73%, not AAPL's real ~46% margin).
+
+    Matching by fiscal-year-end date alone is NOT sufficient, though --
+    a second real bug, caught live against real EDGAR data (not a
+    fixture) for LHX/CCK/ENS: the *same* nominal fiscal-year-end can
+    carry more than one dollar-scope for the *same* concept across
+    different filings over time (a later filing's comparative/restated
+    figure, e.g. after a divestiture reduces "continuing operations"
+    revenue for a prior year that was originally filed at full
+    consolidated scale). `annual_values`' own dedup already prefers the
+    most-recently-filed value per concept-year (deliberately, to reflect
+    the latest restatement) -- but that means a numerator concept a
+    filer stopped tagging early (still its original, large, as-filed
+    value) can end up paired against a denominator concept's much later,
+    much smaller restated value for the nominally "same" year, producing
+    a ratio like LHX's real, reproduced 1828% "gross margin." Guarded
+    here by walking common years newest-to-oldest and skipping any whose
+    computed ratio falls outside `config.MARGIN_PLAUSIBLE_MIN`/`_MAX` --
+    cheap, general, and doesn't require modeling SEC's restatement
+    semantics precisely to catch the actual observable symptom. A
+    rejected newest-year and a fallback to an older one are both logged
+    (staff-engineer-reviewer finding, M37 review round: the original
+    version of this fix silently skipped an implausible year exactly
+    the way it silently skipped a zero denominator, leaving an operator
+    with no way to tell "this filer just has no plausible year" from
+    "the newest year was actually rejected" without re-deriving it by
+    hand).
     """
-    gross_profit_by_year = {v.fiscal_year_end: v.value for v in annual_values(facts, "GrossProfit")}
-    if not gross_profit_by_year:
+    numerator_by_year = {
+        v.fiscal_year_end: v.value for v in annual_values(facts, numerator_concept)
+    }
+    if not numerator_by_year:
         return None
 
-    revenue_by_year: dict[str, float] = {}
-    for concept in _REVENUE_CONCEPTS:
+    denominator_by_year: dict[str, float] = {}
+    for concept in denominator_concepts:
         for v in annual_values(facts, concept):
-            revenue_by_year.setdefault(v.fiscal_year_end, v.value)
+            denominator_by_year.setdefault(v.fiscal_year_end, v.value)
 
-    common_years = sorted(set(gross_profit_by_year) & set(revenue_by_year))
-    if not common_years:
-        return None
-    latest_common_year = common_years[-1]
-    revenue = revenue_by_year[latest_common_year]
-    if revenue == 0:
-        return None
-    return gross_profit_by_year[latest_common_year] / revenue
+    common_years = sorted(set(numerator_by_year) & set(denominator_by_year), reverse=True)
+    entity = facts.get("entityName") or facts.get("cik") or "?"
+    rejected_years: list[str] = []
+    for year in common_years:
+        denominator = denominator_by_year[year]
+        # Strictly positive, not merely nonzero (staff-engineer-reviewer
+        # finding): a negative denominator paired with a negative
+        # numerator produces a positive, "plausible"-looking ratio that
+        # is nevertheless economically meaningless -- exactly the kind
+        # of restatement/scope artifact that caused the LHX bug in the
+        # first place, just landing inside the bound instead of outside
+        # it.
+        if denominator <= 0:
+            rejected_years.append(year)
+            continue
+        ratio = numerator_by_year[year] / denominator
+        if config.MARGIN_PLAUSIBLE_MIN <= ratio <= config.MARGIN_PLAUSIBLE_MAX:
+            if rejected_years:
+                logger.warning(
+                    "%s: %s/%s -- rejected implausible/non-positive-denominator year(s) %s, "
+                    "using %s instead (ratio %.4f)",
+                    entity,
+                    numerator_concept,
+                    "|".join(denominator_concepts),
+                    rejected_years,
+                    year,
+                    ratio,
+                )
+            return ratio
+        rejected_years.append(year)
+    if rejected_years:
+        logger.warning(
+            "%s: %s/%s -- every common year (%s) was implausible or had a "
+            "non-positive denominator; no margin computed",
+            entity,
+            numerator_concept,
+            "|".join(denominator_concepts),
+            rejected_years,
+        )
+    return None
+
+
+def gross_margin_from_xbrl(facts: dict[str, object]) -> float | None:
+    """GrossProfit / Revenue for the most recent fiscal year both concepts plausibly agree on.
+
+    See `_margin_from_xbrl`'s own docstring for the matching/plausibility
+    rules this applies.
+    """
+    return _margin_from_xbrl(facts, "GrossProfit", _REVENUE_CONCEPTS)
+
+
+def operating_margin_from_xbrl(facts: dict[str, object]) -> float | None:
+    """OperatingIncomeLoss / Revenue for the most recent fiscal year both concepts agree on.
+
+    M37 (Design v2.2 §3.4): resolves the GNTX operating-margin
+    discrepancy the design doc names directly (yfinance 21.8% vs. the
+    filed 18.7%) -- confirmed against real GNTX companyfacts data:
+    FY2025 OperatingIncomeLoss / RevenueFromContractWithCustomerExcludingAssessedTax
+    computes to 18.70%, matching the design doc's cited filed figure.
+    See `_margin_from_xbrl`'s own docstring for the matching/
+    plausibility rules this applies.
+    """
+    return _margin_from_xbrl(facts, "OperatingIncomeLoss", _REVENUE_CONCEPTS)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -377,6 +469,28 @@ def _disagrees(xbrl_value: float, yfinance_value: float) -> bool:
     return absolute_diff > bound
 
 
+def _check_field_disagreement(
+    ticker: str, field: str, xbrl_value: float | None, yfinance_value: float | None
+) -> FieldDisagreement | None:
+    """One field's disagreement check, or None if either value is missing or they agree."""
+    if xbrl_value is None or yfinance_value is None:
+        return None
+    if not _disagrees(xbrl_value, yfinance_value):
+        return None
+    disagreement = FieldDisagreement(
+        ticker=ticker, field=field, xbrl_value=xbrl_value, yfinance_value=yfinance_value
+    )
+    logger.warning(
+        "%s: %s disagreement -- XBRL %.4f vs. yfinance %.4f (absolute diff %.4f)",
+        ticker,
+        field,
+        xbrl_value,
+        yfinance_value,
+        disagreement.absolute_diff,
+    )
+    return disagreement
+
+
 def shadow_compare(
     ticker: str, facts: dict[str, object], yf_metrics: data.Metrics
 ) -> list[FieldDisagreement]:
@@ -385,31 +499,120 @@ def shadow_compare(
     Per §3.4's shadow mode -- "both sources run in parallel...
     disagreements are logged per field."
 
-    Deliberately narrow right now: gross_margin is the one field this
-    milestone computes from XBRL (the concepts needed for the others --
-    operating margin, ROIC, revenue/share -- are §3.6/§3.9's job, not
-    M36's). Extend this function as those land; the tolerance/logging
-    mechanism itself is already the real, reusable piece.
+    gross_margin and operating_margin are the two fields this milestone
+    computes from XBRL (the concepts needed for the others -- ROIC,
+    revenue/share -- are §3.6/§3.9's job, for later milestones). Extend
+    this function as those land; the tolerance/logging mechanism itself
+    is already the real, reusable piece.
     """
-    disagreements = []
-    xbrl_gross_margin = gross_margin_from_xbrl(facts)
-    if (
-        xbrl_gross_margin is not None
-        and yf_metrics.gross_margin is not None
-        and _disagrees(xbrl_gross_margin, yf_metrics.gross_margin)
-    ):
-        disagreement = FieldDisagreement(
-            ticker=ticker,
-            field="gross_margin",
-            xbrl_value=xbrl_gross_margin,
-            yfinance_value=yf_metrics.gross_margin,
-        )
-        logger.warning(
-            "%s: gross_margin disagreement -- XBRL %.4f vs. yfinance %.4f (absolute diff %.4f)",
+    checks = (
+        _check_field_disagreement(
+            ticker, "gross_margin", gross_margin_from_xbrl(facts), yf_metrics.gross_margin
+        ),
+        _check_field_disagreement(
             ticker,
-            xbrl_gross_margin,
-            yf_metrics.gross_margin,
-            disagreement.absolute_diff,
-        )
-        disagreements.append(disagreement)
-    return disagreements
+            "operating_margin",
+            operating_margin_from_xbrl(facts),
+            yf_metrics.operating_margin,
+        ),
+    )
+    return [d for d in checks if d is not None]
+
+
+def apply_primary_metrics(
+    metrics_by_symbol: dict[str, data.Metrics | None],
+) -> dict[str, data.Metrics | None]:
+    """XBRL primary, yfinance fallback (M37, Design v2.2 §3.4): override gross/operating margin.
+
+    "XBRL companyfacts becomes the primary source. ... yfinance drops to
+    a fallback for fields XBRL doesn't cover." Takes a yfinance-sourced
+    metrics dict (as returned by data.fetch_all_metrics) and returns a
+    NEW dict with gross_margin/operating_margin replaced by the
+    XBRL-derived value for every ticker XBRL has usable data for --
+    unchanged (still the yfinance value) for a ticker XBRL has no CIK
+    match, no companyfacts, or no plausible margin for.
+
+    Deliberately does not touch data.fetch_all_metrics/fetch_metrics
+    themselves, or shadow_compare's own inputs -- callers that need
+    "yfinance vs. XBRL, independently" (xbrl_shadow.py's whole reason to
+    exist, both today and for whatever fields M38-M41 add later) still
+    get two genuinely independent sources to compare; only callers that
+    explicitly want the *screening/gating* decision (screener.py, this
+    function's actual caller) get the overridden view.
+
+    A ticker with no yfinance metrics at all (fetch_all_metrics already
+    returned None for it) stays None here too -- XBRL alone can't
+    substitute for a fully-missing Metrics record (market_cap,
+    trailing_pe, and every other Graham-gate field this function doesn't
+    touch would still be missing).
+
+    The yfinance fallback itself is sanity-checked too, not trusted
+    blindly (staff-engineer-reviewer + warren-buffett findings, M37
+    review round): §1's own documented NMIH case showed yfinance can
+    manufacture a nonsensical margin (an insurer's operating margin
+    exceeding its own gross margin) with nothing else in this codebase
+    ever catching it. That check lives in `data.validate_metrics`, not
+    here -- `config.MARGIN_PLAUSIBLE_MIN`/`_MAX` applies to whichever
+    value a Metrics record ends up with, XBRL-derived or yfinance-
+    fallback alike, tagged `data_invalid_outlier:*` the same way
+    `MAX_PLAUSIBLE_PE`/`_DEBT_TO_EQUITY` already are, so an implausible
+    fallback value fails the gate honestly instead of passing through
+    as if it were trustworthy. `gross_margin_from_xbrl`/
+    `operating_margin_from_xbrl` never return a value outside that same
+    bound in the first place (`_margin_from_xbrl`'s own plausibility
+    walk), so this function only ever needs to let a value through, not
+    re-check it -- `data.validate_metrics` is the single place either
+    source's value gets judged.
+
+    Sequential over tickers, same reasoning as xbrl_shadow.py's own
+    run(): xbrl.throttled_get already serializes every EDGAR request
+    behind one shared rate limiter, so a thread pool here would only
+    queue behind the same lock, not go faster. Per-ticker exceptions are
+    isolated (staff-engineer-reviewer finding: every sibling batch loop
+    in this codebase -- data.fetch_all_metrics, screener.run_screen --
+    already guarantees one ticker's malformed data can't abort the
+    whole run; this function previously had no such guard, an
+    inconsistency given it now sits on the same production gating path)
+    -- a ticker whose EDGAR response trips an unexpected exception logs
+    and falls back to its original yfinance metrics, the same safe
+    degrade as every other failure path here, rather than crashing the
+    batch.
+    """
+    cik_lookup = load_cik_lookup()
+    result: dict[str, data.Metrics | None] = {}
+    for symbol, metrics in metrics_by_symbol.items():
+        if metrics is None:
+            result[symbol] = None
+            continue
+        try:
+            cik = get_cik(symbol, cik_lookup)
+            xbrl_gross_margin = None
+            xbrl_operating_margin = None
+            if cik is not None:
+                facts = fetch_company_facts(cik)
+                if facts is not None:
+                    xbrl_gross_margin = gross_margin_from_xbrl(facts)
+                    xbrl_operating_margin = operating_margin_from_xbrl(facts)
+            if xbrl_gross_margin is None and xbrl_operating_margin is None:
+                result[symbol] = metrics
+            else:
+                result[symbol] = dataclasses.replace(
+                    metrics,
+                    gross_margin=(
+                        xbrl_gross_margin if xbrl_gross_margin is not None else metrics.gross_margin
+                    ),
+                    operating_margin=(
+                        xbrl_operating_margin
+                        if xbrl_operating_margin is not None
+                        else metrics.operating_margin
+                    ),
+                )
+        except Exception:
+            logger.error(
+                "%s: apply_primary_metrics failed -- falling back to yfinance's own metrics "
+                "unchanged for this ticker",
+                symbol,
+                exc_info=True,
+            )
+            result[symbol] = metrics
+    return result

@@ -98,6 +98,30 @@ PROGRESS_WRITE_MIN_INTERVAL_SECONDS = float(
 MAX_PLAUSIBLE_PE = 10_000
 MAX_PLAUSIBLE_DEBT_TO_EQUITY = 100
 
+# gross_margin/operating_margin plausibility bound (M37, staff-engineer-
+# reviewer + warren-buffett findings): a ratio outside this range is
+# definitionally impossible for a correctly-scoped consolidated figure --
+# see xbrl._margin_from_xbrl's own docstring for the real bug this
+# closes on the XBRL side (LHX/CCK/ENS's implausible margins, caught
+# live against real EDGAR data). Deliberately source-agnostic, not an
+# XBRL-only bound: §1's own documented NMIH case shows yfinance can
+# manufacture an equally nonsensical margin (an insurer's operating
+# margin exceeding its own gross margin) with nothing else in this
+# codebase ever catching it -- validate_metrics (below) applies this
+# bound to whichever source a ticker's final gross_margin/
+# operating_margin actually came from, tagged the same
+# data_invalid_outlier:* way MAX_PLAUSIBLE_PE/_DEBT_TO_EQUITY already
+# are, not a separate XBRL-specific check. The upper bound (100%) is a
+# hard mathematical ceiling: numerator can never legitimately exceed
+# denominator for either gross profit or operating income relative to
+# revenue. The lower bound is deliberately generous (-500%), not
+# tightened to something like -100%, specifically so a genuinely
+# distressed or pre-revenue company's real reported loss is never
+# mistaken for a scope-mismatch bug -- only a value this implausibly
+# large is treated as evidence of a problem, not merely "a bad quarter."
+MARGIN_PLAUSIBLE_MIN = -5.0
+MARGIN_PLAUSIBLE_MAX = 1.0
+
 # --- Screener Stage 1: Graham entry gates (DESIGN.md 3.3) ---
 MIN_MARKET_CAP = 2_000_000_000  # $2B
 MIN_CURRENT_RATIO = 1.5
@@ -373,6 +397,7 @@ XBRL_DISAGREEMENT_ABSOLUTE_TOLERANCE_PP = 0.01
 # GitHub Actions artifact rather than persisting it to a git branch, so
 # this path only needs to exist for the duration of one run.
 XBRL_SHADOW_REPORT_PATH: Path = DATA_DIR / "xbrl_shadow_report.csv"
+
 # --- News/commentary digest (news_update.py, user request, M22; cadence
 # changed daily -> monthly, user request, M23) ---
 # Second Discord webhook, deliberately separate from DISCORD_WEBHOOK_URL

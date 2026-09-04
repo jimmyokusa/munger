@@ -1,10 +1,13 @@
-"""Unit tests for xbrl.py (Design v2.2 §3.4, M36).
+"""Unit tests for xbrl.py (Design v2.2 §3.4, M36; primary as of M37).
 
 Uses real, trimmed SEC EDGAR response fixtures (tests/fixtures/
 sec_company_tickers_sample.json, sec_companyfacts_aapl_sample.json --
-both real data fetched live 2026-09-02, trimmed to a handful of tickers/
-concepts to keep the fixture small), not synthetic ones, matching this
-project's own precedent (test_journal.py's real bot-state fixture).
+real data fetched live 2026-09-02; sec_companyfacts_lhx_sample.json,
+sec_companyfacts_gntx_sample.json -- real data fetched live 2026-09-04,
+during M37's own shadow-run review -- all trimmed to a handful of
+tickers/concepts to keep each fixture small), not synthetic ones,
+matching this project's own precedent (test_journal.py's real bot-state
+fixture).
 """
 
 from __future__ import annotations
@@ -35,6 +38,18 @@ def _real_ticker_index_bytes() -> bytes:
 
 def _real_companyfacts() -> dict[str, object]:
     loaded = json.loads((_FIXTURES / "sec_companyfacts_aapl_sample.json").read_text())
+    assert isinstance(loaded, dict)
+    return loaded
+
+
+def _real_lhx_companyfacts() -> dict[str, object]:
+    loaded = json.loads((_FIXTURES / "sec_companyfacts_lhx_sample.json").read_text())
+    assert isinstance(loaded, dict)
+    return loaded
+
+
+def _real_gntx_companyfacts() -> dict[str, object]:
+    loaded = json.loads((_FIXTURES / "sec_companyfacts_gntx_sample.json").read_text())
     assert isinstance(loaded, dict)
     return loaded
 
@@ -247,6 +262,43 @@ def test_gross_margin_from_xbrl_none_when_concept_missing() -> None:
     assert xbrl.gross_margin_from_xbrl({}) is None
 
 
+# --- Plausibility-bounded matching (M37, real LHX/GNTX data) ---
+
+
+def test_gross_margin_from_xbrl_rejects_an_implausible_cross_filing_pairing() -> None:
+    # Real, reproduced bug (not a fixture invented to match the fix):
+    # LHX's GrossProfit is only tagged for FY2009/FY2010 (~$1.6-1.9B,
+    # the real as-filed consolidated figures). Its Revenues concept
+    # separately carries a value for the *same* nominal FY2010 end date,
+    # but filed two years later at only $102.4M -- a much smaller,
+    # differently-scoped figure (most likely a later restatement to a
+    # narrower "continuing operations" basis after a divestiture).
+    # Matching purely by fiscal-year-end date pairs these into a ~1828%
+    # "gross margin" -- caught live against real EDGAR data during M37's
+    # own shadow-run review, before this fix existed. There is no OTHER
+    # common year between the two concepts once the implausible one is
+    # rejected, so this must return None, not merely "a smaller wrong
+    # number".
+    facts = _real_lhx_companyfacts()
+    assert xbrl.gross_margin_from_xbrl(facts) is None
+
+
+def test_operating_margin_from_xbrl_matches_gntx_filed_figure() -> None:
+    # The design doc's own named acceptance case (Design v2.2 §3.4):
+    # "yfinance 21.8% vs. the filed 18.7%". Computed here from GNTX's
+    # real OperatingIncomeLoss/RevenueFromContractWithCustomerExcludingAssessedTax
+    # for its most recent fiscal year (FY2025) -- confirms the formula
+    # itself, independent of anything yfinance reports.
+    facts = _real_gntx_companyfacts()
+    margin = xbrl.operating_margin_from_xbrl(facts)
+    assert margin is not None
+    assert 0.185 < margin < 0.190  # ~18.70%, matching the design doc's cited 18.7%
+
+
+def test_operating_margin_from_xbrl_none_when_concept_missing() -> None:
+    assert xbrl.operating_margin_from_xbrl({}) is None
+
+
 def test_disagrees_true_past_the_relative_tolerance(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "XBRL_DISAGREEMENT_RELATIVE_TOLERANCE", 0.05)
     monkeypatch.setattr(config, "XBRL_DISAGREEMENT_ABSOLUTE_TOLERANCE_PP", 0.0)
@@ -317,3 +369,258 @@ def test_shadow_compare_empty_when_values_agree(monkeypatch: pytest.MonkeyPatch)
     )
 
     assert xbrl.shadow_compare("AAPL", facts, yf_metrics) == []
+
+
+def test_shadow_compare_flags_a_real_operating_margin_disagreement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "XBRL_DISAGREEMENT_RELATIVE_TOLERANCE", 0.05)
+    monkeypatch.setattr(config, "XBRL_DISAGREEMENT_ABSOLUTE_TOLERANCE_PP", 0.01)
+    facts = _real_gntx_companyfacts()
+    xbrl_margin = xbrl.operating_margin_from_xbrl(facts)
+    assert xbrl_margin is not None
+    yf_metrics = data.Metrics(
+        symbol="GNTX",
+        market_cap=None,
+        trailing_pe=None,
+        price_to_book=None,
+        current_ratio=None,
+        debt_to_equity=None,
+        return_on_equity=None,
+        gross_margin=None,
+        operating_margin=0.218,  # the design doc's own cited yfinance figure
+        free_cash_flow=None,
+        dividend_yield=None,
+        consecutive_positive_earnings_years=None,
+    )
+
+    disagreements = xbrl.shadow_compare("GNTX", facts, yf_metrics)
+
+    assert len(disagreements) == 1
+    assert disagreements[0].field == "operating_margin"
+    assert disagreements[0].ticker == "GNTX"
+
+
+def test_shadow_compare_checks_both_fields_independently(monkeypatch: pytest.MonkeyPatch) -> None:
+    # gross_margin agrees, operating_margin disagrees -- only the second
+    # should be flagged, confirming the two checks don't interfere.
+    monkeypatch.setattr(config, "XBRL_DISAGREEMENT_RELATIVE_TOLERANCE", 0.05)
+    monkeypatch.setattr(config, "XBRL_DISAGREEMENT_ABSOLUTE_TOLERANCE_PP", 0.01)
+    facts = _real_gntx_companyfacts()
+    xbrl_gross_margin = xbrl.gross_margin_from_xbrl(facts)
+    assert xbrl_gross_margin is not None
+    yf_metrics = data.Metrics(
+        symbol="GNTX",
+        market_cap=None,
+        trailing_pe=None,
+        price_to_book=None,
+        current_ratio=None,
+        debt_to_equity=None,
+        return_on_equity=None,
+        gross_margin=xbrl_gross_margin,  # agrees
+        operating_margin=0.218,  # disagrees
+        free_cash_flow=None,
+        dividend_yield=None,
+        consecutive_positive_earnings_years=None,
+    )
+
+    disagreements = xbrl.shadow_compare("GNTX", facts, yf_metrics)
+
+    assert [d.field for d in disagreements] == ["operating_margin"]
+
+
+# --- apply_primary_metrics (M37, Design v2.2 §3.4) ---
+
+
+def _metrics(**overrides: object) -> data.Metrics:
+    defaults: dict[str, object] = {
+        "symbol": "TEST",
+        "market_cap": 5_000_000_000.0,
+        "trailing_pe": 15.0,
+        "price_to_book": 1.5,
+        "current_ratio": 2.0,
+        "debt_to_equity": 0.5,
+        "return_on_equity": 0.20,
+        "gross_margin": 0.40,
+        "operating_margin": 0.20,
+        "free_cash_flow": 500_000_000.0,
+        "dividend_yield": 0.02,
+        "consecutive_positive_earnings_years": 5,
+    }
+    defaults.update(overrides)
+    return data.Metrics(**defaults)  # type: ignore[arg-type]
+
+
+def test_apply_primary_metrics_overrides_both_margins_when_xbrl_has_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(xbrl, "load_cik_lookup", lambda: {"AAA": "1"})
+    monkeypatch.setattr(xbrl, "fetch_company_facts", lambda cik: {"cik": cik})
+    monkeypatch.setattr(xbrl, "gross_margin_from_xbrl", lambda facts: 0.55)
+    monkeypatch.setattr(xbrl, "operating_margin_from_xbrl", lambda facts: 0.25)
+
+    result = xbrl.apply_primary_metrics({"AAA": _metrics(symbol="AAA")})
+
+    assert result["AAA"] is not None
+    assert result["AAA"].gross_margin == 0.55
+    assert result["AAA"].operating_margin == 0.25
+    # Every other field is untouched.
+    assert result["AAA"].market_cap == 5_000_000_000.0
+
+
+def test_apply_primary_metrics_falls_back_to_yfinance_without_a_cik_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(xbrl, "load_cik_lookup", lambda: {})  # no CIK for ZZZZ
+    original = _metrics(symbol="ZZZZ", gross_margin=0.30, operating_margin=0.15)
+
+    result = xbrl.apply_primary_metrics({"ZZZZ": original})
+
+    assert result["ZZZZ"] == original  # unchanged, same object semantics
+
+
+def test_apply_primary_metrics_falls_back_when_xbrl_facts_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(xbrl, "load_cik_lookup", lambda: {"ZZZZ": "9999999999"})
+    monkeypatch.setattr(xbrl, "fetch_company_facts", lambda cik: None)
+    original = _metrics(symbol="ZZZZ", gross_margin=0.30, operating_margin=0.15)
+
+    result = xbrl.apply_primary_metrics({"ZZZZ": original})
+
+    assert result["ZZZZ"] == original
+
+
+def test_apply_primary_metrics_falls_back_per_field_when_only_one_is_computable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A sector without a meaningful gross margin (financials, insurers)
+    # might have operating income but no GrossProfit tagged -- each
+    # field's override is independent.
+    monkeypatch.setattr(xbrl, "load_cik_lookup", lambda: {"AAA": "1"})
+    monkeypatch.setattr(xbrl, "fetch_company_facts", lambda cik: {"cik": cik})
+    monkeypatch.setattr(xbrl, "gross_margin_from_xbrl", lambda facts: None)
+    monkeypatch.setattr(xbrl, "operating_margin_from_xbrl", lambda facts: 0.25)
+
+    result = xbrl.apply_primary_metrics(
+        {"AAA": _metrics(symbol="AAA", gross_margin=0.40, operating_margin=0.20)}
+    )
+
+    assert result["AAA"] is not None
+    assert result["AAA"].gross_margin == 0.40  # unchanged -- XBRL had nothing to offer
+    assert result["AAA"].operating_margin == 0.25  # overridden
+
+
+def test_apply_primary_metrics_preserves_a_none_metrics_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A ticker yfinance itself failed to fetch stays None -- XBRL alone
+    # can't substitute for a fully-missing Metrics record (market_cap,
+    # trailing_pe, and every Graham-gate field this function doesn't
+    # touch would still be missing).
+    fetch_calls: list[str] = []
+
+    def _record_and_lookup(symbol: str, lookup: dict[str, str]) -> str | None:
+        fetch_calls.append(symbol)
+        return lookup.get(symbol)
+
+    monkeypatch.setattr(xbrl, "load_cik_lookup", lambda: {"ZZZZ": "9999999999"})
+    monkeypatch.setattr(xbrl, "get_cik", _record_and_lookup)
+
+    result = xbrl.apply_primary_metrics({"ZZZZ": None})
+
+    assert result == {"ZZZZ": None}
+    assert fetch_calls == []  # never even attempted a CIK lookup for a None entry
+
+
+def test_apply_primary_metrics_real_gntx_data_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Full pipeline against real data, not mocked internals: confirms
+    # the actual GNTX fixture flows through get_cik/fetch_company_facts/
+    # operating_margin_from_xbrl to produce the same ~18.7% this file's
+    # other GNTX test already confirms directly.
+    monkeypatch.setattr(xbrl, "load_cik_lookup", lambda: {"GNTX": "0000355811"})
+    monkeypatch.setattr(xbrl, "fetch_company_facts", lambda cik: _real_gntx_companyfacts())
+
+    result = xbrl.apply_primary_metrics({"GNTX": _metrics(symbol="GNTX", operating_margin=0.218)})
+
+    assert result["GNTX"] is not None
+    operating_margin = result["GNTX"].operating_margin
+    assert operating_margin is not None
+    assert 0.185 < operating_margin < 0.190
+
+
+def test_apply_primary_metrics_isolates_one_ticker_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Matches run_screen's/data.fetch_all_metrics' own per-ticker
+    # isolation (staff-engineer-reviewer finding): one ticker's
+    # unexpected exception must not abort the whole batch, the same
+    # "one bad ticker can't take down a ~1500-ticker run" guarantee
+    # every sibling batch loop in this codebase already makes.
+    monkeypatch.setattr(xbrl, "load_cik_lookup", lambda: {"GOOD": "1", "EXPLODES": "2"})
+
+    def _fetch_facts(cik: str) -> dict[str, object]:
+        if cik == "2":
+            raise TypeError("simulated malformed EDGAR response")
+        return {"cik": cik}
+
+    monkeypatch.setattr(xbrl, "fetch_company_facts", _fetch_facts)
+    monkeypatch.setattr(xbrl, "gross_margin_from_xbrl", lambda facts: 0.55)
+
+    good = _metrics(symbol="GOOD", gross_margin=0.40)
+    explodes = _metrics(symbol="EXPLODES", gross_margin=0.30)
+
+    result = xbrl.apply_primary_metrics({"GOOD": good, "EXPLODES": explodes})
+
+    assert result["GOOD"] is not None
+    assert result["GOOD"].gross_margin == 0.55  # unaffected by the other ticker's crash
+    assert result["EXPLODES"] == explodes  # fell back to its original yfinance metrics, unchanged
+
+
+def test_margin_from_xbrl_rejects_a_non_positive_denominator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Strictly positive, not merely nonzero (staff-engineer-reviewer
+    # finding): a negative denominator paired with a negative numerator
+    # would otherwise produce a positive, "plausible"-looking ratio that
+    # is nevertheless economically meaningless.
+    monkeypatch.setattr(config, "MARGIN_PLAUSIBLE_MIN", -5.0)
+    monkeypatch.setattr(config, "MARGIN_PLAUSIBLE_MAX", 1.0)
+    facts: dict[str, object] = {
+        "facts": {
+            "us-gaap": {
+                "GrossProfit": {
+                    "units": {
+                        "USD": [
+                            {
+                                "start": "2024-01-01",
+                                "end": "2024-12-31",
+                                "val": -100,
+                                "form": "10-K",
+                                "fp": "FY",
+                                "filed": "2025-02-01",
+                            }
+                        ]
+                    }
+                },
+                "Revenues": {
+                    "units": {
+                        "USD": [
+                            {
+                                "start": "2024-01-01",
+                                "end": "2024-12-31",
+                                "val": -50,  # negative denominator
+                                "form": "10-K",
+                                "fp": "FY",
+                                "filed": "2025-02-01",
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+    }
+    # -100 / -50 = 2.0 -- a "plausible"-looking positive ratio if the
+    # only guard were "denominator != 0", but both figures are negative
+    # (economically meaningless) and 2.0 is outside the bound anyway;
+    # the real regression this guards is a denominator like -500 giving
+    # a small, in-bound-looking ratio. Confirm no result either way.
+    assert xbrl.gross_margin_from_xbrl(facts) is None
