@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from alpaca.common.exceptions import APIError
+from alpaca.data.enums import DataFeed
 from alpaca.data.models.trades import Trade
 from alpaca.trading.enums import AssetStatus, OrderSide, OrderStatus, TimeInForce
 from alpaca.trading.models import Asset, Order, Position, TradeAccount
@@ -230,6 +231,66 @@ def test_average_daily_volume_returns_none_when_no_bars_at_all(setup: _Setup) ->
     assert setup.module._average_daily_volume("AAPL") is None
 
 
+def test_average_daily_volume_requests_the_iex_feed_explicitly(setup: _Setup) -> None:
+    # Real incident, 2026-09-04: an unset `feed` risks the SDK defaulting
+    # to SIP, which a real account without a paid market-data
+    # subscription can't query for a recent date range ("subscription
+    # does not permit querying recent SIP data") -- confirmed against a
+    # live paper-account run, not a hypothesis. IEX must be requested
+    # explicitly, not left to an undocumented default.
+    setup.data.get_stock_bars.return_value = _fake_bar_set("AAPL", [100.0])
+    setup.module._average_daily_volume("AAPL")
+    request = setup.data.get_stock_bars.call_args[0][0]
+    assert request.feed == DataFeed.IEX
+
+
+def test_average_daily_volume_fails_open_when_the_bars_request_raises(
+    setup: _Setup,
+) -> None:
+    # Real incident, 2026-09-04: the first live buy attempt after a
+    # kill-switch/reconciliation fix hit exactly this -- get_stock_bars
+    # raised APIError (a 403 on the SIP feed), which propagated straight
+    # through _average_daily_volume and _exceeds_adv_ceiling into
+    # market_buy's broad except, failing the ENTIRE buy rather than just
+    # this secondary check. This function's own docstring already
+    # promised "a missing bars response... would be a worse outcome" than
+    # occasionally skipping the check -- that promise only held for an
+    # empty-but-successful response before this test; an exception must
+    # fail open the same way.
+    setup.data.get_stock_bars.side_effect = _fake_api_error(403)
+    assert setup.module._average_daily_volume("AAPL") is None
+
+
+def test_exceeds_adv_ceiling_fails_open_when_the_bars_request_raises(
+    setup: _Setup,
+) -> None:
+    setup.data.get_stock_bars.side_effect = _fake_api_error(403)
+    assert setup.module._exceeds_adv_ceiling("AAPL", 1_000_000.0) is False
+
+
+def test_market_buy_proceeds_when_the_adv_bars_request_raises(
+    setup: _Setup,
+) -> None:
+    # End-to-end version of the real incident: a buy must still be
+    # attempted (and reach the broker) when the ADV check's own data
+    # fetch fails, not be silently dropped as "buy order failed."
+    setup.data.get_stock_latest_trade.return_value = {"AAPL": _fake_trade(100.0)}
+    setup.data.get_stock_bars.side_effect = _fake_api_error(403)
+    setup.trading.submit_order.return_value = _fake_accepted_order()
+
+    result = setup.module.market_buy("AAPL", 5_000.0)
+
+    assert result is not None
+    setup.trading.submit_order.assert_called_once()
+
+
+def test_last_trade_price_requests_the_iex_feed_explicitly(setup: _Setup) -> None:
+    setup.data.get_stock_latest_trade.return_value = {"AAPL": _fake_trade(100.0)}
+    setup.module._last_trade_price("AAPL")
+    request = setup.data.get_stock_latest_trade.call_args[0][0]
+    assert request.feed == DataFeed.IEX
+
+
 def test_exceeds_adv_ceiling_true_past_the_configured_fraction(
     setup: _Setup, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -319,6 +380,28 @@ def test_liquidate_skipped_when_it_exceeds_the_adv_ceiling(
     # journaled/treated as sold; the caller (bot.run) sees None and
     # simply doesn't call journal.record_order, same as any other
     # failed liquidation attempt.
+
+
+def test_liquidate_proceeds_when_the_adv_bars_request_raises(setup: _Setup) -> None:
+    # Mirrors test_market_buy_proceeds_when_the_adv_bars_request_raises --
+    # staff-engineer-reviewer finding: liquidate() reaches the same
+    # _exceeds_adv_ceiling/_average_daily_volume helpers as market_buy,
+    # via the same fail-open contract, but that guarantee wasn't
+    # separately pinned for the sell side. A quality-driven liquidation
+    # is exactly the case where blocking on an unrelated ADV-data outage
+    # would be worst -- it would leave a deteriorating position open
+    # (see liquidate's own docstring) instead of merely skipping a new
+    # buy.
+    setup.trading.get_open_position.return_value = _fake_position("AAPL", 1000.0, 7.5)
+    setup.data.get_stock_latest_trade.return_value = {"AAPL": _fake_trade(100.0)}
+    setup.data.get_stock_bars.side_effect = _fake_api_error(403)
+    fake_order = _fake_accepted_order()
+    setup.trading.submit_order.return_value = fake_order
+
+    result = setup.module.liquidate("AAPL")
+
+    assert result is fake_order
+    setup.trading.submit_order.assert_called_once()
 
 
 # --- M29b: is_corporate_action (Alpaca Assets API) ---

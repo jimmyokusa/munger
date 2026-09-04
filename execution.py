@@ -27,6 +27,7 @@ import datetime
 import logging
 
 from alpaca.common.exceptions import APIError
+from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestTradeRequest
 from alpaca.data.timeframe import TimeFrame
@@ -107,8 +108,32 @@ class ExecutionModule:
         the price a fill is actually likely to land near, not off the
         limit price -- see market_buy's own comment on why those two are
         not interchangeable for that specific estimate.
+
+        feed=DataFeed.IEX (real incident, 2026-09-04): explicit, not
+        left to the SDK's own default. `_average_daily_volume`'s bars
+        request hit this same gap without it -- a real account without
+        a paid market-data subscription only has SIP entitlement for
+        data older than 15 minutes; a *recent* SIP request 403s
+        ("subscription does not permit querying recent SIP data"),
+        which is exactly what an unset `feed` risks defaulting to. IEX
+        is the feed every paper (and unpaid live) account can always
+        reach. Pinned here too even though this call wasn't observed to
+        fail -- relying on an undocumented SDK default that happens to
+        currently resolve to IEX is the same latent gap, just not yet
+        triggered.
+
+        Data-quality tradeoff, disclosed (staff-engineer-reviewer
+        finding, M37... incident review): IEX is a single-exchange
+        feed, not the consolidated tape -- its last-trade print can
+        differ from (and lag) the real NBBO last trade SIP would show.
+        `_limit_price`'s band and `market_buy`'s implied-shares ADV
+        estimate are both sized off this value; accepted here the same
+        way `_average_daily_volume`'s own IEX-only volume figure is
+        (see that function's docstring) -- reachable-but-narrower beats
+        unreachable-but-complete for a real account without paid SIP
+        entitlement.
         """
-        request = StockLatestTradeRequest(symbol_or_symbols=symbol)
+        request = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
         trades = self._data.get_stock_latest_trade(request)
         return float(trades[symbol].price)
 
@@ -128,7 +153,40 @@ class ExecutionModule:
         """Mean daily volume over config.ADV_LOOKBACK_TRADING_DAYS.
 
         None if no bars came back (fails open on the ADV check itself --
-        see _exceeds_adv_ceiling for why).
+        see _exceeds_adv_ceiling for why) OR if the bars request itself
+        raised (real incident, 2026-09-04: every buy in the first live
+        run after the paper account's reconciliation was fixed failed
+        with `execution: SYMBOL: buy order failed` / `403 ... subscription
+        does not permit querying recent SIP data` -- an unset `feed`
+        defaulted to SIP, which a real account without a paid
+        market-data subscription can't query for a recent date range.
+        Fixed at the source below with feed=DataFeed.IEX, but this
+        function's own docstring already commits to "a missing bars
+        response... blocking every order... would be a worse outcome" --
+        that promise only held for an empty-but-successful response
+        before this fix; an *exception* from the request bypassed it
+        entirely and propagated up through _exceeds_adv_ceiling into
+        market_buy's broad except, which is why every order failed
+        outright instead of this secondary check merely failing open.
+        Caught here now so any future data-provider gap -- a timeout, a
+        new listing, a transient outage -- degrades to "ADV unknown,
+        don't block the order" the way this function has always claimed
+        to behave, not to "the whole buy attempt failed.").
+
+        Data-quality tradeoff, disclosed (staff-engineer-reviewer
+        finding): feed=DataFeed.IEX sources these bars from a single
+        exchange, not the consolidated (SIP) tape -- IEX's own share of
+        total market volume varies by name and is meaningfully smaller
+        than true consolidated volume, so this function's return value
+        systematically understates real ADV. That means
+        `_exceeds_adv_ceiling`'s check runs more conservatively than its
+        configured `config.MAX_ORDER_PCT_OF_ADV` percentage nominally
+        implies (a smaller denominator makes the same share count look
+        like a larger fraction of "ADV") -- accepted as the safe
+        direction to err in for a risk control, and, per the fail-open
+        reasoning throughout this docstring, still strictly better than
+        the alternative (SIP entitlement this account doesn't have,
+        which wouldn't return a number at all).
 
         M26e (Design v2.2 §3.3). Fetches roughly 1.5x the lookback in
         calendar days to comfortably cover weekends/holidays and still
@@ -141,9 +199,22 @@ class ExecutionModule:
         end = datetime.datetime.now(datetime.UTC)
         start = end - datetime.timedelta(days=int(config.ADV_LOOKBACK_TRADING_DAYS * 1.5))
         request = StockBarsRequest(
-            symbol_or_symbols=symbol, timeframe=TimeFrame.Day, start=start, end=end
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Day,
+            start=start,
+            end=end,
+            feed=DataFeed.IEX,
         )
-        bar_set = self._data.get_stock_bars(request)
+        try:
+            bar_set = self._data.get_stock_bars(request)
+        except Exception:
+            logger.warning(
+                "%s: ADV bars request failed -- treating as unknown, not blocking the order "
+                "(see _exceeds_adv_ceiling's own fail-open contract)",
+                symbol,
+                exc_info=True,
+            )
+            return None
         bars = bar_set.data.get(symbol, []) if hasattr(bar_set, "data") else []
         # len(bars) == 0, not "not bars" -- a falsy-vs-empty distinction
         # that only matters against an unconfigured test double (a bare
