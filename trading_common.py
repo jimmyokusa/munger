@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import datetime
 import logging
+import time
 from collections.abc import Callable
 
-from alpaca.trading.models import Order
+from alpaca.trading.client import TradingClient
+from alpaca.trading.models import Clock, Order
 
 import config
 import execution
@@ -115,6 +117,52 @@ def check_data_freshness() -> int | None:
     if age_hours > config.DATA_FRESHNESS_MAX_HOURS:
         return age_hours
     return None
+
+
+def market_is_open() -> bool:
+    """Whether Alpaca's own market clock reports the market open right now.
+
+    M45 (user request, 2026-09-04): daily-trade.yml/daily-trade-live.yml
+    run unconditionally every calendar day at a fixed UTC time
+    (config.py's own comment on NEWS_UPDATE_DAY_OF_MONTH already noted
+    this in passing) -- there was no trading-day/market-hours gate on
+    the actual trading path at all, only on pnl.py's separate intraday
+    snapshot job (PNL_MARKET_HOURS_ONLY). Moved here (out of pnl.py,
+    where this originated as M19) so bot.py/execute_trades.py can share
+    the exact same authority pnl.py already trusted, rather than each
+    approximating market hours with its own UTC/weekday heuristic --
+    Alpaca's own clock is the one source that already gets weekends,
+    holidays, and the ET/UTC DST shift right without this project having
+    to maintain a market calendar itself.
+
+    Fails CLOSED in the sense that matters for a caller gating trading:
+    an unexpected response type raises rather than silently returning
+    True, so a broken clock call blocks the trade path (screen-only for
+    that run) rather than risking a spurious go-ahead. A transient
+    failure is retried once first (see the single retry below) before
+    that raise, matching pnl.py's own established tolerance for one-off
+    network blips.
+
+    Builds its own TradingClient rather than sharing one with
+    execution.ExecutionModule -- constructing a client makes no network
+    call, so a second instance costs nothing, and keeping this
+    self-contained means callers (and tests) don't need to thread a
+    client through just for this one read.
+    """
+    trading = TradingClient(
+        api_key=config.ALPACA_API_KEY,
+        secret_key=config.ALPACA_SECRET_KEY,
+        paper=config.PAPER_TRADING,
+    )
+    try:
+        clock = trading.get_clock()
+    except Exception:
+        logger.warning("get_clock failed once; retrying once after a short delay.")
+        time.sleep(config.ALPACA_RETRY_DELAY_SECONDS)
+        clock = trading.get_clock()
+    if not isinstance(clock, Clock):
+        raise ValueError(f"unexpected get_clock() response: {clock!r}")
+    return bool(clock.is_open)
 
 
 def settle_and_react(

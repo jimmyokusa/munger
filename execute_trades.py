@@ -145,6 +145,15 @@ def run(run_date: str | None = None) -> int:
         )
         return trading_common.finish(alerts)
 
+    # M45: same gate as bot.py's own (see that module's comment for the
+    # full reasoning) -- this workflow is currently dispatch-only with no
+    # cron, but the check is added here too so the same gap can't
+    # resurface silently if/when the M34 cadence cutover ever schedules
+    # this on a recurring trigger.
+    if not trading_common.market_is_open():
+        logger.info("Market is closed -- screen-only run, no orders will be placed.")
+        return trading_common.finish(alerts)
+
     exec_module = execution.ExecutionModule(run_date)
     exec_module.verify_account_access()
 

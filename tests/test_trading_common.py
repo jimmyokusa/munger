@@ -12,12 +12,13 @@ both depend on this module being correct on its own.
 from __future__ import annotations
 
 import datetime
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from alpaca.trading.enums import OrderStatus
-from alpaca.trading.models import Order
+from alpaca.trading.models import Clock, Order
 
 import config
 import trading_common
@@ -206,3 +207,71 @@ def test_cap_buy_orders_to_budget_never_truncates_liquidations() -> None:
     # but the liquidation count itself was never touched by this function.
     assert capped == []
     assert deferred == ["AAPL"]
+
+
+# --- market_is_open (moved from pnl.py, M45: now shared with bot.py/execute_trades.py) ---
+
+
+def _fake_clock(is_open: bool) -> MagicMock:
+    clock = MagicMock(spec=Clock)
+    clock.is_open = is_open
+    return clock
+
+
+def _patch_trading_client(monkeypatch: pytest.MonkeyPatch, trading_mock: MagicMock) -> None:
+    monkeypatch.setattr(trading_common, "TradingClient", lambda **kwargs: trading_mock)
+
+
+def test_market_is_open_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    trading_mock = MagicMock()
+    trading_mock.get_clock.return_value = _fake_clock(True)
+    _patch_trading_client(monkeypatch, trading_mock)
+
+    assert trading_common.market_is_open() is True
+
+
+def test_market_is_open_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    trading_mock = MagicMock()
+    trading_mock.get_clock.return_value = _fake_clock(False)
+    _patch_trading_client(monkeypatch, trading_mock)
+
+    assert trading_common.market_is_open() is False
+
+
+def test_market_is_open_fails_closed_on_unexpected_clock_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trading_mock = MagicMock()
+    trading_mock.get_clock.return_value = {"not": "a Clock"}
+    _patch_trading_client(monkeypatch, trading_mock)
+
+    with pytest.raises(ValueError, match="unexpected get_clock"):
+        trading_common.market_is_open()
+
+
+def test_market_is_open_retries_a_transient_clock_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    trading_mock = MagicMock()
+    trading_mock.get_clock.side_effect = [ConnectionError("blip"), _fake_clock(True)]
+    _patch_trading_client(monkeypatch, trading_mock)
+
+    assert trading_common.market_is_open() is True
+    assert trading_mock.get_clock.call_count == 2
+
+
+def test_market_is_open_fails_closed_after_a_second_clock_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A persistently broken clock call must still fail loud after the
+    # retry is exhausted, same posture as pnl._with_retry's own
+    # equivalent test -- this is a reduction in false-positive noise on
+    # one-off blips, not a blanket suppression of real failures.
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    trading_mock = MagicMock()
+    trading_mock.get_clock.side_effect = ConnectionError("still broken")
+    _patch_trading_client(monkeypatch, trading_mock)
+
+    with pytest.raises(ConnectionError, match="still broken"):
+        trading_common.market_is_open()

@@ -34,10 +34,11 @@ from pathlib import Path
 from typing import TypeVar
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.models import Clock, PortfolioHistory, Position, TradeAccount
+from alpaca.trading.models import PortfolioHistory, Position, TradeAccount
 from alpaca.trading.requests import GetPortfolioHistoryRequest
 
 import config
+from trading_common import market_is_open
 
 logger = logging.getLogger(__name__)
 
@@ -62,34 +63,10 @@ def _with_retry(fetch: Callable[[], _T], description: str) -> _T:
         logger.warning(
             "%s failed once; retrying once after %.0fs.",
             description,
-            config.PNL_ALPACA_RETRY_DELAY_SECONDS,
+            config.ALPACA_RETRY_DELAY_SECONDS,
         )
-        time.sleep(config.PNL_ALPACA_RETRY_DELAY_SECONDS)
+        time.sleep(config.ALPACA_RETRY_DELAY_SECONDS)
         return fetch()
-
-
-def market_is_open() -> bool:
-    """Whether Alpaca's own market clock reports the market open right now.
-
-    Used to gate the intraday snapshot cron (pnl-snapshot.yml, M19): its
-    cron schedule is a UTC envelope wide enough to tolerate ET's DST shift
-    (a fixed UTC cron can't track that shift itself), so this is the actual
-    authority on "is trading happening right now," not the envelope alone.
-    Builds its own TradingClient rather than sharing one with
-    generate_snapshot() -- constructing a client makes no network call, so
-    a second instance costs nothing, and keeping this function
-    self-contained means callers (and tests) don't need to thread a client
-    through just for this one read.
-    """
-    trading = TradingClient(
-        api_key=config.ALPACA_API_KEY,
-        secret_key=config.ALPACA_SECRET_KEY,
-        paper=config.PAPER_TRADING,
-    )
-    clock = _with_retry(trading.get_clock, "get_clock")
-    if not isinstance(clock, Clock):
-        raise ValueError(f"unexpected get_clock() response: {clock!r}")
-    return bool(clock.is_open)
 
 
 def _float_or_none(value: object) -> float | None:

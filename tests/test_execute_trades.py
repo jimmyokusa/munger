@@ -22,6 +22,7 @@ import execution
 import journal
 import portfolio
 import screener
+import trading_common
 import universe
 
 
@@ -63,6 +64,10 @@ class _FakeExecutionModule:
 
 @pytest.fixture(autouse=True)
 def _isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # M45: default to market-open so existing tests keep exercising the
+    # trading path without reaching a real TradingClient -- tests that
+    # want to exercise the closed-market path override this locally.
+    monkeypatch.setattr(trading_common, "market_is_open", lambda: True)
     monkeypatch.setattr(config, "KILL_SWITCH", False)
     monkeypatch.setattr(config, "KILL_SWITCH_FLAG_FILE_PATH", tmp_path / "KILL_SWITCH")
     monkeypatch.setattr(
@@ -181,6 +186,22 @@ def test_run_refuses_to_run_live_without_the_live_trading_flag(
 
     assert construct_calls == []
     assert exit_code == 1
+
+
+def test_run_refuses_to_trade_when_the_market_is_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # M45: same gate as bot.py's own -- expected/routine (weekends,
+    # holidays), so NOT alert-worthy, unlike the live-trading-flag test
+    # above.
+    monkeypatch.setattr(trading_common, "market_is_open", lambda: False)
+    construct_calls: list[str] = []
+    monkeypatch.setattr(
+        execution, "ExecutionModule", lambda run_date: construct_calls.append(run_date)
+    )
+
+    exit_code = execute_trades.run(run_date="2026-07-21")
+
+    assert construct_calls == []
+    assert exit_code == 0
 
 
 def test_run_aborts_on_reconciliation_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:

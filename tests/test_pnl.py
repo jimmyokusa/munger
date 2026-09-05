@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from alpaca.trading.models import Clock, PortfolioHistory, Position, TradeAccount
+from alpaca.trading.models import PortfolioHistory, Position, TradeAccount
 
 import config
 import pnl
@@ -243,14 +243,8 @@ def test_write_snapshot_accepts_a_prefetched_snapshot_without_fetching(
 def _no_real_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     # Every retry test below deliberately triggers pnl._with_retry's sleep
     # -- patched to a no-op globally so the suite doesn't actually wait
-    # config.PNL_ALPACA_RETRY_DELAY_SECONDS on every one of them.
+    # config.ALPACA_RETRY_DELAY_SECONDS on every one of them.
     monkeypatch.setattr(time, "sleep", lambda seconds: None)
-
-
-def _fake_clock(is_open: bool) -> MagicMock:
-    clock = MagicMock(spec=Clock)
-    clock.is_open = is_open
-    return clock
 
 
 def test_with_retry_returns_first_success_without_retrying() -> None:
@@ -286,44 +280,6 @@ def test_with_retry_fails_closed_after_a_second_failure() -> None:
 
     with pytest.raises(ConnectionError, match="still broken"):
         pnl._with_retry(fetch, "test")
-
-
-def test_market_is_open_true(monkeypatch: pytest.MonkeyPatch) -> None:
-    trading_mock = MagicMock()
-    trading_mock.get_clock.return_value = _fake_clock(True)
-    _patch_trading_client(monkeypatch, trading_mock)
-
-    assert pnl.market_is_open() is True
-
-
-def test_market_is_open_false(monkeypatch: pytest.MonkeyPatch) -> None:
-    trading_mock = MagicMock()
-    trading_mock.get_clock.return_value = _fake_clock(False)
-    _patch_trading_client(monkeypatch, trading_mock)
-
-    assert pnl.market_is_open() is False
-
-
-def test_market_is_open_fails_closed_on_unexpected_clock_type(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    trading_mock = MagicMock()
-    trading_mock.get_clock.return_value = {"not": "a Clock"}
-    _patch_trading_client(monkeypatch, trading_mock)
-
-    with pytest.raises(ValueError, match="unexpected get_clock"):
-        pnl.market_is_open()
-
-
-def test_market_is_open_retries_a_transient_clock_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    trading_mock = MagicMock()
-    trading_mock.get_clock.side_effect = [ConnectionError("blip"), _fake_clock(True)]
-    _patch_trading_client(monkeypatch, trading_mock)
-
-    assert pnl.market_is_open() is True
-    assert trading_mock.get_clock.call_count == 2
 
 
 def test_generate_snapshot_retries_a_transient_get_account_failure(

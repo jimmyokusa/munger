@@ -326,7 +326,10 @@ PNL_SNAPSHOT_ONLY = os.environ.get("MUNGER_PNL_SNAPSHOT_ONLY", "") == "1"
 # market hours, meaningfully raising the odds of an ordinary transient
 # blip firing a false-positive failure-alert email for a non-incident; a
 # persistently broken bridge still fails loud after this is exhausted.
-PNL_ALPACA_RETRY_DELAY_SECONDS = 5.0
+# Renamed from PNL_ALPACA_RETRY_DELAY_SECONDS (M45): trading_common.
+# market_is_open() now shares this same retry-once tolerance, not just
+# pnl.py's own Alpaca reads.
+ALPACA_RETRY_DELAY_SECONDS = 5.0
 # Client-side poll interval for pnl.html's live refresh (M19) -- a few
 # times tighter than the data's own ~30-min update cadence (a left-open
 # tab picks up a new snapshot within minutes of it landing, not up to 30),

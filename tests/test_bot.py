@@ -90,6 +90,10 @@ def _isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # forbids). Tests that want to exercise the override itself
     # monkeypatch xbrl.apply_primary_metrics again, locally.
     monkeypatch.setattr(xbrl, "apply_primary_metrics", lambda metrics_by_symbol: metrics_by_symbol)
+    # M45: default to market-open so existing tests keep exercising the
+    # trading path without reaching a real TradingClient -- tests that
+    # want to exercise the closed-market path override this locally.
+    monkeypatch.setattr(bot, "_market_is_open", lambda: True)
     monkeypatch.setattr(config, "KILL_SWITCH", False)
     monkeypatch.setattr(config, "KILL_SWITCH_FLAG_FILE_PATH", tmp_path / "KILL_SWITCH")
     # Without this, tests would check the *real* repo-root path -- which
@@ -1345,6 +1349,78 @@ def test_run_refuses_to_trade_live_without_the_live_trading_flag(
 
     assert exec_constructed is False
     assert exit_code == 1
+
+
+def test_run_refuses_to_trade_when_the_market_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M45 (user request): daily-trade.yml/daily-trade-live.yml run
+    # unconditionally every calendar day, so this must be checked at
+    # runtime, not assumed from the schedule. Same "broker client never
+    # even constructed" bar as the LIVE_TRADING_ENABLED test above.
+    monkeypatch.setattr(bot, "_market_is_open", lambda: False)
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+
+    exec_constructed = False
+
+    def _fail_if_constructed(run_date: str) -> _FakeExecutionModule:
+        nonlocal exec_constructed
+        exec_constructed = True
+        return _FakeExecutionModule(run_date)
+
+    monkeypatch.setattr(execution, "ExecutionModule", _fail_if_constructed)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    assert exec_constructed is False
+    # Unlike a kill switch or a missing live-trading flag, a closed
+    # market is expected/routine (weekends, holidays) -- must NOT be
+    # alert-worthy, or every weekend would fire a spurious GitHub
+    # Actions failure-email.
+    assert exit_code == 0
+
+
+def test_run_trades_when_the_market_is_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The converse of the test above -- the default `_market_is_open`
+    # fixture value (True) must not itself block a trading run; this
+    # pins that down explicitly rather than relying only on every other
+    # trading test incidentally passing under the same default.
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+    monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
+    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {})
+    monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
+    monkeypatch.setattr(
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, period, corp_check=None: ([], [], []),
+    )
+    monkeypatch.setattr(
+        portfolio, "generate_buy_queue", lambda holdings, results, cash, exclude=None: []
+    )
+
+    exec_constructed = False
+
+    def _track_construction(run_date: str) -> _FakeExecutionModule:
+        nonlocal exec_constructed
+        exec_constructed = True
+        return _FakeExecutionModule(run_date)
+
+    monkeypatch.setattr(execution, "ExecutionModule", _track_construction)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    assert exec_constructed is True
+    assert exit_code == 0
 
 
 def test_run_trades_live_when_the_live_trading_flag_is_set(

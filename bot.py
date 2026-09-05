@@ -42,6 +42,7 @@ from trading_common import check_data_freshness as _check_data_freshness
 from trading_common import finish as _finish
 from trading_common import global_kill_switch_active as _global_kill_switch_active
 from trading_common import kill_switch_active as _kill_switch_active
+from trading_common import market_is_open as _market_is_open
 from trading_common import settle_and_react as _settle_and_react
 
 # mypy strict (no_implicit_reexport) only treats an imported name as
@@ -62,6 +63,7 @@ __all__ = [
     "_check_data_freshness",
     "_global_kill_switch_active",
     "_kill_switch_active",
+    "_market_is_open",
 ]
 
 logger = logging.getLogger(__name__)
@@ -265,6 +267,24 @@ def run(run_date: str | None = None) -> int:
             "Live mode requested but MUNGER_LIVE_TRADING_ENABLED is not set -- "
             "screen-only run, no orders placed.",
         )
+        return _finish(alerts)
+
+    # M45 (user request): daily-trade.yml/daily-trade-live.yml run
+    # unconditionally every calendar day at a fixed UTC time -- there was
+    # previously no check here at all, so a weekend or market-holiday
+    # firing would reach ExecutionModule and attempt real order
+    # submission while the market is closed. Checked last among the
+    # screen-only gates above (kill switches, LIVE_TRADING_ENABLED)
+    # deliberately: those are all cheaper, local checks (a flag, a file),
+    # so a run that's already going to be screen-only for one of those
+    # reasons is short-circuited before spending a network round trip on
+    # this one. Not alert-worthy (no _alert call, exit code stays clean)
+    # -- unlike a kill switch or a missing flag, a closed market is the
+    # expected, deterministic state on ~2/7 days plus holidays, not an
+    # operator action or a misconfiguration; treating it as a failure
+    # would fire a spurious GitHub Actions failure email every weekend.
+    if not _market_is_open():
+        logger.info("Market is closed -- screen-only run, no orders will be placed.")
         return _finish(alerts)
 
     exec_module = execution.ExecutionModule(run_date)
