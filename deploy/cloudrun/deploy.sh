@@ -141,6 +141,23 @@ if [ "$RESOURCE_KIND" = "job" ]; then
     --region="$REGION" \
     --project="$PROJECT" \
     --image="$IMAGE_AT_DIGEST"
+elif [ "$TARGET" = "report-web" ]; then
+  # M44 (DESIGN_REAL_MONEY.md §6): report-web is now a multi-container
+  # (nginx + oauth2-proxy sidecar) service, which `gcloud run deploy`'s
+  # flags can't express -- apply the full service.yaml instead, with the
+  # freshly-built nginx digest substituted in. oauth2-proxy's own image
+  # is pinned directly in that file, not part of this build/substitution.
+  SERVICE_YAML="$(mktemp -t "report-web-service.XXXXXX")"
+  trap 'rm -f "$CLOUDBUILD_YAML" "$SERVICE_YAML"' EXIT
+  sed "s|__NGINX_IMAGE__|${IMAGE_AT_DIGEST}|" \
+    "${BUILD_CONTEXT}/service.yaml" > "$SERVICE_YAML"
+  if grep -q '__NGINX_IMAGE__' "$SERVICE_YAML"; then
+    echo "!! __NGINX_IMAGE__ token still present after substitution -- ${BUILD_CONTEXT}/service.yaml may have been edited; aborting rather than deploying a broken image ref." >&2
+    exit 1
+  fi
+  gcloud run services replace "$SERVICE_YAML" \
+    --region="$REGION" \
+    --project="$PROJECT"
 else
   gcloud run deploy "$TARGET" \
     --region="$REGION" \

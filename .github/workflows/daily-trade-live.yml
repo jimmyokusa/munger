@@ -109,11 +109,24 @@ jobs:
       # fully credential-agnostic (DESIGN_REAL_MONEY.md §3.1), so the only
       # thing that makes this run against the live account is which GitHub
       # secret gets mapped to those names here, plus MUNGER_PAPER_TRADING.
+      #
+      # MUNGER_LIVE_TRADING_ENABLED (M24 Fix 4, M44): the actual gate on
+      # real order placement -- bot.run() refuses to trade live without
+      # it (bot.py's own check fires before ExecutionModule is ever
+      # constructed), regardless of credentials or the kill switch state.
+      # Set here 2026-09-04 on explicit user instruction ("flip it now,
+      # its only $100"), after M44 cleared every other go-live blocker
+      # (safety mechanisms dry-run-proven, the pre-existing G holding
+      # confirmed sold, the real-money page genuinely login-gated and
+      # verified live). This is the one deliberate step M24 always left
+      # for the user to take on their own -- see that milestone's own
+      # todo row in TASKS.md.
       - name: Run bot (live account)
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_LIVE_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
           MUNGER_PAPER_TRADING: "false"
+          MUNGER_LIVE_TRADING_ENABLED: "1"
         run: python bot.py
 
       - name: Persist bot-state-live

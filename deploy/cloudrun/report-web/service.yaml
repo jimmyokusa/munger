@@ -1,0 +1,167 @@
+# M44 (DESIGN_REAL_MONEY.md §6): multi-container ("sidecar") Cloud Run
+# service spec for report-web -- `gcloud run deploy`'s own flags can't
+# express a second container, so this target is applied via
+# `gcloud run services replace` instead (deploy.sh handles both).
+#
+# Two containers:
+#   - nginx (this repo's own image): the ONLY container with `ports` --
+#     Cloud Run treats that as the ingress container, the only one
+#     reachable from outside. Serves the static report as before; the two
+#     real-money paths now do an `auth_request` subrequest to oauth2-proxy
+#     over localhost before serving (see nginx.conf).
+#   - oauth2-proxy (upstream `quay.io/oauth2-proxy/oauth2-proxy` image,
+#     not built by this repo): listens on 4180, reachable only via
+#     localhost from the nginx container (Cloud Run sidecars share a
+#     network namespace, same as a Kubernetes Pod) -- never exposed
+#     externally. The `run.googleapis.com/container-dependencies`
+#     annotation below makes nginx depend on oauth2-proxy so Cloud Run
+#     starts it first -- staff-engineer-reviewer finding: an earlier draft
+#     of this file used a made-up colon-delimited annotation value and a
+#     nonexistent `dependsOn` field name, which Cloud Run would have
+#     silently ignored rather than rejected (ordering not actually
+#     enforced, but not a security bypass either -- auth_request still
+#     fails closed on a connection error). Confirmed against Google's own
+#     docs (docs.cloud.google.com/run/docs/configuring/services/containers):
+#     the annotation value must be a JSON object,
+#     `{"<dependent>":["<dependency>"]}`, AND Cloud Run only actually
+#     waits for the dependency if it has its own startupProbe -- without
+#     one, containers still start in order but with no health guarantee.
+#     oauth2-proxy's `startupProbe` below (its built-in `/ping` endpoint)
+#     is what makes this real, not just the annotation.
+#
+# __NGINX_IMAGE__ is substituted by deploy.sh with the freshly-built,
+# digest-pinned image (same digest-pinning discipline as every other
+# deploy.sh target -- see that script's own "Gotcha #2" comment).
+#
+# oauth2-proxy's image is mirrored into this project's own Artifact
+# Registry repo (`munger`), not pulled from quay.io directly -- found
+# live, not assumed: `gcloud run services replace` rejects any image
+# host outside gcr.io/*.pkg.dev/docker.io outright ("Expected an image
+# path like [host/]repo-path... obtained quay.io/..."), unlike
+# `gcloud run deploy`, which does allow public images from other
+# registries. Mirrored via `docker pull --platform linux/amd64` (the
+# first attempt, without an explicit --platform, silently pulled this
+# Apple Silicon machine's own linux/arm64 image -- Cloud Run only runs
+# amd64, so that would have failed at container-start time, not at
+# deploy time) + `docker push` to this exact digest, pinned below rather
+# than left as a mutable `:v7.15.4` tag, same discipline as every other
+# deploy.sh target. Re-mirroring for a future oauth2-proxy version bump
+# is a manual step (pull --platform linux/amd64, tag, push, update this
+# digest) -- deliberate, not automated, so this security-sensitive
+# component only updates on a real, reviewed decision to do so.
+#
+# All three oauth2-proxy secrets (client ID, client secret, cookie
+# secret, allowed-emails file) live in GCP Secret Manager, not as plain
+# env vars -- see DESIGN_REAL_MONEY.md §6 for why this one place departs
+# from the project's usual manual-env-var convention.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: report-web
+  annotations:
+    run.googleapis.com/ingress: all
+    # Carried forward from the currently-deployed service's own metadata
+    # (confirmed via `gcloud run services describe --format export` before
+    # this first `services replace`, per staff-engineer-reviewer finding:
+    # this call fully overwrites spec.template rather than merging, so
+    # anything set outside git would otherwise be silently dropped).
+    run.googleapis.com/maxScale: "20"
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/maxScale: "2"
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/startup-cpu-boost: "true"
+        run.googleapis.com/container-dependencies: '{"nginx":["oauth2-proxy"]}'
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      # Explicit, not left to default to Cloud Run's own default compute
+      # SA (which happens to be this exact account today) -- every
+      # Secret Manager grant this diff made was scoped to this SA by
+      # name, so this stays correct even if the project's default ever
+      # changed (staff-engineer-reviewer finding: diff the currently-
+      # deployed service before the first `services replace`, since it
+      # fully overwrites `spec.template` rather than merging).
+      serviceAccountName: 828862293557-compute@developer.gserviceaccount.com
+      containers:
+        - name: nginx
+          image: __NGINX_IMAGE__
+          ports:
+            - containerPort: 8080
+              name: http1
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          startupProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 240
+            failureThreshold: 1
+            timeoutSeconds: 240
+          volumeMounts:
+            - name: data
+              mountPath: /mnt/data
+        - name: oauth2-proxy
+          image: us-central1-docker.pkg.dev/munger-503515/munger/oauth2-proxy@sha256:5246a1f2f46af19eb67a3e3fa8dc34f42a372cff193850ad90facf28d6320340
+          args:
+            - --provider=google
+            - --http-address=0.0.0.0:4180
+            - --upstream=static://202
+            - --redirect-url=https://gramunger.com/oauth2/callback
+            - --authenticated-emails-file=/etc/oauth2-proxy/authenticated-emails.txt
+            - --cookie-secure=true
+            - --cookie-httponly=true
+            - --cookie-samesite=lax
+            - --cookie-expire=24h
+            - --skip-provider-button=true
+            - --reverse-proxy=true
+            - --silence-ping-logging=true
+          env:
+            - name: OAUTH2_PROXY_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: oauth2-proxy-client-id
+                  key: latest
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oauth2-proxy-client-secret
+                  key: latest
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oauth2-proxy-cookie-secret
+                  key: latest
+          resources:
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          startupProbe:
+            httpGet:
+              path: /ping
+              port: 4180
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: allowed-emails
+              mountPath: /etc/oauth2-proxy
+              readOnly: true
+      volumes:
+        - name: data
+          csi:
+            driver: gcsfuse.run.googleapis.com
+            volumeAttributes:
+              bucketName: munger-503515-data
+        - name: allowed-emails
+          secret:
+            secretName: oauth2-proxy-allowed-emails
+            items:
+              - key: latest
+                path: authenticated-emails.txt
+  traffic:
+    - latestRevision: true
+      percent: 100

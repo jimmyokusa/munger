@@ -552,32 +552,96 @@ rationale no longer applies, and the user decided `real-money.html`
 should be gated behind a login instead. Original reasoning kept below for
 the historical record.
 
-**New mechanism: Cloudflare Access (Zero Trust), not application-level
-auth.** Chosen over the two alternatives considered (HTTP Basic Auth at
-nginx; a real app-level login page) specifically because it requires
-**zero code changes to this app** — Access sits entirely at Cloudflare's
-edge and intercepts the request before it ever reaches Cloud Run, so
-`report.py`/nginx stay exactly as designed (§1.1's static-site-only
-constraint is preserved, not worked around). It also sidesteps the
-standing Cloudflare subdomain-publishing bug (`TASKS.md`, "Cloudflare
-`gramunger.com` zone silently refuses new subdomains") entirely, since an
-Access Application gates a *path* on the existing `gramunger.com`
-hostname, not a new subdomain.
+**Superseded again (2026-09-04, M44, user decision):** Cloudflare Access
+was configured (both Access Applications created, policy scoped to the
+user's own email) but had never actually taken effect for ~3 weeks,
+blocked on a standing Cloudflare zone-level defect (proxied DNS records
+silently not applying on this specific zone, `TASKS.md`'s "Cloudflare
+`gramunger.com` zone silently refuses new subdomains" row). Rather than
+continue waiting on a platform bug with no owner or ETA, the user asked
+for a real login instead. **New mechanism: an oauth2-proxy sidecar +
+Google OIDC, gating `real-money.html`/`real_money.json` at the nginx
+layer via `auth_request`**, restricted to the same one email Access was
+already scoped to.
 
-**One real gotcha, not obvious from the file layout:** `real-money.html`
-(hyphen) and `real_money.json` (underscore) don't share a path prefix.
-The Access Application must explicitly cover *both* paths — gating only
-`/real-money.html` would leave `/real_money.json` fetchable directly
-(and thus the live account's real numbers still readable) by anyone who
-knew or guessed the filename, even with the HTML page itself locked
-down.
+**Real-world postscript, found live during this milestone's own
+deployment (2026-09-04), not assumed:** the standing zone defect this
+section describes appears to have resolved itself sometime in the ~3
+weeks since it was last confirmed broken — a fresh, unauthenticated
+request to both gated paths now correctly redirects to a genuine
+`cloudflareaccess.com` login challenge, meaning Access is no longer
+inert. This was not expected or relied on when the oauth2-proxy work
+below was built, and doesn't replace it — it means the two paths are
+currently gated by **both** mechanisms stacked (Access at Cloudflare's
+edge, oauth2-proxy behind it at the app layer), both scoped to the same
+one email, which is redundant but not conflicting. Left as-is rather than
+torn out: removing Access now would depend on trusting a platform bug
+that was broken and unowned for weeks to stay fixed, which isn't a
+trade worth making for the sake of one fewer layer in front of a live
+money account.
 
-**Blocked on the same standing infra issue this doc's own §0.1 legal
-memo never touched:** the Cloudflare API token saved in this repo's
-`.env` is confirmed still invalid (`TASKS.md`'s pre-existing finding,
-re-confirmed live 2026-08-10 via `/user/tokens/verify`) — Access
-configuration for this milestone was done manually in the Cloudflare
-dashboard, not via this repo's tooling.
+This does cost the one thing the Cloudflare Access plan was chosen to
+avoid — a real, if small, code/deploy change (§1.1's static-site-only
+constraint bends here, deliberately: `report.py`/`report/` itself stays
+untouched and still emits no server-side logic; the new logic lives
+entirely in nginx config + a second, unmodified upstream container, not
+in this project's own Python). In exchange it doesn't depend on any
+Cloudflare account state at all, works today, and delegates real
+authentication (password, 2FA) to the user's existing Google account
+rather than inventing a new credential.
+
+- **Provider: Google OIDC** (`oauth2-proxy --provider=google`),
+  restricted to exactly `jimmyokusa@gmail.com` via
+  `--authenticated-emails-file` (a single-line allowlist, stored as a GCP
+  Secret Manager secret and mounted as a file — not a broader
+  `--email-domain`, which would admit any Google account on that domain).
+  The Google OAuth Client itself is a manual, one-time user-side step
+  (Google Cloud Console, project `munger-503515`, redirect URI
+  `https://gramunger.com/oauth2/callback`), left in **Testing** consent-
+  screen status with the user's own email as the sole test user — this
+  keeps it out of Google's app-verification process entirely, which is
+  only required for consumer-facing published apps.
+- **Mechanism: nginx `auth_request`**, the pattern oauth2-proxy's own
+  docs document for exactly this case (not improvised) — nginx makes a
+  subrequest to oauth2-proxy before serving a gated path; an
+  unauthenticated request gets redirected through `/oauth2/sign_in` to
+  Google and back. See `deploy/cloudrun/report-web/nginx.conf` for the
+  `/oauth2/`, `/oauth2/auth`, and `@oauth2_signin` blocks (verified
+  locally against a real oauth2-proxy v7.15.4 binary, not just read from
+  the docs: both `/real-money.html` and `/real_money.json` correctly
+  redirect an unauthenticated request all the way to a genuine Google
+  authorization URL with the right client ID and a `state` param
+  encoding the original path).
+- **Cloud Run: multi-container (sidecar) deployment.** oauth2-proxy
+  (upstream `quay.io/oauth2-proxy/oauth2-proxy` image, unmodified, not
+  built by this repo) runs alongside the existing nginx container in the
+  same `report-web` service, reachable only via `127.0.0.1:4180` from
+  nginx — never exposed externally. `gcloud run deploy`'s flags can't
+  express a second container, so this target moved to a service spec
+  (`deploy/cloudrun/report-web/service.yaml`) applied via
+  `gcloud run services replace`; `deploy/cloudrun/deploy.sh` was updated
+  to branch on this for the `report-web` target specifically, while still
+  building and digest-pinning the nginx image exactly as before.
+- **Secrets in GCP Secret Manager**, not plain env vars — the one place
+  this departs from the project's usual manual-`--set-env-vars`
+  convention, specifically because these secrets gate the live account's
+  own page: the Google OAuth Client ID/Secret and the oauth2-proxy cookie
+  secret (`openssl rand`-generated, not user-provided). The Cloud Run
+  service account was granted `secretAccessor` on each, narrowly, same
+  scoping discipline as every other GCS/IAM grant this project has made.
+- **Both gated paths, not just the HTML one** — same gotcha the
+  Cloudflare Access design already found and is preserved here:
+  `real-money.html` (hyphen) and `real_money.json` (underscore) don't
+  share a path prefix, so both need their own `auth_request` block or
+  the JSON stays readable with the HTML page locked down.
+- **Cookie hardening:** `--cookie-secure=true`, `--cookie-httponly=true`
+  (default), `--cookie-samesite=lax`, `--cookie-expire=24h`.
+- **k3s dev: explicitly out of scope, not silently skipped.** The k3s
+  report is served over plain HTTP on a bare NodePort IP, with no stable
+  hostname — there's no valid OAuth redirect URI to register there without
+  first standing up TLS + a real hostname for it, a bigger, separate
+  change. k3s is LAN-only, not internet-exposed, so this is an accepted
+  gap for now, not a security hole in the actual public deployment.
 
 **Original reasoning (superseded above, kept for the record):**
 
