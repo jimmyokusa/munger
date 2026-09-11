@@ -1467,6 +1467,74 @@ def test_run_trades_live_when_the_live_trading_flag_is_set(
     assert exit_code == 0
 
 
+def test_run_refuses_to_trade_ira_without_the_ira_trading_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M47: a second real-money account's own gate, independent of
+    # LIVE_TRADING_ENABLED -- config.ACCOUNT_TRADING_ENABLED resolves to
+    # IRA_TRADING_ENABLED here, which defaults False, so this must block
+    # even with PAPER_TRADING already False.
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    monkeypatch.setenv("MUNGER_ACCOUNT_LABEL", "ira")
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", False)
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+
+    exec_constructed = False
+
+    def _fail_if_constructed(run_date: str) -> _FakeExecutionModule:
+        nonlocal exec_constructed
+        exec_constructed = True
+        return _FakeExecutionModule(run_date)
+
+    monkeypatch.setattr(execution, "ExecutionModule", _fail_if_constructed)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    assert exec_constructed is False
+    assert exit_code == 1
+
+
+def test_run_trades_ira_when_the_ira_trading_flag_is_set_independent_of_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # LIVE_TRADING_ENABLED is deliberately left at its default (False)
+    # here -- proves ira's own flag alone is sufficient, not a side effect
+    # of the live account's flag also being set.
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    monkeypatch.setenv("MUNGER_ACCOUNT_LABEL", "ira")
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", True)
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+    monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
+    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {})
+    monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
+    monkeypatch.setattr(
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, period, corp_check=None: ([], [], []),
+    )
+    monkeypatch.setattr(
+        portfolio, "generate_buy_queue", lambda holdings, results, cash, exclude=None: []
+    )
+
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    fake_exec.verify_account_access.assert_called_once()
+    assert exit_code == 0
+
+
 def test_run_fetches_holdings_metrics_through_xbrl_primary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

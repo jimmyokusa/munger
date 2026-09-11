@@ -140,3 +140,73 @@ def test_global_notional_budget_pct_is_valid_fraction() -> None:
 
 def test_min_universe_fetch_fraction_is_valid_fraction() -> None:
     assert 0 < config.MIN_UNIVERSE_FETCH_FRACTION <= 1
+
+
+def test_account_label_defaults_to_paper_when_paper_trading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PAPER_TRADING", True)
+    assert config.ACCOUNT_LABEL == "paper"
+
+
+def test_account_label_defaults_to_live_when_not_paper_trading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M47: unset MUNGER_ACCOUNT_LABEL falls back to exactly today's
+    # PAPER_TRADING-derived behavior -- daily-trade-live.yml never sets
+    # the new env var, so it must keep resolving to "live".
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    assert config.ACCOUNT_LABEL == "live"
+
+
+def test_account_label_env_override_selects_ira(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No importlib.reload needed -- ACCOUNT_LABEL is computed lazily via
+    # module __getattr__ (M47), re-reading MUNGER_ACCOUNT_LABEL fresh on
+    # every access, unlike PAPER_TRADING itself.
+    monkeypatch.setenv("MUNGER_ACCOUNT_LABEL", "ira")
+    assert config.ACCOUNT_LABEL == "ira"
+
+
+def test_account_label_env_override_invalid_value_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MUNGER_ACCOUNT_LABEL", "not_a_real_account")
+    with pytest.raises(ValueError, match="MUNGER_ACCOUNT_LABEL"):
+        _ = config.ACCOUNT_LABEL
+
+
+def test_ira_trading_enabled_defaults_to_false() -> None:
+    assert config.IRA_TRADING_ENABLED is False
+
+
+def test_account_trading_enabled_false_for_paper(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "PAPER_TRADING", True)
+    monkeypatch.setattr(config, "LIVE_TRADING_ENABLED", True)
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", True)
+    # ACCOUNT_LABEL resolves to "paper" here (PAPER_TRADING True, no env
+    # override), which isn't a key in the live/ira map -- must fall back
+    # to False, never accidentally True from either flag being set.
+    assert config.ACCOUNT_TRADING_ENABLED is False
+
+
+def test_account_trading_enabled_follows_live_flag_for_live_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    monkeypatch.setattr(config, "LIVE_TRADING_ENABLED", True)
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", False)
+    assert config.ACCOUNT_LABEL == "live"
+    assert config.ACCOUNT_TRADING_ENABLED is True
+
+
+def test_account_trading_enabled_follows_ira_flag_for_ira_account_independent_of_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The two real-money accounts' order-placement gates must be
+    # independent: live flipped on must not leak into ira, and vice versa.
+    monkeypatch.setenv("MUNGER_ACCOUNT_LABEL", "ira")
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    monkeypatch.setattr(config, "LIVE_TRADING_ENABLED", True)
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", False)
+    assert config.ACCOUNT_TRADING_ENABLED is False
+
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", True)
+    assert config.ACCOUNT_TRADING_ENABLED is True

@@ -125,6 +125,25 @@ def test_generate_snapshot_reports_live_mode_when_configured(
     assert snapshot["mode"] == "live"
 
 
+def test_generate_snapshot_reports_ira_mode_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M47: a third account -- reads config.ACCOUNT_LABEL, not a fresh
+    # PAPER_TRADING derivation, so it can distinguish ira from live even
+    # though both set PAPER_TRADING False.
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    monkeypatch.setenv("MUNGER_ACCOUNT_LABEL", "ira")
+    trading_mock = MagicMock()
+    trading_mock.get_account.return_value = _fake_account()
+    trading_mock.get_all_positions.return_value = []
+    trading_mock.get_portfolio_history.return_value = _fake_history()
+    _patch_trading_client(monkeypatch, trading_mock)
+
+    snapshot = pnl.generate_snapshot()
+
+    assert snapshot["mode"] == "ira"
+
+
 def test_generate_snapshot_fails_closed_on_unexpected_account_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

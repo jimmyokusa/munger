@@ -261,11 +261,16 @@ def run(run_date: str | None = None) -> int:
     # real orders whenever Alpaca secrets were populated and neither
     # kill switch above was set, regardless of this flag. Paper is
     # unaffected: this only fires when PAPER_TRADING is false.
-    if not config.PAPER_TRADING and not config.LIVE_TRADING_ENABLED:
+    #
+    # M47: checks config.ACCOUNT_TRADING_ENABLED (this process's own
+    # account's flag), not LIVE_TRADING_ENABLED directly -- a second real
+    # account (ira) needs its own independent order-placement gate, not
+    # one that's implicitly always "live"'s.
+    if not config.PAPER_TRADING and not config.ACCOUNT_TRADING_ENABLED:
         _alert(
             alerts,
-            "Live mode requested but MUNGER_LIVE_TRADING_ENABLED is not set -- "
-            "screen-only run, no orders placed.",
+            f"Live mode requested but trading is not enabled for account "
+            f"{config.ACCOUNT_LABEL!r} -- screen-only run, no orders placed.",
         )
         return _finish(alerts)
 

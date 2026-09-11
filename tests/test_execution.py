@@ -109,6 +109,17 @@ def test_client_order_id_is_tagged_live_when_paper_trading_is_false(
     assert setup.module._client_order_id("AAPL", "buy") == "live-2026-07-21-AAPL-buy"
 
 
+def test_client_order_id_is_tagged_ira_when_account_label_is_ira(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # M47: a third account gets its own tag, not "live"'s -- reads
+    # config.ACCOUNT_LABEL, which both live and ira set PAPER_TRADING=false
+    # for, so the tag can only come from ACCOUNT_LABEL itself.
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    monkeypatch.setenv("MUNGER_ACCOUNT_LABEL", "ira")
+    assert setup.module._client_order_id("AAPL", "buy") == "ira-2026-07-21-AAPL-buy"
+
+
 def test_limit_price_buy_is_above_last_trade(setup: _Setup) -> None:
     price = setup.module._limit_price("AAPL", "buy", 100.0)
     assert price == pytest.approx(100.0 * (1 + config.LIMIT_PRICE_BAND_PCT))

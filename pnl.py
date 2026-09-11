@@ -140,7 +140,7 @@ def generate_snapshot() -> dict[str, object]:
 
     return {
         "generated_at": datetime.datetime.now(datetime.UTC).isoformat(),
-        "mode": "paper" if config.PAPER_TRADING else "live",
+        "mode": config.ACCOUNT_LABEL,
         "account": {
             "equity": _float_or_none(account.equity),
             "cash": _float_or_none(account.cash),

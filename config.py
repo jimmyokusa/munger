@@ -6,6 +6,7 @@ See DESIGN.md for the rationale behind each value.
 
 import os
 from pathlib import Path
+from typing import Any
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -214,6 +215,19 @@ STRIKES_TO_LIQUIDATE = 2
 # catastrophically" flag (the paper/live API-key mismatch assertion):
 # fail toward the safe default, not away from it.
 PAPER_TRADING = os.environ.get("MUNGER_PAPER_TRADING", "true").strip().lower() != "false"
+
+# M47: a third real-money account (an IRA) means "paper"/"live" derived
+# from the PAPER_TRADING boolean alone can no longer identify which
+# account a process is running against -- both live and ira set
+# MUNGER_PAPER_TRADING=false. ACCOUNT_LABEL (defined near the bottom of
+# this file via module __getattr__, not a plain assignment here -- see
+# that block's own comment for why) is the new single source of truth
+# every account-identity call site (execution.py's client_order_id tag,
+# journal.py's _current_account, pnl.py's snapshot "mode",
+# record_override.py's default) reads instead of re-deriving
+# "paper"/"live" from PAPER_TRADING itself.
+_VALID_ACCOUNTS = ("paper", "live", "ira")
+
 # M26e (Design v2.2 §3.3): widened from 2% -- the real FOX/LPG orders
 # both went unfilled on a -2% DAY limit, on names not thin enough that a
 # 2% band should have been a real problem, which is itself evidence 2%
@@ -315,6 +329,12 @@ PNL_DATA_PATH: Path = DATA_DIR / "pnl.json"
 # with no separate copy step -- the same reason PNL_DATA_PATH above is
 # "pnl.json" flat, matching gs://.../pnl.json flat.
 REAL_MONEY_DATA_PATH: Path = DATA_DIR / "live" / "pnl.json"
+# M47: the ira account's own current-state snapshot, written by the same
+# pnl.py binary from daily-trade-ira.yml. Mirrors REAL_MONEY_DATA_PATH
+# above exactly, including the "nested subdirectory matching the real
+# GCS upload path" reasoning (gs://munger-503515-data/ira/pnl.json) --
+# see that constant's comment for the flat-path bug this shape avoids.
+REAL_MONEY_IRA_DATA_PATH: Path = DATA_DIR / "ira" / "pnl.json"
 # Durable, append-only daily P&L series (M17) -- the *system of record* for the
 # "account P&L over time" dashboard, maintained by pnl.py in GitHub Actions.
 # pnl.json is a rolling ~1-month snapshot Alpaca overwrites daily; this file
@@ -591,6 +611,18 @@ GRAFANA_PRICES_URL = os.environ.get("MUNGER_GRAFANA_PRICES_URL", "")
 # easiest to audit, if this file simply never names ALPACA_LIVE_API_KEY,
 # not even to check whether it's set.
 LIVE_TRADING_ENABLED = os.environ.get("MUNGER_LIVE_TRADING_ENABLED", "") == "1"
+# M47: the IRA account's own page/order-placement gate, independent of
+# LIVE_TRADING_ENABLED above -- same config-gated-off-by-default shape,
+# so the two real-money accounts' pages/gates can be flipped on
+# separately (e.g. live already running daily while ira is still
+# dispatch-only during its own verification period). Set
+# MUNGER_IRA_TRADING_ENABLED=1 on the daily-screen Job once ira's page
+# should render publicly.
+IRA_TRADING_ENABLED = os.environ.get("MUNGER_IRA_TRADING_ENABLED", "") == "1"
+# ACCOUNT_TRADING_ENABLED (bot.py/execute_trades.py's order-placement
+# gate for *this process's own account*) is defined near the bottom of
+# this file via module __getattr__, alongside ACCOUNT_LABEL -- see that
+# block's comment for why, and for the M24-fix reasoning this generalizes.
 
 # --- Public site metadata + SEO (M18, DESIGN_WEB_ANALYTICS_SEO.md) ---
 # Absolute origin of the public site (e.g. https://gramunger.com). One
@@ -668,3 +700,66 @@ MIN_UNIVERSE_FETCH_FRACTION = 0.90  # abort if fewer tickers than this fetch cle
 # silence the others. Config-gated off by default, same shape as every
 # other optional integration here.
 DISCORD_MATERIAL_EVENT_WEBHOOK_URL = os.environ.get("DISCORD_MATERIAL_EVENT_WEBHOOK_URL", "")
+
+
+# --- Account identity (M47), computed lazily via module __getattr__ ---
+#
+# Every other derived-from-PAPER_TRADING value in this file up to now has
+# been a plain module-level constant computed once at import -- fine when
+# the derivation only ever depended on env vars fixed for a process's
+# whole lifetime. ACCOUNT_LABEL and ACCOUNT_TRADING_ENABLED are different:
+# this codebase's own established idiom (see PAPER_TRADING's comment
+# above: "every read site does `import config; ...config.PAPER_TRADING`,
+# never `from config import PAPER_TRADING`") exists specifically so
+# `monkeypatch.setattr(config, "PAPER_TRADING", ...)` -- the pattern this
+# test suite already uses throughout -- changes what every *later* read of
+# config.PAPER_TRADING returns, within the same process, no re-import
+# needed. A plain `ACCOUNT_LABEL = "paper" if PAPER_TRADING else "live"`
+# assignment here would compute that once at import time and then go
+# stale the moment a test monkeypatches PAPER_TRADING afterward -- a real
+# bug caught by the existing test suite itself (test_journal.py/
+# test_pnl.py/test_record_override.py's account-defaulting tests all
+# monkeypatch config.PAPER_TRADING and expect the *next* call to see it).
+#
+# PEP 562 module __getattr__ is only invoked when normal attribute lookup
+# fails (i.e. ACCOUNT_LABEL/ACCOUNT_TRADING_ENABLED are NOT assigned as
+# plain module globals anywhere in this file) -- so every access
+# re-derives from whatever PAPER_TRADING/LIVE_TRADING_ENABLED/
+# IRA_TRADING_ENABLED/the MUNGER_ACCOUNT_LABEL env var currently say,
+# preserving the exact call-time-not-import-time property the rest of
+# this file relies on, for these two new values too.
+def __getattr__(name: str) -> Any:
+    # Return type is deliberately Any, not str | bool: mypy resolves
+    # module-attribute access through __getattr__'s single declared return
+    # type for every unresolved name uniformly, with no way to narrow it
+    # per attribute the way @overload can for an actual function call --
+    # a precise str | bool annotation here would make every real caller
+    # (journal.py's _current_account() -> str, bot.py's `bool` gate check)
+    # fail type-checking on a true union, not a real bug. The two call
+    # sites below each still return a concretely-typed value.
+    if name == "ACCOUNT_LABEL":
+        override = os.environ.get("MUNGER_ACCOUNT_LABEL", "").strip().lower()
+        if override:
+            if override not in _VALID_ACCOUNTS:
+                raise ValueError(
+                    f"MUNGER_ACCOUNT_LABEL must be one of {_VALID_ACCOUNTS}, got {override!r}"
+                )
+            return override
+        return "paper" if PAPER_TRADING else "live"
+    if name == "ACCOUNT_TRADING_ENABLED":
+        # bot.py/execute_trades.py's order-placement gate (M24 fix --
+        # "config.LIVE_TRADING_ENABLED previously gated only report.py's
+        # rendering... it read like a live-trading safety gate but wasn't
+        # one") used to check LIVE_TRADING_ENABLED directly, unambiguous
+        # when there was only one non-paper account. With ira added, that
+        # check must resolve to *this process's own account's* flag, not
+        # always "live"'s -- otherwise flipping MUNGER_LIVE_TRADING_ENABLED
+        # on the live workflow would have no bearing on ira (correct), but
+        # a naive unconditional "check LIVE_TRADING_ENABLED" left in
+        # bot.py would silently never let ira trade even once
+        # MUNGER_IRA_TRADING_ENABLED were set. Paper is never gated by
+        # this at all (the PAPER_TRADING check in those callers
+        # short-circuits first).
+        account_trading_enabled_map = {"live": LIVE_TRADING_ENABLED, "ira": IRA_TRADING_ENABLED}
+        return account_trading_enabled_map.get(__getattr__("ACCOUNT_LABEL"), False)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

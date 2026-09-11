@@ -149,6 +149,25 @@ def test_run_refuses_to_run_live_without_the_live_trading_flag(
     assert exit_code == 1
 
 
+def test_run_refuses_to_run_ira_without_the_ira_trading_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M47: parity with test_bot.py's/test_execute_trades.py's own ira gate
+    # test (staff-engineer-reviewer coverage-gap finding).
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    monkeypatch.setenv("MUNGER_ACCOUNT_LABEL", "ira")
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", False)
+    construct_calls: list[str] = []
+    monkeypatch.setattr(
+        execution, "ExecutionModule", lambda run_date: construct_calls.append(run_date)
+    )
+
+    exit_code = evaluate.run(run_date="2026-07-21")
+
+    assert construct_calls == []
+    assert exit_code == 1
+
+
 def test_run_is_a_noop_with_no_current_holdings(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_exec = _FakeExecutionModule("2026-07-21")
     fake_exec.get_current_holdings.return_value = {}

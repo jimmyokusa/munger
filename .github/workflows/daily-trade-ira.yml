@@ -1,0 +1,265 @@
+name: Daily ira-account screen and trade run
+
+# M47: a third, genuinely independent workflow -- same isolation
+# mechanism DESIGN_REAL_MONEY.md §3.1 established for daily-trade-live.yml
+# (own runner/checkout, own bot-state-ira git branch, own GCS prefix),
+# running the exact same bot.py/pnl.py binaries against the user's IRA
+# Alpaca account. See daily-trade-live.yml's own header comment for the
+# full isolation reasoning; not repeated here.
+#
+# Screening: same "runs its own independent bot.py invocation, including
+# its own universe fetch" choice daily-trade-live.yml already made,
+# for the same reasons (DESIGN_REAL_MONEY.md §3.1).
+#
+# DELIBERATELY DISPATCH-ONLY, NO CRON (M47, conservative-rollout
+# decision): unlike daily-trade-live.yml, this workflow does not yet run
+# on a schedule. The user wants to manually dispatch this a few times and
+# verify against Alpaca's own IRA dashboard before it runs unattended --
+# same posture execute-trades-live.yml/evaluate-holdings-live.yml already
+# ship with today (see their own header comments, the direct precedent
+# for this decision). Adding the cron (matching daily-trade-live.yml's
+# "30 14 * * *", or a later slot to stay staggered from the other
+# accounts' runs) is a small, separate follow-up once a few manual runs
+# have gone cleanly -- see TASKS.md's M47 section for the tracked todo.
+on:
+  workflow_dispatch:
+    inputs:
+      screen_only:
+        description: "Force KILL_SWITCH (screen-only, no broker calls) for this manual run"
+        type: boolean
+        default: true
+      force_news_digest:
+        description: "Force the monthly news digest to run regardless of day-of-month (for spot-checking content quality)"
+        type: boolean
+        default: false
+
+# Independent from daily-trade.yml's/daily-trade-live.yml's own groups --
+# three different accounts/workflows that must never block each other.
+# Shared with evaluate-holdings-ira.yml and execute-trades-ira.yml
+# (`bot-state-ira`), since all three read/write the same `bot-state-ira`
+# git branch and a concurrent push there could silently lose a run's
+# state update (M34 staff-engineer-reviewer finding, same reasoning as
+# the live trio's own `bot-state-live` group).
+concurrency:
+  group: bot-state-ira
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # Same outer safety net as daily-trade.yml/daily-trade-live.yml, same
+    # reasoning.
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Own persisted-state branch -- bot-state-ira, never bot-state or
+      # bot-state-live. Sharing a branch with either other account would
+      # defeat the entire point of this being a separate workflow
+      # (DESIGN_REAL_MONEY.md §3.1's core finding). Otherwise identical to
+      # daily-trade-live.yml's own restore step.
+      - name: Prepare persisted bot-state-ira branch
+        run: |
+          set -e
+          if git ls-remote --exit-code --heads origin bot-state-ira >/dev/null 2>&1; then
+            git fetch origin bot-state-ira
+            git worktree add ../bot-state-wt -b bot-state-ira origin/bot-state-ira
+          else
+            echo "No bot-state-ira branch yet -- first run, starting fresh."
+            git worktree add --detach ../bot-state-wt
+            git -C ../bot-state-wt checkout --orphan bot-state-ira
+            git -C ../bot-state-wt rm -rf . >/dev/null 2>&1 || true
+          fi
+          for f in state.json journal.db munger.log news_digest_state.json; do
+            if [ -f "../bot-state-wt/$f" ]; then
+              cp "../bot-state-wt/$f" .
+              echo "Restored $f from bot-state-ira branch."
+            fi
+          done
+          if [ -d ../bot-state-wt/screen_results_archive ]; then
+            mkdir -p screen_results_archive
+            cp -a ../bot-state-wt/screen_results_archive/. screen_results_archive/
+            echo "Restored screen_results_archive/ from bot-state-ira branch."
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Force screen-only mode for this manual run
+        if: github.event_name == 'workflow_dispatch' && inputs.screen_only
+        run: touch KILL_SWITCH
+
+      # ALPACA_API_KEY/ALPACA_SECRET_KEY are the exact same env var names
+      # daily-trade.yml/daily-trade-live.yml set -- bot.py/execution.py/
+      # pnl.py are already fully credential-agnostic (DESIGN_REAL_MONEY.md
+      # §3.1), so the only thing that makes this run against the ira
+      # account is which GitHub secret gets mapped to those names here,
+      # plus MUNGER_PAPER_TRADING/MUNGER_ACCOUNT_LABEL.
+      #
+      # MUNGER_ACCOUNT_LABEL=ira (M47): distinguishes this account from
+      # "live" for journal rows, client_order_id tags, and the pnl.py
+      # snapshot's "mode" field -- both accounts set
+      # MUNGER_PAPER_TRADING=false, so that boolean alone can no longer
+      # tell them apart (see config.py's ACCOUNT_LABEL comment).
+      #
+      # MUNGER_IRA_TRADING_ENABLED (M47, mirrors M24/M44's
+      # MUNGER_LIVE_TRADING_ENABLED) is deliberately NOT set here yet --
+      # matching daily-trade-live.yml's own real history: that flag was
+      # withheld even on the cron'd live workflow until the user gave
+      # explicit go-ahead well after the workflow itself was built and
+      # verified ("flip it now, its only $100", 2026-09-04). Without it,
+      # bot.py's own gate (`if not config.PAPER_TRADING and not
+      # config.ACCOUNT_TRADING_ENABLED`, which for this account resolves
+      # to IRA_TRADING_ENABLED) refuses to place any real order before
+      # ExecutionModule is even constructed -- this workflow can be
+      # dispatched and fully exercised (screening, journaling, pnl.py)
+      # with zero risk of an actual trade until that one-line flag is
+      # added as its own deliberate follow-up, the same "go build it, flip
+      # it live separately" split M44 used for the live account.
+      - name: Run bot (ira account)
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_IRA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_IRA_SECRET_KEY }}
+          MUNGER_PAPER_TRADING: "false"
+          MUNGER_ACCOUNT_LABEL: "ira"
+        run: python bot.py
+
+      - name: Persist bot-state-ira
+        if: always()
+        run: |
+          set -e
+          git config user.name "munger-bot-ira"
+          git config user.email "munger-bot@users.noreply.github.com"
+          for f in state.json journal.db munger.log; do
+            [ -f "$f" ] && cp "$f" ../bot-state-wt/
+          done
+          if [ -d screen_results_archive ]; then
+            mkdir -p ../bot-state-wt/screen_results_archive
+            cp -a screen_results_archive/. ../bot-state-wt/screen_results_archive/
+          fi
+          cd ../bot-state-wt
+          git add -A
+          git commit -q -m "IRA state snapshot from run ${{ github.run_id }}" --allow-empty
+          git push origin HEAD:bot-state-ira
+
+      - name: Upload run artifacts for manual inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-artifacts-ira-${{ github.run_id }}
+          path: |
+            munger.log
+            journal.db
+            state.json
+            screen_results.csv
+          if-no-files-found: ignore
+          retention-days: 400
+
+      # IRA's own durable P&L history -- gs://.../ira/pnl_history.jsonl,
+      # never the paper or live accounts' own paths. Same
+      # restore-before-upsert reasoning as daily-trade-live.yml's own step.
+      - name: Download prior ira P&L history from GCS
+        id: download-pnl-history
+        if: always()
+        env:
+          GCP_PNL_WRITER_KEY: ${{ secrets.GCP_PNL_WRITER_KEY }}
+        run: |
+          key_file="$(mktemp)"
+          printf '%s' "$GCP_PNL_WRITER_KEY" > "$key_file"
+          gcloud auth activate-service-account --key-file="$key_file"
+          if output=$(gcloud storage cp gs://munger-503515-data/ira/pnl_history.jsonl pnl_history.jsonl 2>&1); then
+            echo "Restored ira pnl_history.jsonl from GCS ($(wc -l < pnl_history.jsonl) rows)."
+          elif echo "$output" | grep -q "matched no objects"; then
+            echo "No existing ira pnl_history.jsonl in GCS (first run) -- pnl.py will seed it from Alpaca history."
+          else
+            echo "$output" >&2
+            echo "real_failure=true" >> "$GITHUB_OUTPUT"
+            rm -f "$key_file"
+            echo "::error::gcloud storage cp failed for a reason other than 'object not found' -- marking this run's local pnl_history.jsonl unusable so the upload step below skips it rather than overwriting the durable GCS history with a truncated reseed." >&2
+            exit 1
+          fi
+          rm -f "$key_file"
+
+      # DISCORD_WEBHOOK_URL: the same webhook daily-trade.yml/
+      # daily-trade-live.yml use, so all three accounts alert to the same
+      # channel, distinguished by the mode label in the message itself.
+      - name: Generate P&L snapshot (ira account)
+        if: always()
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_IRA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_IRA_SECRET_KEY }}
+          MUNGER_PAPER_TRADING: "false"
+          MUNGER_ACCOUNT_LABEL: "ira"
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python pnl.py
+
+      # 8-K material-event polling (M42, Design v2.2 §3.8 Tier 1) -- same
+      # webhook as the other two workflows' own steps.
+      - name: Poll for material events (8-K, ira account)
+        if: always()
+        env:
+          DISCORD_MATERIAL_EVENT_WEBHOOK_URL: ${{ secrets.DISCORD_MATERIAL_EVENT_WEBHOOK_URL }}
+        run: python material_events.py
+
+      # Claude-written news/performance digest -- same webhook and
+      # Anthropic key as the other two workflows' own steps, labeled via
+      # pnl.json's own "mode" field (now "ira", per config.ACCOUNT_LABEL).
+      - name: Generate monthly news digest (ira account)
+        if: always()
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_IRA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_IRA_SECRET_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DISCORD_NEWS_WEBHOOK_URL: ${{ secrets.DISCORD_NEWS_WEBHOOK_URL }}
+          NEWS_UPDATE_FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.force_news_digest && 'true' || '' }}
+        run: python news_update.py
+
+      - name: Persist news digest state
+        if: always()
+        run: |
+          set -e
+          git config user.name "munger-bot-ira"
+          git config user.email "munger-bot@users.noreply.github.com"
+          [ -f news_digest_state.json ] && cp news_digest_state.json ../bot-state-wt/
+          [ -f journal.db ] && cp journal.db ../bot-state-wt/
+          cd ../bot-state-wt
+          git add -A
+          git commit -q -m "News digest + material-events state from run ${{ github.run_id }}" --allow-empty
+          git push origin HEAD:bot-state-ira
+
+      - name: Upload ira P&L snapshot and history to GCS
+        if: always()
+        env:
+          GCP_PNL_WRITER_KEY: ${{ secrets.GCP_PNL_WRITER_KEY }}
+        run: |
+          set -e
+          if [ ! -f pnl.json ] && [ ! -f pnl_history.jsonl ]; then
+            echo "No pnl.json or pnl_history.jsonl produced this run -- skipping upload."
+            exit 0
+          fi
+          key_file="$(mktemp)"
+          printf '%s' "$GCP_PNL_WRITER_KEY" > "$key_file"
+          gcloud auth activate-service-account --key-file="$key_file"
+          # NOTE (M47, mirrors daily-trade-live.yml's own note):
+          # munger-pnl-writer's IAM condition needs an explicit widening to
+          # cover ira/pnl.json + ira/pnl_history.jsonl before this upload
+          # will succeed -- expect a 403 here until that gcloud IAM change
+          # is made (DESIGN_REAL_MONEY.md §4's own history: four iterations
+          # to get this scoping right, live's own ira widening is TASKS.md
+          # M47's own tracked step). Not a bug in this workflow -- `set -e`
+          # above correctly fails this step (and the job) on that 403
+          # rather than passing silently.
+          if [ -f pnl.json ]; then
+            gcloud storage cp pnl.json gs://munger-503515-data/ira/pnl.json
+          fi
+          if [ -f pnl_history.jsonl ] && [ "${{ steps.download-pnl-history.outputs.real_failure }}" != "true" ]; then
+            gcloud storage cp pnl_history.jsonl gs://munger-503515-data/ira/pnl_history.jsonl
+          fi
+          rm -f "$key_file"

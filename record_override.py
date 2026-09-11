@@ -41,9 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("reason", help="Why -- required, freeform text")
     parser.add_argument(
         "--account",
-        choices=("paper", "live"),
+        choices=("paper", "live", "ira"),
         default=None,
-        help="Defaults to whichever account config.PAPER_TRADING currently says.",
+        help="Defaults to whichever account config.ACCOUNT_LABEL currently says.",
     )
     args = parser.parse_args(argv)
 
@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     journal.record_manual_override(args.ticker.upper(), args.reason, account=args.account)
-    account = args.account or ("paper" if config.PAPER_TRADING else "live")
+    account = args.account or config.ACCOUNT_LABEL
     print(f"Recorded manual override for {args.ticker.upper()} ({account}): {args.reason}")
     return 0
 

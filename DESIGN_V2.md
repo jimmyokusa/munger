@@ -1075,6 +1075,8 @@ rather than strictly after it.
 | M46 | Tier-1/Tier-2 rule layer (routine-auto-halve vs. structural-threat-holds-for-human-decision split, per §3.5) + moat-mechanism classification (display-only) | Regression fixtures reproduce the HRMY veto, GNTX's two routine Tier-2 flags auto-halving, and GNTX's structural-threat flag correctly holding at last weight and raising the named human-decision alert. |
 | M47 | Wire into the screen as veto-and-flag; display before it trades | Findings visible on the site for one full cycle before influencing orders. |
 
+_This table's M47 is this file's own Epic F roadmap numbering, unrelated to `TASKS.md`'s M47 ("Second live account: IRA," 2026-09-11) — same coincidental-collision note this file already makes for M46 above._
+
 **Epic G — Material-event monitoring, model-assisted half (§3.8 Tier 2).**
 
 | ID | Milestone | Exit criteria |

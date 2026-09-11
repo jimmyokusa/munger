@@ -95,7 +95,7 @@ def _flatten_prices(prices_snapshot: dict[str, object]) -> list[dict[str, object
 
 
 def bridge() -> None:
-    """Pulls pnl.json, pnl_history.jsonl, and prices.json from GCS onto the local PVC."""
+    """Pulls pnl.json, live/ira snapshots, pnl_history.jsonl, prices.json from GCS onto the PVC."""
     client = storage.Client()
     bucket = client.bucket(config.PNL_GCS_BUCKET)
 
@@ -133,6 +133,20 @@ def bridge() -> None:
         logger.info("No live/pnl.json in GCS yet -- skipping (live pipeline not live yet).")
     else:
         logger.info("Bridged live/pnl.json (+ REPORT_DIR copy for the report-web nginx).")
+
+    # M47: the ira account's own snapshot. Same "GCS source path matches
+    # exactly what daily-trade-ira.yml actually uploads, not an assumed
+    # name" and NotFound-tolerant reasoning as the live/pnl.json block
+    # above -- a missing ira/pnl.json is the expected default state until
+    # that pipeline actually runs, not a broken bridge.
+    try:
+        real_money_ira_blob = bucket.blob("ira/pnl.json")
+        _download_atomically(real_money_ira_blob, config.REAL_MONEY_IRA_DATA_PATH)
+        _download_atomically(real_money_ira_blob, config.REPORT_DIR / "real_money_ira.json")
+    except NotFound:
+        logger.info("No ira/pnl.json in GCS yet -- skipping (ira pipeline not live yet).")
+    else:
+        logger.info("Bridged ira/pnl.json (+ REPORT_DIR copy for the report-web nginx).")
 
     history_dest = config.REPORT_DIR / "pnl_history.jsonl"
     json_dest = config.REPORT_DIR / "pnl_history.json"

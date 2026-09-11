@@ -697,3 +697,192 @@ rather than inventing a new credential.
   same daily cadence as paper or something more conservative initially —
   all the user's call, **resolved before M20a's first live order** (§3.3's
   interim default applies until then).
+
+---
+
+## 8. Second live account: IRA (M47, added 2026-09-11)
+
+**Scope: engineering scaffolding only.** This section adds a *third*
+account — a self-directed IRA at Alpaca the user already holds (KYC'd,
+funded, cash account — no margin, no short selling) — following the
+identical isolation pattern §3/§4 already built and reviewed for
+paper→live, generalized from two accounts to three. Per the user's own
+"conservative start" decision, M47 ships the workflow/config/page
+plumbing with the account's own order-placement flag left **off** — the
+account cannot place a real order until that flag is set as its own
+later, deliberate follow-up (§8.6), the same "build it, then flip it
+separately" split M24/M44 already used for the live account itself.
+
+### 8.1 Why "paper"/"live" derived from `PAPER_TRADING` no longer works
+
+§3's whole account-identity mechanism — `journal.py`'s `account` column,
+`execution.py`'s `client_order_id` tag, `pnl.py`'s snapshot `"mode"`
+field — was built as a strict two-value derivation: `"paper" if
+config.PAPER_TRADING else "live"`. A third account breaks that outright:
+both live and ira need `MUNGER_PAPER_TRADING=false` (neither is paper
+money), so the boolean alone can no longer tell them apart.
+
+**Decided:** `config.ACCOUNT_LABEL` is the new single source of truth
+every account-identity call site reads instead of re-deriving
+"paper"/"live" locally. Driven by an optional `MUNGER_ACCOUNT_LABEL` env
+var: unset (paper's and live's existing workflows, unchanged) falls back
+to exactly today's `PAPER_TRADING`-derived value; set (only the new
+`daily-trade-ira.yml`/etc. do) names the account directly, validated
+against `_VALID_ACCOUNTS = ("paper", "live", "ira")`.
+
+**Real bug caught before it shipped, not merely avoided by review:** the
+first implementation computed `ACCOUNT_LABEL` as a plain module-level
+constant at import time, same shape as `PAPER_TRADING` itself. That broke
+this codebase's own established idiom — `PAPER_TRADING`'s own comment
+states every read site does `import config; ...config.PAPER_TRADING`,
+never `from config import PAPER_TRADING`, specifically so
+`monkeypatch.setattr(config, "PAPER_TRADING", ...)` (the pattern this
+test suite already uses throughout) changes what every *later* read
+returns within the same process. A plain `ACCOUNT_LABEL = "paper" if
+PAPER_TRADING else "live"` assignment computes once at import and goes
+stale the moment a test (or a future caller) monkeypatches
+`PAPER_TRADING` afterward — caught immediately by the existing test suite
+itself (`test_journal.py`/`test_pnl.py`/`test_record_override.py`'s
+account-defaulting tests, all written years before this milestone,
+failed outright). Fixed via a module-level `__getattr__` (PEP 562):
+`ACCOUNT_LABEL` and `ACCOUNT_TRADING_ENABLED` (§8.2) are *not* assigned as
+plain module globals anywhere in `config.py`, so every access re-derives
+from whatever `PAPER_TRADING`/`LIVE_TRADING_ENABLED`/
+`IRA_TRADING_ENABLED`/the env var currently say — preserving the
+call-time-not-import-time property for these two new values too, with no
+change to the plain-attribute call-site syntax (`config.ACCOUNT_LABEL`,
+not a function call) every other constant in this file already uses.
+
+Every site that used to re-derive `"paper" if config.PAPER_TRADING else
+"live"` locally now reads `config.ACCOUNT_LABEL` instead:
+`execution.py`'s `_client_order_id` (§3.5's account tag), `journal.py`'s
+`_current_account()` (§3.4's account column default), `pnl.py`'s snapshot
+`"mode"` field (§4), `record_override.py`'s default `--account`.
+
+### 8.2 Order-placement gate: `IRA_TRADING_ENABLED`, independent of `LIVE_TRADING_ENABLED`
+
+M24's fix made `config.LIVE_TRADING_ENABLED` the actual order-placement
+gate in `bot.py`/`execute_trades.py`/`evaluate.py` (not just
+`report.py`'s rendering flag it started as) — `if not config.PAPER_TRADING
+and not config.LIVE_TRADING_ENABLED: <screen-only>`. Checking
+`LIVE_TRADING_ENABLED` directly was unambiguous with one non-paper
+account; with ira added, that check must resolve to *this process's own
+account's* flag, not always "live"'s, or flipping the live flag would
+have no bearing on ira (correct) while a naive unconditional check left
+in `bot.py` would silently never let ira trade even once its own flag
+were set.
+
+**Decided:** `config.IRA_TRADING_ENABLED` (`MUNGER_IRA_TRADING_ENABLED`
+env var), same config-gated-off-by-default shape as
+`LIVE_TRADING_ENABLED`, gates ira's own page (§8.4) and, via a new
+`config.ACCOUNT_TRADING_ENABLED` (also `__getattr__`-computed per §8.1,
+resolving `{"live": LIVE_TRADING_ENABLED, "ira":
+IRA_TRADING_ENABLED}.get(ACCOUNT_LABEL, False)`), its own order-placement
+gate. `bot.py`/`execute_trades.py`/`evaluate.py`'s three gate checks now
+read `config.ACCOUNT_TRADING_ENABLED` instead of `config.LIVE_TRADING_ENABLED`
+directly; paper is unaffected (the `PAPER_TRADING` check short-circuits
+first in every caller, same as before).
+
+### 8.3 The engine is already long-only and cash-based — verified, not assumed
+
+Before building anything IRA-specific, `execution.py`/`portfolio.py` were
+checked against the IRA's actual cash-account constraint (no margin, no
+short selling): `market_buy`/`liquidate` never open a short position (the
+docstring of `portfolio.generate_buy_queue` already states "never sells
+to buy... there is no code path here that can turn a sell decision into a
+buy decision or vice versa"), and cash sizing reads `account.cash` via
+`get_available_cash()`, never `buying_power`/margin. **No code change was
+needed for the cash-account constraint** — it's compatible by
+construction, not by a new check added this milestone.
+
+**Disclosed, not fixed, gap (pre-existing, not new):** nothing in this
+codebase checks T+1 cash-settlement / good-faith-violation risk before a
+same-day repeat buy — only order-*fill* confirmation exists (M26/M46's
+`settle_order`). This applies equally to any cash-settled account today,
+including the IRA once it trades for real; naming it here rather than
+letting a second cash account go live with an unstated risk that was
+already true of this codebase before this milestone.
+
+### 8.4 A third real-money page: `real-money-ira.html`
+
+Reuses §4's already-parameterized `_render_pnl` with a third call site —
+`expected_mode="ira"`, `snapshot_url="real_money_ira.json"`, its own
+`config.REAL_MONEY_IRA_DATA_PATH` (`DATA_DIR / "ira" / "pnl.json"`,
+mirroring `REAL_MONEY_DATA_PATH`'s own real-GCS-path-matching shape) —
+gated on `config.IRA_TRADING_ENABLED`, independent of the live page's own
+`LIVE_TRADING_ENABLED` gate, so either page can be enabled without the
+other. `_real_money_nav_link()` (renamed in intent, not in name — kept as
+one function per §4's own "every existing call site picks up the new
+link for free" reasoning) now emits up to two links. `gcs_bridge.py`
+pulls a third snapshot, `ira/pnl.json`, matching `daily-trade-ira.yml`'s
+real upload path exactly (same "GCS source must match the real upload
+path, not an assumed name" lesson §4's own `live/pnl.json` fix already
+paid for once). Cloud Run's `nginx.conf` gates `real-money-ira.html` and
+`real_money_ira.json` behind the same oauth2-proxy `auth_request` (§6),
+same one-email allowlist, no new auth infrastructure.
+
+**GCS IAM needs its own widening, not an assumed extension** — same
+finding §4 already made once for `live/pnl.json`/`live/pnl_history.jsonl`:
+`munger-pnl-writer`'s IAM condition is scoped by literal object name.
+`ira/pnl.json`/`ira/pnl_history.jsonl` are not covered by the existing
+condition (including its already-widened live-account addition) and need
+their own explicit `gcloud` widening before `daily-trade-ira.yml`'s GCS
+upload step will succeed — expect a 403 there until that's done
+deliberately, same as live's own history on this exact point.
+
+### 8.5 `journal.py`'s `account` column: closing a pre-existing validation gap
+
+`account` was accepted as an arbitrary, unvalidated string on every write
+path (`record_order`, `record_fill`, `record_manual_override`) even
+before a third account existed — unlike `side`/`status`, which already
+had `_VALID_SIDES`/`_VALID_FILL_STATUSES` guards. Not a new gap this
+milestone introduces, but one worth closing now rather than let a second
+real account increase the odds a typo'd label (`"Live"`, `"ira "`)
+silently creates a fourth, never-queried bucket of journal rows.
+**Decided:** `_VALID_ACCOUNTS = ("paper", "live", "ira")`, checked in all
+three write functions, raising `ValueError` on anything else — mirrors
+the existing side/status guard-clause pattern exactly.
+
+### 8.6 Rollout: dispatch-only first, cron and the trading flag are separate later steps
+
+Three new GitHub Actions workflow files — `daily-trade-ira.yml`,
+`execute-trades-ira.yml`, `evaluate-holdings-ira.yml` — mirror
+§3.1's live-account trio exactly (own runner/checkout via a separate
+workflow file, own `bot-state-ira` git branch, own GCS prefix), with two
+deliberate deviations from how `daily-trade-live.yml` shipped:
+
+1. **No cron trigger on `daily-trade-ira.yml`** — `workflow_dispatch`-only
+   for now, mirroring the dispatch-only shape
+   `execute-trades-live.yml`/`evaluate-holdings-live.yml` already ship
+   with today. The user wants to manually dispatch this a few times and
+   verify against Alpaca's own IRA dashboard before it runs unattended.
+   Adding the cron (`30 14 * * *`, or a later slot to stay staggered from
+   the other two accounts' runs) is a small, separate follow-up once a
+   few manual runs have gone cleanly.
+2. **`MUNGER_IRA_TRADING_ENABLED` is not set on any of the three new
+   workflows**, matching `daily-trade-live.yml`'s own real history more
+   closely than its *current* state suggests: that flag was withheld even
+   on the cron'd live workflow until the user gave explicit go-ahead well
+   after the workflow itself was built and verified ("flip it now, its
+   only $100", 2026-09-04, TASKS.md M24's own todo row). Without it,
+   `config.ACCOUNT_TRADING_ENABLED` resolves `False` for the ira account
+   and `bot.py`'s gate (§8.2) refuses any real order before
+   `ExecutionModule` is even constructed — the new workflows can be
+   dispatched and fully exercised (screening, journaling, `pnl.py`) with
+   zero risk of an actual trade until that one-line flag is added as its
+   own deliberate follow-up.
+
+**Not part of this milestone's "done":** adding the cron, flipping
+`MUNGER_IRA_TRADING_ENABLED`, and the §4.1-style verification bar (the
+IRA snapshot checked against Alpaca's own IRA-account dashboard, the user
+visually confirming `real-money-ira.html` renders correctly) before any
+of that happens — the user's call on timing, same as §7's own
+not-yet-decided items were for the live account.
+
+### 8.7 User-side steps this session cannot do
+
+Same category as §7's own live-account items: provisioning
+`ALPACA_IRA_API_KEY`/`ALPACA_IRA_SECRET_KEY` as GitHub secrets (the user
+already has the underlying Alpaca IRA account; only the API key pair is
+new) and the GCS IAM widening (§8.4) are user-side steps, not something
+this session executes.

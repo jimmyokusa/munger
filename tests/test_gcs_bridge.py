@@ -20,6 +20,7 @@ import gcs_bridge
 def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "PNL_DATA_PATH", tmp_path / "pnl.json")
     monkeypatch.setattr(config, "REAL_MONEY_DATA_PATH", tmp_path / "real_money.json")
+    monkeypatch.setattr(config, "REAL_MONEY_IRA_DATA_PATH", tmp_path / "real_money_ira.json")
     monkeypatch.setattr(config, "REPORT_DIR", tmp_path / "report")
 
 
@@ -146,6 +147,39 @@ def test_bridge_tolerates_a_missing_real_money_json_as_the_expected_pre_launch_s
 
     assert not config.REAL_MONEY_DATA_PATH.exists()
     assert not (config.REPORT_DIR / "real_money.json").exists()
+
+
+def test_bridge_downloads_ira_money_json_and_writes_a_report_dir_copy_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M47: same DATA_DIR-root + REPORT_DIR-copy treatment as live/pnl.json
+    # above, for the ira account's own snapshot. GCS source is
+    # "ira/pnl.json" (daily-trade-ira.yml's real upload path).
+    _patch_client(
+        monkeypatch,
+        {
+            "pnl.json": _fake_blob(content=b"{}"),
+            "ira/pnl.json": _fake_blob(content=b'{"mode": "ira", "equity": 300.12}'),
+        },
+    )
+
+    gcs_bridge.bridge()
+
+    assert config.REAL_MONEY_IRA_DATA_PATH.read_text() == '{"mode": "ira", "equity": 300.12}'
+    assert (
+        config.REPORT_DIR / "real_money_ira.json"
+    ).read_text() == '{"mode": "ira", "equity": 300.12}'
+
+
+def test_bridge_tolerates_a_missing_ira_money_json_as_the_expected_pre_launch_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_client(monkeypatch, {"pnl.json": _fake_blob(content=b"{}")})
+
+    gcs_bridge.bridge()  # must not raise
+
+    assert not config.REAL_MONEY_IRA_DATA_PATH.exists()
+    assert not (config.REPORT_DIR / "real_money_ira.json").exists()
 
 
 def test_bridge_tolerates_a_missing_pnl_history_as_the_expected_first_run(

@@ -191,6 +191,28 @@ def test_run_refuses_to_run_live_without_the_live_trading_flag(
     assert exit_code == 1
 
 
+def test_run_refuses_to_run_ira_without_the_ira_trading_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M47: config.ACCOUNT_TRADING_ENABLED resolves to IRA_TRADING_ENABLED
+    # for this account, independent of LIVE_TRADING_ENABLED -- parity with
+    # test_bot.py's own ira gate test, closing the coverage gap the
+    # staff-engineer-reviewer pass flagged (only test_bot.py exercised
+    # this before).
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    monkeypatch.setenv("MUNGER_ACCOUNT_LABEL", "ira")
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", False)
+    construct_calls: list[str] = []
+    monkeypatch.setattr(
+        execution, "ExecutionModule", lambda run_date: construct_calls.append(run_date)
+    )
+
+    exit_code = execute_trades.run(run_date="2026-07-21")
+
+    assert construct_calls == []
+    assert exit_code == 1
+
+
 def test_run_refuses_to_trade_when_the_market_is_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     # M45: same gate as bot.py's own -- expected/routine (weekends,
     # holidays), so NOT alert-worthy, unlike the live-trading-flag test

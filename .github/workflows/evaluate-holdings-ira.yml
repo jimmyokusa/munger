@@ -1,0 +1,103 @@
+name: Evaluate holdings, ira account (quarterly, read-only)
+
+# M47 -- ira-account counterpart to evaluate-holdings-live.yml. Same
+# module (evaluate.py), separate workflow file and separate credentials,
+# per M20's paper/live isolation rule generalized to a third account
+# (isolation-by-construction, not by convention -- being read-only is not
+# an exemption from it). See evaluate-holdings.yml's own header for the
+# full cadence rationale and why this landed dispatch-only.
+#
+# MUNGER_IRA_TRADING_ENABLED is not set here, matching
+# daily-trade-ira.yml's own current state -- ira trading itself remains
+# gated off independent of this workflow's own dispatch-only posture, an
+# extra layer, not a substitute for it.
+on:
+  workflow_dispatch:
+    inputs:
+      screen_only:
+        description: "Force KILL_SWITCH (no broker calls) for this manual run"
+        type: boolean
+        default: true
+
+# Shared with daily-trade-ira.yml and execute-trades-ira.yml
+# (`bot-state-ira`) -- see daily-trade.yml's own comment on its
+# concurrency block for the full reasoning.
+concurrency:
+  group: bot-state-ira
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Own persisted-state branch -- bot-state-ira, never bot-state or
+      # bot-state-live.
+      - name: Prepare persisted bot-state-ira branch
+        run: |
+          set -e
+          if git ls-remote --exit-code --heads origin bot-state-ira >/dev/null 2>&1; then
+            git fetch origin bot-state-ira
+            git worktree add ../bot-state-wt -b bot-state-ira origin/bot-state-ira
+          else
+            echo "No bot-state-ira branch yet -- first run, starting fresh."
+            git worktree add --detach ../bot-state-wt
+            git -C ../bot-state-wt checkout --orphan bot-state-ira
+            git -C ../bot-state-wt rm -rf . >/dev/null 2>&1 || true
+          fi
+          for f in state.json journal.db munger.log; do
+            if [ -f "../bot-state-wt/$f" ]; then
+              cp "../bot-state-wt/$f" .
+              echo "Restored $f from bot-state-ira branch."
+            fi
+          done
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Force screen-only mode for this manual run
+        if: github.event_name == 'workflow_dispatch' && inputs.screen_only
+        run: touch KILL_SWITCH
+
+      - name: Run evaluate (ira account)
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_IRA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_IRA_SECRET_KEY }}
+          MUNGER_PAPER_TRADING: "false"
+          MUNGER_ACCOUNT_LABEL: "ira"
+        run: python evaluate.py
+
+      - name: Persist bot-state-ira
+        if: always()
+        run: |
+          set -e
+          git config user.name "munger-bot-ira"
+          git config user.email "munger-bot@users.noreply.github.com"
+          for f in state.json journal.db munger.log; do
+            [ -f "$f" ] && cp "$f" ../bot-state-wt/
+          done
+          cd ../bot-state-wt
+          git add -A
+          git commit -q -m "Evaluate state snapshot from run ${{ github.run_id }}" --allow-empty
+          git push origin HEAD:bot-state-ira
+
+      - name: Upload run artifacts for manual inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluate-ira-run-artifacts-${{ github.run_id }}
+          path: |
+            munger.log
+            journal.db
+            state.json
+          if-no-files-found: ignore
+          retention-days: 400

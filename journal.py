@@ -24,6 +24,21 @@ logger = logging.getLogger(__name__)
 # sell for reconciliation purposes with no error.
 _VALID_SIDES = ("buy", "sell")
 
+# M47: `account` was accepted as an arbitrary, unvalidated string on every
+# write path below (unlike side/status above) even before a third account
+# existed -- a real gap, not new scope creep, just one a second real-money
+# account makes worth closing now: a typo'd account label (e.g. "Live",
+# "ira ") would previously have silently created a fourth, never-queried
+# bucket of journal rows with no error anywhere.
+#
+# Points at config._VALID_ACCOUNTS rather than a hand-typed duplicate
+# (staff-engineer-reviewer finding) -- two independently-maintained copies
+# of the same allowed-accounts set would let a future account added to one
+# and forgotten in the other produce asymmetric validation (e.g.
+# config.ACCOUNT_LABEL accepting a new value while every journal write for
+# it immediately raises, deep into a run after screening already ran).
+_VALID_ACCOUNTS = config._VALID_ACCOUNTS
+
 
 def _connect() -> sqlite3.Connection:
     # timeout=5.0: report.py (M13) can run standalone at any time, so a
@@ -162,12 +177,12 @@ def _connect() -> sqlite3.Connection:
 def _current_account() -> str:
     """The account label for calls that don't pass one explicitly.
 
-    "paper"/"live", derived from live config, not a module-level
-    constant, so it reflects whichever process env this is running in
-    (mirrors how execution.py reads config.PAPER_TRADING at call time,
-    not import time).
+    "paper"/"live"/"ira" -- reads config.ACCOUNT_LABEL (M47), not a
+    module-level constant, so it reflects whichever process env this is
+    running in (mirrors how execution.py reads config values at call
+    time, not import time).
     """
-    return "paper" if config.PAPER_TRADING else "live"
+    return str(config.ACCOUNT_LABEL)
 
 
 def record_order(
@@ -197,11 +212,12 @@ def record_order(
     get_expected_holdings() depends on this value being one of exactly
     those two strings to correctly derive reconciliation state.
 
-    `account` ("paper"/"live") defaults to whichever this process's own
-    config.PAPER_TRADING says (M20, DESIGN_REAL_MONEY.md §3.4). Existing
-    callers (bot.py) don't pass this explicitly and get today's exact
-    behavior for the paper account; only tests and the new live workflow
-    need to pass it explicitly.
+    `account` (one of _VALID_ACCOUNTS, raises ValueError otherwise)
+    defaults to whichever this process's own config.ACCOUNT_LABEL says
+    (M20, DESIGN_REAL_MONEY.md §3.4; M47). Existing callers (bot.py)
+    don't pass this explicitly and get today's exact behavior for the
+    paper account; only tests and the live/ira workflows need to pass it
+    explicitly.
 
     Idempotent on `client_order_id` when one is given (staff-engineer-
     reviewer finding): `execution.py`'s `market_buy`/`liquidate` return
@@ -217,6 +233,8 @@ def record_order(
     if side not in _VALID_SIDES:
         raise ValueError(f"side must be one of {_VALID_SIDES}, got {side!r}")
     account = account or _current_account()
+    if account not in _VALID_ACCOUNTS:
+        raise ValueError(f"account must be one of {_VALID_ACCOUNTS}, got {account!r}")
     with _connect() as conn:
         if client_order_id is not None:
             existing = conn.execute(
@@ -278,6 +296,8 @@ def record_fill(
     if status not in _VALID_FILL_STATUSES:
         raise ValueError(f"status must be one of {_VALID_FILL_STATUSES}, got {status!r}")
     account = account or _current_account()
+    if account not in _VALID_ACCOUNTS:
+        raise ValueError(f"account must be one of {_VALID_ACCOUNTS}, got {account!r}")
     with _connect() as conn:
         conn.execute(
             "INSERT INTO fills "
@@ -399,6 +419,8 @@ def record_manual_override(ticker: str, reason: str, account: str | None = None)
     verify.
     """
     account = account or _current_account()
+    if account not in _VALID_ACCOUNTS:
+        raise ValueError(f"account must be one of {_VALID_ACCOUNTS}, got {account!r}")
     with _connect() as conn:
         conn.execute(
             "INSERT INTO manual_overrides (timestamp, ticker, reason, account) VALUES (?, ?, ?, ?)",
@@ -439,14 +461,14 @@ def get_expected_holdings(account: str | None = None) -> set[str]:
     trade, a bug) needs attention, not itself an abort condition.
 
     Args:
-      account: "paper" or "live" -- defaults to this process's own
-        config.PAPER_TRADING (M20 §3.4). Filtering by account here, not
-        just at write time, is the actual defense-in-depth property: even
-        if a journal.db somehow ends up holding both accounts' rows (an
-        isolation failure elsewhere), a paper run's reconciliation only
-        ever considers paper rows and a live run only ever considers live
-        rows -- one account's activity can never silently explain away
-        the other's mismatch.
+      account: one of _VALID_ACCOUNTS ("paper"/"live"/"ira") -- defaults
+        to this process's own config.ACCOUNT_LABEL (M20 §3.4, M47).
+        Filtering by account here, not just at write time, is the actual
+        defense-in-depth property: even if a journal.db somehow ends up
+        holding more than one account's rows (an isolation failure
+        elsewhere), one account's reconciliation only ever considers its
+        own rows -- another account's activity can never silently
+        explain away this one's mismatch.
     """
     account = account or _current_account()
     with _connect() as conn:

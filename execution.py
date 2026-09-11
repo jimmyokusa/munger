@@ -97,8 +97,11 @@ class ExecutionModule:
         # for existing (paper) runs -- client_order_id only needs to be
         # unique within a single day's run for the has_already_submitted
         # crash-restart check to work, not stable across the change.
-        mode = "paper" if config.PAPER_TRADING else "live"
-        return f"{mode}-{self._run_date}-{symbol}-{side}"
+        #
+        # M47: reads config.ACCOUNT_LABEL (not a fresh PAPER_TRADING
+        # derivation) so a third account (ira) gets its own tag instead
+        # of colliding with "live"'s.
+        return f"{config.ACCOUNT_LABEL}-{self._run_date}-{symbol}-{side}"
 
     def _last_trade_price(self, symbol: str) -> float:
         """The symbol's last trade price, unadjusted by any band.

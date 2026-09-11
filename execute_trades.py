@@ -137,11 +137,14 @@ def run(run_date: str | None = None) -> int:
             logger.warning("KILL_SWITCH active -- screen-only run, no orders will be placed.")
         return trading_common.finish(alerts)
 
-    if not config.PAPER_TRADING and not config.LIVE_TRADING_ENABLED:
+    # M47: config.ACCOUNT_TRADING_ENABLED (this process's own account's
+    # flag), not LIVE_TRADING_ENABLED directly -- see bot.py's own
+    # comment on the identical gate for the full reasoning.
+    if not config.PAPER_TRADING and not config.ACCOUNT_TRADING_ENABLED:
         _alert(
             alerts,
-            "Live mode requested but MUNGER_LIVE_TRADING_ENABLED is not set -- "
-            "screen-only run, no orders placed.",
+            f"Live mode requested but trading is not enabled for account "
+            f"{config.ACCOUNT_LABEL!r} -- screen-only run, no orders placed.",
         )
         return trading_common.finish(alerts)
 

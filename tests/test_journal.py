@@ -151,6 +151,34 @@ def test_record_order_accepts_an_explicit_account_override() -> None:
     assert _all_rows()[0]["account"] == "live"
 
 
+def test_record_order_accepts_ira_account(monkeypatch: pytest.MonkeyPatch) -> None:
+    # M47: a third real account -- confirms the "account" column and its
+    # new _VALID_ACCOUNTS guard both accept it, not just "paper"/"live".
+    monkeypatch.setenv("MUNGER_ACCOUNT_LABEL", "ira")
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    journal.record_order("AAPL", "buy", "NEW_POSITION score=78.2")
+    assert _all_rows()[0]["account"] == "ira"
+
+
+def test_record_order_rejects_invalid_account() -> None:
+    # M47: `account` was accepted as an arbitrary, unvalidated string
+    # before this milestone -- a typo'd account label should fail loud,
+    # matching the existing side-validation guard just above it.
+    with pytest.raises(ValueError, match="account"):
+        journal.record_order("AAPL", "buy", "NEW_POSITION score=78.2", account="Live")
+    assert not config.JOURNAL_DB_PATH.exists()
+
+
+def test_record_fill_rejects_invalid_account() -> None:
+    with pytest.raises(ValueError, match="account"):
+        journal.record_fill("cid-1", "AAPL", "filled", account="ira ")
+
+
+def test_record_manual_override_rejects_invalid_account() -> None:
+    with pytest.raises(ValueError, match="account"):
+        journal.record_manual_override("AAPL", "a reason", account="roth-ira")
+
+
 def test_get_expected_holdings_filters_by_account(monkeypatch: pytest.MonkeyPatch) -> None:
     # The actual defense-in-depth property (staff-engineer-reviewer
     # finding): even if a journal.db somehow held both accounts' rows, a

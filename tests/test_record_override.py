@@ -46,6 +46,20 @@ def test_main_accepts_an_explicit_account_override() -> None:
     assert journal.get_manual_override_count(account="live") == 1
 
 
+def test_main_accepts_ira_as_an_explicit_account_override() -> None:
+    record_override.main(["HRMY", "a reason", "--account", "ira"])
+    assert journal.get_manual_override_count(account="ira") == 1
+
+
+def test_main_defaults_account_from_config_account_label_for_ira(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PAPER_TRADING", False)
+    monkeypatch.setenv("MUNGER_ACCOUNT_LABEL", "ira")
+    record_override.main(["HRMY", "a reason"])
+    assert journal.get_manual_override_count(account="ira") == 1
+
+
 def test_main_rejects_an_empty_reason(capsys: pytest.CaptureFixture[str]) -> None:
     exit_code = record_override.main(["HRMY", "   "])
 

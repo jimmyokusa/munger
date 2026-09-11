@@ -445,6 +445,10 @@ def _sitemap_pages() -> tuple[str, ...]:
     # generate_report() didn't actually write this run.
     if config.LIVE_TRADING_ENABLED:
         pages = (*pages, "real-money.html")
+    # M47: same gating for the ira account's own page, independent of
+    # LIVE_TRADING_ENABLED above.
+    if config.IRA_TRADING_ENABLED:
+        pages = (*pages, "real-money-ira.html")
     return pages
 
 
@@ -1628,16 +1632,23 @@ def _pnl_polling_script(snapshot_url: str = "pnl.json") -> str:
 
 
 def _real_money_nav_link() -> str:
-    """The "real-money trading" nav entry (M20).
+    """The real-money-trading nav entry/entries (M20; M47 adds a second).
 
-    Shown once the live account/page are actually provisioned. Same
-    config-gated-off-by-default shape as `_history_nav_link()` above
-    -- a deployment without `config.LIVE_TRADING_ENABLED` set renders no
-    link to a page that doesn't exist yet.
+    Shown once each account's own page is actually provisioned. Same
+    config-gated-off-by-default shape as `_history_nav_link()` above --
+    a deployment without the relevant *_TRADING_ENABLED flag set renders
+    no link to a page that doesn't exist yet. Extending this single
+    function (rather than adding a second, separately-named one) means
+    every existing call site -- the several literal nav strings that
+    already embed `{_real_money_nav_link()}` -- picks up the new ira
+    link for free, with no per-call-site change needed.
     """
-    if not config.LIVE_TRADING_ENABLED:
-        return ""
-    return '\n<a href="real-money.html">Real-money trading &rarr;</a>'
+    links = ""
+    if config.LIVE_TRADING_ENABLED:
+        links += '\n<a href="real-money.html">Real-money trading &rarr;</a>'
+    if config.IRA_TRADING_ENABLED:
+        links += '\n<a href="real-money-ira.html">IRA (real money) trading &rarr;</a>'
+    return links
 
 
 def _render_pnl(
@@ -2059,6 +2070,37 @@ def generate_report() -> None:
                     ),
                     seo_slug="real-money.html",
                     snapshot_url="real_money.json",
+                    nav_html=(
+                        '<nav><a href="index.html">&larr; Back to current picks</a>\n'
+                        '<a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>'
+                    ),
+                ),
+            )
+        # M47: the ira account's own page, same gating shape as the live
+        # account's block immediately above, independent of
+        # config.LIVE_TRADING_ENABLED -- a deployment can enable either,
+        # both, or neither real-money page separately.
+        if config.IRA_TRADING_ENABLED:
+            _write_text_atomically(
+                config.REPORT_DIR / "real-money-ira.html",
+                _render_pnl(
+                    _load_pnl_snapshot(config.REAL_MONEY_IRA_DATA_PATH),
+                    expected_mode="ira",
+                    heading="IRA (real money) trading P&amp;L",
+                    account_note_html=(
+                        "This account trades on the same daily cadence and rules as the "
+                        "screener above &mdash; the user's own real capital in a "
+                        "tax-advantaged retirement account, not investment advice, and not "
+                        "an offer or solicitation to invest."
+                    ),
+                    seo_title="Munger Screener &mdash; IRA Real-Money Trading",
+                    seo_description=(
+                        "Real-money IRA trading profit and loss for the daily "
+                        "quality-value screen: account equity and open positions. Not "
+                        "investment advice."
+                    ),
+                    seo_slug="real-money-ira.html",
+                    snapshot_url="real_money_ira.json",
                     nav_html=(
                         '<nav><a href="index.html">&larr; Back to current picks</a>\n'
                         '<a href="pnl.html">Paper trading P&amp;L &rarr;</a></nav>'

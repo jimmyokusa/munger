@@ -26,6 +26,8 @@ def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "PNL_DATA_PATH", tmp_path / "pnl.json")
     monkeypatch.setattr(config, "REAL_MONEY_DATA_PATH", tmp_path / "real_money.json")
     monkeypatch.setattr(config, "LIVE_TRADING_ENABLED", False)
+    monkeypatch.setattr(config, "REAL_MONEY_IRA_DATA_PATH", tmp_path / "real_money_ira.json")
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", False)
     # M29c: generate_report now reads state.json (via portfolio.StateTracker,
     # read-only) to overlay each pick's holding-state badge -- redirect it
     # like every other config.*_PATH, or a test would read the real repo's
@@ -1091,6 +1093,86 @@ def test_sitemap_pages_includes_real_money_html_when_enabled(
 ) -> None:
     monkeypatch.setattr(config, "LIVE_TRADING_ENABLED", True)
     assert "real-money.html" in report._sitemap_pages()
+
+
+# --- M47: real-money-ira.html (a third, parameterized _render_pnl call) -----
+
+
+def test_real_money_nav_link_appears_when_ira_trading_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", True)
+    assert 'href="real-money-ira.html"' in report._real_money_nav_link()
+
+
+def test_real_money_nav_link_shows_both_when_both_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Independent flags, not mutually exclusive -- both links can appear.
+    monkeypatch.setattr(config, "LIVE_TRADING_ENABLED", True)
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", True)
+    nav_link = report._real_money_nav_link()
+    assert 'href="real-money.html"' in nav_link
+    assert 'href="real-money-ira.html"' in nav_link
+
+
+def test_generate_report_omits_real_money_ira_html_by_default() -> None:
+    report.generate_report()
+    assert not (config.REPORT_DIR / "real-money-ira.html").exists()
+    assert 'href="real-money-ira.html"' not in (config.REPORT_DIR / "pnl.html").read_text()
+
+
+def test_generate_report_writes_real_money_ira_html_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", True)
+    config.REAL_MONEY_IRA_DATA_PATH.write_text(
+        json.dumps({"mode": "ira", "account": {"equity": 3_000.0}, "positions": []})
+    )
+    # A separate paper snapshot proves real-money-ira.html reads its own
+    # file, not pnl.json or the live account's real_money.json.
+    _write_pnl_snapshot({"mode": "paper", "account": {"equity": 100_000.0}, "positions": []})
+
+    report.generate_report()
+
+    real_money_ira_html = (config.REPORT_DIR / "real-money-ira.html").read_text()
+    assert '<span class="mode-badge">IRA</span>' in real_money_ira_html
+    assert "$3,000.00" in real_money_ira_html
+    assert "$100,000.00" not in real_money_ira_html
+    assert 'href="real-money-ira.html"' in (config.REPORT_DIR / "pnl.html").read_text()
+
+
+def test_generate_report_does_not_confuse_live_and_ira_real_money_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "LIVE_TRADING_ENABLED", True)
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", True)
+    config.REAL_MONEY_DATA_PATH.write_text(
+        json.dumps({"mode": "live", "account": {"equity": 5_000.0}, "positions": []})
+    )
+    config.REAL_MONEY_IRA_DATA_PATH.write_text(
+        json.dumps({"mode": "ira", "account": {"equity": 3_000.0}, "positions": []})
+    )
+
+    report.generate_report()
+
+    live_html = (config.REPORT_DIR / "real-money.html").read_text()
+    ira_html = (config.REPORT_DIR / "real-money-ira.html").read_text()
+    assert "$5,000.00" in live_html
+    assert "$3,000.00" not in live_html
+    assert "$3,000.00" in ira_html
+    assert "$5,000.00" not in ira_html
+
+
+def test_sitemap_pages_omits_real_money_ira_html_by_default() -> None:
+    assert "real-money-ira.html" not in report._sitemap_pages()
+
+
+def test_sitemap_pages_includes_real_money_ira_html_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "IRA_TRADING_ENABLED", True)
+    assert "real-money-ira.html" in report._sitemap_pages()
 
 
 # --- M18: SEO meta, robots.txt, sitemap.xml, analytics -----------------------
