@@ -257,7 +257,29 @@ to do in the two cases that actually occur).**
    exhausted, treat this run's settlement as incomplete (case 3 below).
    A successful query that reports the order still `open`/`pending_new`
    is a *genuinely pending* order — not an error, just not yet resolved;
-   leave it for the next settlement pass, no retry needed.
+   leave it for the next settlement pass, no retry needed. **M46
+   refinement (TASKS.md M46, 2026-09-09 — not this file's own roadmap
+   M46 in the Epic F rule-layer table):** the *synchronous* settlement
+   check bot.py /
+   execute_trades.py run milliseconds after submitting an order is a
+   special case — that "pending" is almost always just Alpaca's
+   `pending_new`/`accepted` window ahead of a sub-second market-order
+   fill, and reporting it as unresolved fails the whole scheduled run
+   (any alert → non-zero exit). That one call site re-polls a still-
+   pending order a bounded number of times
+   (`config.SETTLEMENT_FILL_WAIT_POLLS` × `…_POLL_SECONDS`, ~15s of sleep
+   plus a wall-clock deadline checked between polls) before giving up; on
+   timeout it still reports *genuinely pending* and leaves the order for
+   the next pass, exactly as this rule says. One deliberate divergence
+   from the *query failure* rule above: if the *first* re-poll already
+   verified the order as `pending` and a *later* re-poll's query then
+   fails all its retries, that verified `pending` stands — it is not
+   escalated to "retries exhausted → block". Only a re-poll window in
+   which *no* query ever succeeded fails closed. This is a latency shim
+   for a known broker quirk, not a substitute for the deferred
+   settlement pass (still unbuilt — see §3.3's own "next settlement pass"
+   language, which today means the next scheduled run). The plain
+   (`wait_for_fill=False`) path is unchanged: one query, no wait.
 2. **Partial fills are a third outcome, not folded into "confirmed" or
    "unfilled."** A `partially_filled` status writes a fills row for the
    filled quantity (real shares, real cost basis — this must be

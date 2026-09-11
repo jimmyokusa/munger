@@ -247,6 +247,41 @@ MAX_ORDER_PCT_OF_ADV = 0.01
 SETTLEMENT_QUERY_RETRY_ATTEMPTS = 3
 SETTLEMENT_QUERY_RETRY_BACKOFF_SECONDS = 2.0
 
+# M46 (Design v2.2 §3.3): the synchronous post-submit settlement check
+# (bot.py / execute_trades.py, via trading_common.settle_and_react) fires
+# milliseconds after an order is submitted -- inside Alpaca's own
+# pending_new/accepted window, before a market order that will fill in
+# well under a second actually has. Reported as "unconfirmed", that
+# briefly-pending order raised an alert and failed the whole scheduled
+# run (2026-09-08: 5/5 buys flagged, all filled seconds later). When
+# settle_and_react asks for it, settle_order now re-polls a still-pending
+# order a few times before reporting it unfilled. This is a distinct
+# budget from SETTLEMENT_QUERY_RETRY_* above: that one rides out a
+# *failing* status query, this one waits out a *successful* query whose
+# answer is just "not filled yet".
+#
+# Cost: on a normal day where an order shows pending on the first check
+# and fills right after, ~one extra query plus one POLL_SECONDS sleep for
+# that order (~60s added across a full GLOBAL_ORDER_BUDGET=20 queue). In
+# the pathological "nothing is filling" case, ~POLLS*POLL_SECONDS (~15s)
+# of *sleep* per order + one final status query, ~300s of sleep across
+# the full queue. settle_order checks a wall-clock deadline between
+# polls, so a broker brownout can't stack POLLS worth of retry budgets
+# per order -- but the deadline is only tested between queries, so the
+# true per-order ceiling is ~15s + one retry-exhausting query (the
+# Alpaca SDK's own status-query timeout, not pinned here). ~300s +
+# 20 slow queries still sits inside daily-trade.yml's 45-min job timeout
+# even stacked on a worst-case ~20-min data-fetch tail, and that case
+# stays slow and alert-worthy, as it should. Corollary: on a slow-but-
+# healthy broker (queries succeed but take seconds each) the deadline is
+# hit after fewer polls, so the shim is weaker exactly on a slow day and
+# more orders report `pending` and alert -- an accepted tradeoff against
+# an unbounded wait. Set POLLS to 0 to disable the wait entirely
+# (settle_order reverts to the pre-M46 single query) -- the revert
+# lever, no code change.
+SETTLEMENT_FILL_WAIT_POLLS = 5
+SETTLEMENT_FILL_WAIT_POLL_SECONDS = 3.0
+
 # --- State, audit, and observability (DESIGN.md 3.6) ---
 # Anchored to BASE_DIR (not bare relative filenames) so a scheduler
 # invoking bot.py from a different working directory than an interactive

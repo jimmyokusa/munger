@@ -79,6 +79,9 @@ def _isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
     monkeypatch.setattr(config, "STATE_FILE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(config, "SETTLEMENT_QUERY_RETRY_BACKOFF_SECONDS", 0.0)
+    # M46: default the post-submit fill-wait budget off (see test_bot.py).
+    monkeypatch.setattr(config, "SETTLEMENT_FILL_WAIT_POLLS", 0)
+    monkeypatch.setattr(config, "SETTLEMENT_FILL_WAIT_POLL_SECONDS", 0.0)
     monkeypatch.setattr(
         config, "SETTLEMENT_BLOCKED_FLAG_FILE_PATH", tmp_path / "SETTLEMENT_BLOCKED"
     )

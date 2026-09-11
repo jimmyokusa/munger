@@ -183,7 +183,14 @@ def settle_and_react(
     already in progress from placing more orders on the same
     now-unverifiable position picture).
     """
-    fill_status = settlement.settle_order(exec_module, order.client_order_id)
+    # wait_for_fill (M46): this is the synchronous check fired milliseconds
+    # after submission, so a "pending" result here is usually just Alpaca's
+    # pending_new/accepted window, not a real non-fill -- let settle_order
+    # re-poll briefly before it reports the order unconfirmed (which would
+    # otherwise alert and fail the whole scheduled run over a market order
+    # that fills a second later). A genuine non-fill still surfaces, just
+    # a few seconds later.
+    fill_status = settlement.settle_order(exec_module, order.client_order_id, wait_for_fill=True)
     if fill_status == "filled":
         if on_filled is not None:
             on_filled()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -20,6 +21,12 @@ def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
     # Fast retries in tests -- no real backoff wait.
     monkeypatch.setattr(config, "SETTLEMENT_QUERY_RETRY_BACKOFF_SECONDS", 0.0)
+    # M46: default the fill-wait budget off so existing single-query tests
+    # keep their pre-M46 behavior; the tests that exercise the wait opt
+    # back in explicitly (setting POLLS, stubbing time.sleep). POLL_SECONDS
+    # is left at its real value -- with time.sleep stubbed it costs nothing,
+    # and a real value keeps settle_order's wall-clock deadline sane.
+    monkeypatch.setattr(config, "SETTLEMENT_FILL_WAIT_POLLS", 0)
 
 
 def _fake_order(
@@ -163,6 +170,164 @@ def test_settle_order_recovers_after_a_transient_query_failure() -> None:
 
     assert status == "filled"
     assert get_status.call_count == 2
+
+
+# --- wait_for_fill: the M46 synchronous post-submit fill wait ---
+
+
+def test_settle_order_waits_out_a_briefly_pending_order_then_reports_the_fill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The 2026-09-08 failure: a just-submitted market order sits in
+    # pending_new for a beat, then fills. With wait_for_fill the settle
+    # check must ride that out and report "filled," not "pending."
+    monkeypatch.setattr(config, "SETTLEMENT_FILL_WAIT_POLLS", 5)
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    filled = _fake_order(OrderStatus.FILLED, filled_qty=3.0, fill_price=42.0)
+    get_status = MagicMock(
+        side_effect=[_fake_order(OrderStatus.NEW), _fake_order(OrderStatus.PENDING_NEW), filled]
+    )
+    exec_module = _fake_exec_module(get_status)
+
+    status = settlement.settle_order(exec_module, "co-1", wait_for_fill=True)
+
+    assert status == "filled"
+    assert get_status.call_count == 3  # two pending polls, then the fill
+    assert len(sleeps) == 2
+    fill = journal.get_fill("co-1")
+    assert fill is not None
+    assert fill["status"] == "filled"  # only the resolved status is journaled
+    assert fill["filled_qty"] == 3.0
+
+
+def test_settle_order_gives_up_after_the_fill_wait_budget_and_still_reports_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A genuinely stuck order must still resolve to "pending" (which the
+    # caller alerts on) within a bounded number of polls, not loop.
+    monkeypatch.setattr(config, "SETTLEMENT_FILL_WAIT_POLLS", 3)
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    get_status = MagicMock(return_value=_fake_order(OrderStatus.ACCEPTED))
+    exec_module = _fake_exec_module(get_status)
+
+    status = settlement.settle_order(exec_module, "co-1", wait_for_fill=True)
+
+    assert status == "pending"
+    assert get_status.call_count == 4  # the initial query + 3 re-polls
+    assert len(sleeps) == 3
+    assert journal.get_fill("co-1")["status"] == "pending"  # type: ignore[index]
+
+
+def test_settle_order_stops_waiting_the_moment_a_terminal_status_appears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "SETTLEMENT_FILL_WAIT_POLLS", 5)
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    get_status = MagicMock(
+        side_effect=[_fake_order(OrderStatus.NEW), _fake_order(OrderStatus.REJECTED)]
+    )
+    exec_module = _fake_exec_module(get_status)
+
+    status = settlement.settle_order(exec_module, "co-1", wait_for_fill=True)
+
+    assert status == "canceled"
+    assert get_status.call_count == 2
+    assert len(sleeps) == 1  # did not keep polling to the budget
+
+
+def test_settle_order_does_not_wait_when_wait_for_fill_is_not_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The budget is configured, but the default (deferred settle_orders
+    # pass, not a fresh submission) must not pay the wait.
+    monkeypatch.setattr(config, "SETTLEMENT_FILL_WAIT_POLLS", 5)
+    slept = MagicMock()
+    monkeypatch.setattr(time, "sleep", slept)
+    get_status = MagicMock(return_value=_fake_order(OrderStatus.NEW))
+    exec_module = _fake_exec_module(get_status)
+
+    status = settlement.settle_order(exec_module, "co-1")
+
+    assert status == "pending"
+    assert get_status.call_count == 1
+    slept.assert_not_called()
+
+
+def test_settle_order_keeps_a_verified_pending_when_a_later_repoll_query_blips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # staff-engineer-reviewer finding: a first poll that successfully
+    # reads "pending" then a later poll whose query fails all retries
+    # must NOT escalate to the None / query-failure path (which trips the
+    # caller's kill switch). The verified earlier status stands.
+    monkeypatch.setattr(config, "SETTLEMENT_FILL_WAIT_POLLS", 2)
+    monkeypatch.setattr(config, "SETTLEMENT_QUERY_RETRY_ATTEMPTS", 1)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    get_status = MagicMock(
+        side_effect=[
+            _fake_order(OrderStatus.NEW),
+            ConnectionError("blip"),
+            ConnectionError("blip"),
+        ]
+    )
+    exec_module = _fake_exec_module(get_status)
+
+    status = settlement.settle_order(exec_module, "co-1", wait_for_fill=True)
+
+    assert status == "pending"  # not None -- the earlier verified read stands
+    assert journal.get_fill("co-1")["status"] == "pending"  # type: ignore[index]
+
+
+def test_settle_order_still_reports_a_query_failure_when_no_poll_ever_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The other side of the finding above: if the very first query fails
+    # all retries, wait_for_fill doesn't paper over it -- still None, and
+    # bailed immediately without burning the poll budget.
+    monkeypatch.setattr(config, "SETTLEMENT_FILL_WAIT_POLLS", 5)
+    monkeypatch.setattr(config, "SETTLEMENT_QUERY_RETRY_ATTEMPTS", 1)
+    slept = MagicMock()
+    monkeypatch.setattr(time, "sleep", slept)
+    get_status = MagicMock(side_effect=ConnectionError("broker unreachable"))
+    exec_module = _fake_exec_module(get_status)
+
+    status = settlement.settle_order(exec_module, "co-1", wait_for_fill=True)
+
+    assert status is None
+    assert get_status.call_count == 1  # no re-poll once the first read fails outright
+    assert journal.get_fill("co-1") is None
+    slept.assert_not_called()
+
+
+def test_settle_order_wall_clock_caps_the_wait_even_with_slow_queries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # staff-engineer-reviewer finding: poll count alone doesn't bound
+    # elapsed time, since each poll's own query retry can be slow. Once
+    # the sleep budget (POLLS * POLL_SECONDS) of wall-clock has elapsed,
+    # the loop stops regardless of how many polls are nominally left.
+    # Fake clock: status queries here "cost" 10s each (a flaky endpoint),
+    # so the 30s deadline is reached long before the 100-poll budget.
+    monkeypatch.setattr(config, "SETTLEMENT_FILL_WAIT_POLLS", 100)
+    monkeypatch.setattr(config, "SETTLEMENT_FILL_WAIT_POLL_SECONDS", 0.3)  # deadline = 30s
+    fake_now = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: fake_now[0])
+    monkeypatch.setattr(time, "sleep", lambda s: fake_now.__setitem__(0, fake_now[0] + s))
+
+    def _slow_query(_cid: str) -> MagicMock:
+        fake_now[0] += 10.0
+        return _fake_order(OrderStatus.NEW)
+
+    get_status = MagicMock(side_effect=_slow_query)
+    exec_module = _fake_exec_module(get_status)
+
+    status = settlement.settle_order(exec_module, "co-1", wait_for_fill=True)
+
+    assert status == "pending"
+    assert get_status.call_count < 10  # deadline bound it, not the 100-poll budget
 
 
 # --- settle_orders (multi-order pass) ---

@@ -38,6 +38,11 @@ def _isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "DATA_FRESHNESS_MAX_HOURS", 48)
     monkeypatch.setattr(config, "GLOBAL_ORDER_BUDGET", 20)
     monkeypatch.setattr(config, "GLOBAL_NOTIONAL_BUDGET_PCT", 0.25)
+    # M46: the SETTLEMENT_FILL_WAIT_* constants are deliberately not set
+    # here -- every settle_and_react test in this file stubs
+    # settlement.settle_order wholesale, so the real fill-wait loop (and
+    # its time.sleep) is never reached. If a test ever un-stubs it, add
+    # SETTLEMENT_FILL_WAIT_POLLS = 0 alongside that change.
 
 
 def _fake_filled_order(symbol: str = "AAPL") -> MagicMock:
@@ -126,7 +131,9 @@ def test_check_data_freshness_flags_a_stale_archive(monkeypatch: pytest.MonkeyPa
 
 def test_settle_and_react_calls_on_filled_when_settled(monkeypatch: pytest.MonkeyPatch) -> None:
     exec_module = MagicMock()
-    monkeypatch.setattr(trading_common.settlement, "settle_order", lambda em, cid: "filled")
+    monkeypatch.setattr(
+        trading_common.settlement, "settle_order", lambda em, cid, **kwargs: "filled"
+    )
     on_filled = MagicMock()
     alerts: list[str] = []
 
@@ -143,7 +150,7 @@ def test_settle_and_react_alerts_and_sets_kill_switch_on_query_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     exec_module = MagicMock()
-    monkeypatch.setattr(trading_common.settlement, "settle_order", lambda em, cid: None)
+    monkeypatch.setattr(trading_common.settlement, "settle_order", lambda em, cid, **kwargs: None)
     alerts: list[str] = []
 
     query_failed = trading_common.settle_and_react(
@@ -160,7 +167,9 @@ def test_settle_and_react_alerts_without_kill_switch_when_genuinely_pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     exec_module = MagicMock()
-    monkeypatch.setattr(trading_common.settlement, "settle_order", lambda em, cid: "pending")
+    monkeypatch.setattr(
+        trading_common.settlement, "settle_order", lambda em, cid, **kwargs: "pending"
+    )
     alerts: list[str] = []
 
     query_failed = trading_common.settle_and_react(
@@ -170,6 +179,26 @@ def test_settle_and_react_alerts_without_kill_switch_when_genuinely_pending(
     assert query_failed is False
     assert len(alerts) == 1
     assert not config.KILL_SWITCH_FLAG_FILE_PATH.exists()
+
+
+def test_settle_and_react_asks_settle_order_to_wait_for_a_fill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M46: the synchronous post-submit check must opt into the fill wait,
+    # so Alpaca's brief pending_new window isn't reported as a non-fill
+    # (which alerts and fails the whole scheduled run).
+    captured: dict[str, object] = {}
+
+    def _fake_settle_order(em: object, cid: str, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "filled"
+
+    monkeypatch.setattr(trading_common.settlement, "settle_order", _fake_settle_order)
+    alerts: list[str] = []
+
+    trading_common.settle_and_react(MagicMock(), alerts, "AAPL", "buy", _fake_filled_order())
+
+    assert captured == {"wait_for_fill": True}
 
 
 # --- cap_buy_orders_to_budget ---

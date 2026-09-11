@@ -2561,3 +2561,67 @@ ahead of tomorrow's 14:30 UTC.
 | Tests: moved + extended `market_is_open` coverage, new gate tests in both files, full suite green | done | 2026-09-04 -- 4 existing `market_is_open` tests moved from `test_pnl.py` to `test_trading_common.py` (adapted to patch `trading_common.TradingClient`), one new test added there (`market_is_open` fails loud after its retry is also exhausted -- no prior equivalent existed for this function specifically). `test_bot.py`/`test_execute_trades.py` each gained an autouse-fixture default (`market_is_open` -> `True`) so every existing trading-path test keeps exercising that path without reaching a real `TradingClient`, plus one new test per file proving the closed-market path (`ExecutionModule` never constructed, exit code 0) and, in `test_bot.py`, one proving the open-market default doesn't itself block trading. **653 passing** (was 650 before this milestone), `ruff check`/`ruff format --check`/`mypy` (scoped to `git ls-files '*.py'`) all clean. |
 | **New, filed rather than left as prose (`pm-reviewer` finding): alert if `market_is_open()` reports closed for an implausible number of consecutive runs** | todo | The staff-engineer-reviewer's own disclosed gap, given an owner and a row so it doesn't get lost as prose inside a `done` row: today, a latent bug that made `market_is_open()` always return `False` (an SDK change, a credential/account pointed at the wrong clock) would silently stop the account from ever trading again, forever, with every run exiting 0 and nothing to notice. No design decided yet -- candidates include counting consecutive closed-reported weekday runs and alerting past a small threshold, or simply surfacing the day's gate outcome somewhere already-monitored (e.g. `report.py`). Not urgent (M44/M45 together already close the actual order-placement risk this session set out to fix), but real, and now trackable instead of buried. |
 | `pm-reviewer` pass on this section; `tasks-pm-reviewer.sha256` updated | done | 2026-09-04 -- one round. Confirmed row-level statuses accurate against the actual code (spot-checked every "done" claim), the disclosed gap honestly framed (not glossed, not overstated), and the M44-timing question directly answered (no live run occurred between M44's push and this fix landing -- confirmed via `gh run list`, not assumed). Findings applied: spelled out *why* the timing was tight (tomorrow, the next scheduled fire, is also the first weekend fire since the live-trading flip -- not just "before it could matter" in the abstract); noted this depends on the fix actually reaching `main` before that cron, same as every other GitHub-Actions-targeted push in this file; filed the disclosed observability gap as its own `todo` row above instead of leaving it as prose only a careful reader would find. |
+
+## M46 — Don't fail a scheduled run on a not-yet-filled order (added 2026-09-09, user report: "yesterdays run failed")
+
+`daily-trade.yml`'s 2026-09-08 run (paper account, `bot.py`) exited 1 and
+was flagged failed. Root cause: not a data or deploy problem. `bot.py`
+submits each buy and then, **synchronously and immediately**, queries its
+status via `trading_common.settle_and_react` -> `settlement.settle_order`.
+All 5 buys (INSW, PRDO, EOG, MGY, GNTX) came back `status=pending`
+(Alpaca's `pending_new`/`accepted` window, before the fill registers);
+`settle_and_react` records every non-filled, non-failed order as an
+alert-worthy "unconfirmed" condition, and `trading_common.finish()` maps
+*any* alert to exit 1 -> the scheduling workflow marks the run failed.
+The orders were market orders during market hours and filled seconds
+later; only the confirmation lost the race. The same day's live-account
+run passed only because it planned 0 buys. `settlement.py`'s own module
+docstring already calls a `pending` result "not an error -- it's just not
+resolved yet," but nothing gave it a moment to resolve.
+
+Fix (option 1 of the 3 offered the user; they picked it): a bounded
+re-poll for a fill before reporting a just-submitted order as pending.
+Deliberately *not* option 2 ("stop alerting on `pending` entirely") --
+that would let a genuinely stuck order go unnoticed until the next run's
+live-holdings reconciliation; the re-poll keeps the stuck-order alert as
+the backstop, just stops firing it for the normal fill-registration lag.
+
+**Non-goals / scope.** This is the minimal fix for the false failure. A
+settlement pass *decoupled from the submitting run* is **not owned by any
+milestone today** -- M34's four exit criteria (cadence isolation,
+no-shared-state, site-labelling, state-machine-on-cadence) don't mention
+it, and DESIGN_V2.md §3.3's "leave it for the next settlement pass" today
+just means "the next scheduled run." M46 does not build that; it is a
+~15s latency shim at one call site for a known Alpaca `pending_new`
+quirk. If a real decoupled pass is ever wanted it needs its own
+milestone row.
+
+**Applies to liquidations too.** `settle_and_react` is shared by the buy
+loop *and* the liquidation loop (`bot.py` / `execute_trades.py`), so a
+just-submitted sell now gets the same wait. Intended -- a liquidation
+that reads back `pending` for a beat is the same broker quirk and was
+equally capable of false-failing a run.
+
+**The 15s budget is a first estimate, not a measurement.** 5 x 3s is
+derived from one incident ("filled seconds later," paper account), not
+from an observed distribution of Alpaca fill-registration lag. Busy
+market open, a brief halt, a larger clip, or live-vs-paper differences
+could exceed it and re-trigger the exact false failure this milestone
+removes. Treat the constants as tunable once we have more runs to look
+at (see the verification row below).
+
+**Turning it off.** `config.SETTLEMENT_FILL_WAIT_POLLS = 0` collapses
+`settle_order` back to the exact pre-M46 single-query path -- the revert
+lever if the wait ever causes trouble, no code change needed.
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| `config.SETTLEMENT_FILL_WAIT_POLLS` / `SETTLEMENT_FILL_WAIT_POLL_SECONDS` (5 x 3s) | done | 2026-09-09 -- a distinct budget from `SETTLEMENT_QUERY_RETRY_*` (that rides out a *failing* status query; this waits out a *successful* query that just says "not filled yet"). ~15s of sleep per still-pending order + one final status query (`settle_order` wall-clock-caps the sleep between polls, so a brownout can't stack per-poll retry budgets -- but the deadline is only tested between queries, so the true ceiling is ~15s + one retry-exhausting query); ~300s + 20 slow queries for a full `GLOBAL_ORDER_BUDGET` (20) queue in the pathological "nothing is filling" case -- checked against `daily-trade.yml`'s `timeout-minutes: 45`, well inside the job budget even on a ~20-min data-fetch tail, and that case stays slow and alert-worthy as it should. See the config comment for the slow-but-healthy-broker corollary (deadline hit sooner → shim weaker on a slow day). |
+| `settlement.settle_order(..., wait_for_fill=True)` re-polls a `pending` order to the budget, then journals/returns `pending` unchanged | done | 2026-09-09 -- keyword-only, defaults `False` (so `settle_orders` and any future deferred pass are byte-for-byte unchanged). Only `pending` is waited on; `filled`/`partially_filled`/`expired`/`canceled` all return at once. Existing single-query retry loop extracted to `_query_status_with_retry`; journals once, with the final observed status. |
+| `trading_common.settle_and_react` passes `wait_for_fill=True` | done | 2026-09-09 -- the one call site that is a genuine just-submitted order (buys *and* liquidations, per the note above). Covers both `bot.py` and `execute_trades.py`. |
+| `DESIGN_V2.md` §3.3 reconciled | done | 2026-09-09 -- §3.3 rule 1 as written said a genuinely-pending order needs "no retry needed," which M46's synchronous wait is a real refinement of. Added an "M46 refinement" paragraph there scoping the wait to the synchronous call site and reaffirming that on timeout it still reports genuinely-pending and defers to the next pass. Not hook-gated (that's `DESIGN.md` only) but folded into this milestone's `staff-engineer-reviewer` pass by convention. |
+| Tests: 4 new in `test_settlement.py` (waits out a brief pending then reports the fill; gives up after the budget and still reports `pending`; stops the moment a terminal status appears; does not wait when `wait_for_fill` not requested) + 1 in `test_trading_common.py` (`settle_and_react` forwards `wait_for_fill=True`); e2e fixtures stub the new poll delay to 0 | done | 2026-09-09 -- **658 passing** (was 653), `ruff check` / `ruff format --check` / `mypy` (scoped to `git ls-files '*.py'`) all clean. Unit tests stub `time.sleep`, so they prove the control flow, **not** that 15s of real wait actually outlasts Alpaca's real `pending_new` window -- that's the verification row. `test_settlement.py`'s autouse fixture defaults the budget to 0 so existing single-query tests keep pre-M46 behavior; `test_bot.py` / `test_execute_trades.py` fixtures set only the delay to 0 so their poll loop still runs (a permanently-pending order still resolves to `pending` and alerts), just without sleeping. |
+| `staff-engineer-reviewer` pass on the `.py` + `DESIGN_V2.md` §3.3 diff | done | 2026-09-09 -- two rounds. Round 1: 3 substantive findings on the M46 wait -- (a) a query failure on a *later* re-poll erased a verified earlier `pending` and escalated to the kill-switch path (fixed: loop retains `order`/`status`, returns `None` only if *no* poll ever succeeded); (b) poll-count alone didn't bound elapsed time since each poll's own query retry can be slow (fixed: `wait_deadline` wall-clock cap checked between polls); (c) `config.py` comment understated the normal-day cost as "one extra query" (fixed). Plus a test-isolation asymmetry across suites (fixed) and the `DESIGN_V2.md` §3.3 reconciliation folded in. Round 2: both code findings confirmed fixed correctly, no new correctness bug, no blockers; 3 optional precision items applied (config comment + §3.3 now state the true ceiling is ~15s sleep + one retry-exhausting query, note the slow-but-healthy-broker corollary, and §3.3 spells out the deliberate divergence from its own "retries exhausted → block" rule). Two disclosed-not-fixed items (widened buy-side crash window; `partially_filled` not calling `on_filled`) accepted as correct to disclose rather than fix here. **The `code-push-staff-engineer.sha` marker is updated at push time, not committed** (per the skill). |
+| `pm-reviewer` pass on this section; `tasks-pm-reviewer.sha256` updated | done | 2026-09-09 -- two rounds. Round 1: 8 findings -- the "M34's job" framing (M34's exit criteria don't include a decoupled settlement pass), missing real-run verification criteria, the 15s budget presented as fact rather than a first estimate, `DESIGN_V2.md` §3.3 not reconciled, liquidations-vs-buys ambiguity, live path unexercised, no named disable lever, unshown 45-min timeout headroom. All applied. Round 2: all 8 confirmed resolved, no scope creep introduced; 2 minor residual notes applied (disambiguated the `M46` label from `DESIGN_V2.md`'s own roadmap M46; gave the verification row an explicit "go look" trigger). Marker updated. |
+| **Verify against a real scheduled run** -- next `daily-trade.yml` run that plans buys completes green, with those orders' fills confirmed *in-run* (journal `fills` rows `filled`, not `pending`); if any still time out to `pending`, retune `SETTLEMENT_FILL_WAIT_POLLS`/`…_POLL_SECONDS` from what that run's timing shows | todo | The actual proof the false failure is gone -- the triggering event was a real scheduled run going red, and nothing before this row exercises 15s of real wait against the real broker. `workflow_dispatch` on a day with a non-empty buy queue counts if the cron cadence is too slow to wait for. **Trigger to go look:** check the first qualifying run's log + `bot-state` journal at the start of the next work session after this lands (note it in `HANDOFF.md`'s TL;DR as an open item until done), same as M45's disclosed follow-up rows. |
+| Live account still unexercised against real buys | todo (disclosed, not this milestone) | The synchronous settlement check has essentially never run against real buys on the *live* account -- the live cadence's runs have planned 0 buys since it went live (M44). M46 doesn't make this worse, but the first live run that does plan buys is the real first test of this path with real money; noting it here so it isn't a surprise. |

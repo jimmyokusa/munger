@@ -110,6 +110,13 @@ def _isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
     # M26b: no real sleeping on a settlement query retry in tests.
     monkeypatch.setattr(config, "SETTLEMENT_QUERY_RETRY_BACKOFF_SECONDS", 0.0)
+    # M46: and default the post-submit fill-wait budget off, matching
+    # test_settlement.py's own fixture -- these e2e tests exercise bot.run
+    # end to end, not the poll loop (that's covered directly in
+    # test_settlement.py). Both constants zeroed so a still-pending order
+    # takes the exact pre-M46 single-query path here.
+    monkeypatch.setattr(config, "SETTLEMENT_FILL_WAIT_POLLS", 0)
+    monkeypatch.setattr(config, "SETTLEMENT_FILL_WAIT_POLL_SECONDS", 0.0)
     # M26d: same reasoning as KILL_SWITCH_FLAG_FILE_PATH above -- without
     # this, a test that genuinely exercises the settlement query-failure
     # path would touch a real file in the real repo-root-relative

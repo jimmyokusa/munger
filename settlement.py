@@ -20,8 +20,14 @@ responses, per §3.3's own specification:
   flag and blocks the next execution window rather than proceeding on a
   position picture it can't currently verify.
 - A successful query that reports the order still open (`pending`) is
-  not an error -- it's just not resolved yet. Left for the next
-  settlement pass, no retry needed within this one.
+  not an error -- it's just not resolved yet. When the caller asks
+  (`settle_order(..., wait_for_fill=True)` -- the synchronous check
+  bot.py / execute_trades.py run right after submitting an order), a
+  still-pending order is re-polled a few times (M46,
+  `config.SETTLEMENT_FILL_WAIT_*`) to ride out Alpaca's brief
+  pending_new/accepted window before a fast market-order fill registers;
+  if it's still pending after that, it's journaled `pending` and left
+  for the next settlement pass, exactly as an un-waited call would.
 
 Idempotent by construction: `journal.record_fill` upserts on
 `client_order_id`, so re-running this module against the same order set
@@ -94,15 +100,16 @@ class SettlementResult:
         return not self.query_failed
 
 
-def settle_order(exec_module: execution.ExecutionModule, client_order_id: str) -> str | None:
-    """Query and journal one order's current status, with retry on query failure.
+def _query_status_with_retry(
+    exec_module: execution.ExecutionModule, client_order_id: str
+) -> Order | None:
+    """Fetch one order's status, retrying only a *failing* query.
 
-    Returns the classified status string (one of journal's
-    `_VALID_FILL_STATUSES`) on a successful query, or `None` if the
-    query itself failed on every retry attempt -- `None` here means
-    "couldn't find out," never "no fill," which is why it's a distinct
-    return value from the status strings rather than an exception the
-    caller has to unpack.
+    Returns the `Order` on the first successful query, or `None` if every
+    attempt raised -- `None` means "couldn't find out," never "no fill."
+    A successful query is returned as-is regardless of what status it
+    reports; deciding whether a still-open order is worth waiting on is
+    settle_order's job, not this one's.
     """
     # Read from config at call time, not bound as a module-level
     # constant at import time -- a test (or a future runtime retune)
@@ -112,11 +119,9 @@ def settle_order(exec_module: execution.ExecutionModule, client_order_id: str) -
     retry_attempts = config.SETTLEMENT_QUERY_RETRY_ATTEMPTS
     retry_backoff_seconds = config.SETTLEMENT_QUERY_RETRY_BACKOFF_SECONDS
 
-    order: Order | None = None
     for attempt in range(1, retry_attempts + 1):
         try:
-            order = exec_module.get_order_status(client_order_id)
-            break
+            return exec_module.get_order_status(client_order_id)
         except Exception:
             logger.warning(
                 "%s: settlement status query failed (attempt %d/%d)",
@@ -127,11 +132,90 @@ def settle_order(exec_module: execution.ExecutionModule, client_order_id: str) -
             )
             if attempt < retry_attempts:
                 time.sleep(retry_backoff_seconds)
+    return None
 
-    if order is None:
+
+def settle_order(
+    exec_module: execution.ExecutionModule,
+    client_order_id: str,
+    *,
+    wait_for_fill: bool = False,
+) -> str | None:
+    """Query and journal one order's current status, with retry on query failure.
+
+    Returns the classified status string (one of journal's
+    `_VALID_FILL_STATUSES`) on a successful query, or `None` if the
+    query itself failed on every retry attempt -- `None` here means
+    "couldn't find out," never "no fill," which is why it's a distinct
+    return value from the status strings rather than an exception the
+    caller has to unpack.
+
+    `wait_for_fill` (M46): for the synchronous check bot.py /
+    execute_trades.py run milliseconds after submitting an order, re-poll
+    a still-`pending` order up to `config.SETTLEMENT_FILL_WAIT_POLLS`
+    times, `config.SETTLEMENT_FILL_WAIT_POLL_SECONDS` apart, before
+    giving up and reporting it pending -- long enough to ride out
+    Alpaca's brief pending_new/accepted window ahead of a fast
+    market-order fill, short enough that a genuinely stuck order still
+    resolves to `pending` (and alerts) within seconds, not minutes. Only
+    a `pending` classification is waited on; `filled`, `partially_filled`,
+    `expired`, and `canceled` are all resolved outcomes and return at
+    once. Left `False`, this function behaves exactly as it did pre-M46
+    (one query, no fill wait).
+
+    Two staff-engineer-reviewer findings on the M46 wait shaped the loop
+    below:
+
+    - **A blip on a *later* re-poll does not erase a verified earlier
+      status.** If the first poll successfully read the order as
+      `pending` but a subsequent poll's query fails all its retries, the
+      known `pending` stands (journaled and returned) -- it is *not*
+      escalated to the `None` / query-failure path, which would trip the
+      caller's kill switch. `None` is returned only when *no* poll ever
+      got a successful read.
+    - **One order's wait is wall-clock bounded**, not just poll-count
+      bounded: each poll's own `_query_status_with_retry` can burn
+      `SETTLEMENT_QUERY_RETRY_*`, so on a flaky endpoint the poll count
+      alone wouldn't cap elapsed time. `wait_deadline` stops the loop
+      once the allotted sleep budget has elapsed regardless of how slow
+      the queries were, so a broker brownout on a non-filling day can't
+      stack per-order retry budgets onto the job's timeout.
+    """
+    poll_budget = config.SETTLEMENT_FILL_WAIT_POLLS if wait_for_fill else 0
+    poll_delay_seconds = config.SETTLEMENT_FILL_WAIT_POLL_SECONDS
+    wait_deadline = time.monotonic() + poll_budget * poll_delay_seconds if poll_budget > 0 else None
+
+    order: Order | None = None
+    status: str | None = None
+    polls_remaining = poll_budget
+    while True:
+        queried = _query_status_with_retry(exec_module, client_order_id)
+        if queried is not None:
+            order = queried
+            status = _classify(order)
+            if status != "pending":
+                break
+        elif order is None:
+            # No successful read yet -- a genuine query failure the caller
+            # must fail closed on.
+            return None
+        # else: this poll's query blipped, but an earlier poll already
+        # verified this order as pending -- that stands; keep waiting.
+        past_deadline = wait_deadline is not None and time.monotonic() >= wait_deadline
+        if polls_remaining <= 0 or past_deadline:
+            break
+        polls_remaining -= 1
+        logger.info(
+            "%s: order still pending; re-checking for a fill in %.0fs (%d attempt(s) left)",
+            client_order_id,
+            poll_delay_seconds,
+            polls_remaining,
+        )
+        time.sleep(poll_delay_seconds)
+
+    if order is None or status is None:
         return None
 
-    status = _classify(order)
     # staff-engineer-reviewer finding: these conversions ran outside the
     # retry loop's try/except, so a genuinely malformed numeric field in
     # an otherwise-successful query response wasn't a "query failure"
