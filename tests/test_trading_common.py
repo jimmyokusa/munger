@@ -238,6 +238,67 @@ def test_cap_buy_orders_to_budget_never_truncates_liquidations() -> None:
     assert deferred == ["AAPL"]
 
 
+def test_cap_buy_orders_to_budget_truncates_a_near_full_equity_order_by_default() -> None:
+    # Pins down the failure mode M48 fixes: at the base 25% budget, a
+    # generate_buy_queue order sized close to a $100.33 account's full
+    # equity would itself get deferred right back to zero here, even if
+    # some future change to generate_buy_queue's own caps let it size one.
+    orders = [("A", 98.32)]
+    capped, deferred, bound_budgets = trading_common.cap_buy_orders_to_budget(
+        orders, liquidation_count=0, portfolio_value=100.33
+    )
+    assert capped == []
+    assert deferred == ["A"]
+    assert bound_budgets == ["notional"]
+
+
+def test_cap_buy_orders_to_budget_does_not_truncate_a_concentrated_mode_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M48: must read EFFECTIVE_GLOBAL_NOTIONAL_BUDGET_PCT, not the bare
+    # constant -- otherwise this backstop would silently defeat
+    # generate_buy_queue's own concentrated-mode sizing.
+    monkeypatch.setattr(config, "SMALL_ACCOUNT_CONCENTRATED_MODE", True)
+    orders = [("A", 98.32)]
+    capped, deferred, bound_budgets = trading_common.cap_buy_orders_to_budget(
+        orders, liquidation_count=0, portfolio_value=100.33
+    )
+    assert capped == orders
+    assert deferred == []
+    assert bound_budgets == []
+
+
+# --- check_small_account_concentration_ceiling ---
+
+
+def test_concentration_ceiling_check_is_a_noop_when_mode_is_off() -> None:
+    assert config.SMALL_ACCOUNT_CONCENTRATED_MODE is False
+    result = trading_common.check_small_account_concentration_ceiling(1_000_000.0)
+    assert result is None
+
+
+def test_concentration_ceiling_check_passes_under_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "SMALL_ACCOUNT_CONCENTRATED_MODE", True)
+    monkeypatch.setattr(config, "SMALL_ACCOUNT_CONCENTRATED_MODE_EQUITY_CEILING", 500.0)
+    result = trading_common.check_small_account_concentration_ceiling(100.33)
+    assert result is None
+
+
+def test_concentration_ceiling_check_refuses_once_equity_exceeds_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M48 (staff-engineer-reviewer finding): the structural guard against
+    # a forgotten flag going all-in at a much larger equity than approved.
+    monkeypatch.setattr(config, "SMALL_ACCOUNT_CONCENTRATED_MODE", True)
+    monkeypatch.setattr(config, "SMALL_ACCOUNT_CONCENTRATED_MODE_EQUITY_CEILING", 500.0)
+    result = trading_common.check_small_account_concentration_ceiling(50_000.0)
+    assert result is not None
+    assert "50,000.00" in result
+    assert "500.00" in result
+
+
 # --- market_is_open (moved from pnl.py, M45: now shared with bot.py/execute_trades.py) ---
 
 

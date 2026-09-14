@@ -233,11 +233,20 @@ def run(run_date: str | None = None) -> int:
         if t not in to_liquidate and t not in corporate_action
     }
     available_cash = exec_module.get_available_cash()
+    portfolio_value = available_cash + sum(remaining_holdings.values())
+
+    # M48 (staff-engineer-reviewer finding): same guard as bot.py's own --
+    # must run before generate_buy_queue even builds a queue. See that
+    # module's comment on the identical check for the full reasoning.
+    ceiling_alert = trading_common.check_small_account_concentration_ceiling(portfolio_value)
+    if ceiling_alert:
+        _alert(alerts, ceiling_alert)
+        return trading_common.finish(alerts)
+
     buy_orders = portfolio.generate_buy_queue(
         remaining_holdings, results, available_cash, exclude=set(corporate_action)
     )
 
-    portfolio_value = available_cash + sum(remaining_holdings.values())
     buy_orders, deferred_symbols, bound_budgets = trading_common.cap_buy_orders_to_budget(
         buy_orders, len(to_liquidate), portfolio_value
     )

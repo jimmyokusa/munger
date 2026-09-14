@@ -121,12 +121,24 @@ jobs:
       # verified live). This is the one deliberate step M24 always left
       # for the user to take on their own -- see that milestone's own
       # todo row in TASKS.md.
+      # MUNGER_SMALL_ACCOUNT_CONCENTRATED_MODE (M48, user decision after
+      # this account was found to place zero orders on every open-market
+      # run since going live -- at $100 equity, the diversified 1/15th,
+      # <=12%-per-position sizing math can never clear MIN_ORDER_NOTIONAL,
+      # a structural math conflict, not a timing issue): 1 position, fully
+      # invested, for this specific small deployment only -- see
+      # config.py's own comment on EFFECTIVE_TARGET_POSITION_COUNT/
+      # EFFECTIVE_MAX_SINGLE_POSITION_WEIGHT/
+      # EFFECTIVE_GLOBAL_NOTIONAL_BUDGET_PCT and DESIGN_REAL_MONEY.md's
+      # investment-thesis writeup. Remove this line (no other code change
+      # needed) once/if this account is funded larger.
       - name: Run bot (live account)
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_LIVE_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
           MUNGER_PAPER_TRADING: "false"
           MUNGER_LIVE_TRADING_ENABLED: "1"
+          MUNGER_SMALL_ACCOUNT_CONCENTRATED_MODE: "1"
         run: python bot.py
 
       - name: Persist bot-state-live

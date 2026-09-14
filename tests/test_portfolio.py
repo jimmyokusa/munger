@@ -808,6 +808,57 @@ def test_generate_buy_queue_respects_max_single_position_weight(
     assert orders[0][1] == pytest.approx(max_value)
 
 
+def test_generate_buy_queue_places_a_dust_order_at_100_dollars_by_default() -> None:
+    # M48 context, confirmed against the real account: at $100 equity, the
+    # diversified defaults (TARGET_POSITION_COUNT=15,
+    # MAX_SINGLE_POSITION_WEIGHT=0.12) cap any single position at
+    # min(100/15, 100*0.12) = $6.69, far under MIN_ORDER_NOTIONAL -- zero
+    # orders, every run. Pins down the exact bug this milestone fixes.
+    screen_results = _screen_results([{"symbol": "A", "buyable": True, "score": 90.0}])
+    orders = portfolio.generate_buy_queue({}, screen_results, 100.33)
+    assert orders == []
+
+
+def test_generate_buy_queue_concentrated_mode_places_one_full_equity_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M48 (user decision): with SMALL_ACCOUNT_CONCENTRATED_MODE on, the
+    # same $100.33 account that placed zero orders above now places
+    # exactly one, sized to (approximately) the whole deployable balance.
+    monkeypatch.setattr(config, "SMALL_ACCOUNT_CONCENTRATED_MODE", True)
+    screen_results = _screen_results(
+        [
+            {"symbol": "A", "buyable": True, "score": 90.0},
+            {"symbol": "B", "buyable": True, "score": 80.0},
+        ]
+    )
+    available_cash = 100.33
+    orders = portfolio.generate_buy_queue({}, screen_results, available_cash)
+    assert len(orders) == 1
+    assert orders[0][0] == "A"  # higher score, since only one slot exists
+    buffer = available_cash * config.CASH_BUFFER_PCT
+    assert orders[0][1] == pytest.approx(available_cash - buffer)
+    assert orders[0][1] >= config.MIN_ORDER_NOTIONAL
+
+
+def test_generate_buy_queue_concentrated_mode_does_not_affect_a_normal_sized_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The flag is per-deployment, not global -- confirms it's off by
+    # default for every other test/account in this suite (paper/ira),
+    # and that turning it on for a $100k account would itself go fully
+    # concentrated too (it's an explicit override, not equity-conditional).
+    assert config.SMALL_ACCOUNT_CONCENTRATED_MODE is False
+    screen_results = _screen_results([{"symbol": "A", "buyable": True, "score": 90.0}])
+    orders = portfolio.generate_buy_queue({}, screen_results, 100_000.0)
+    portfolio_value = 100_000.0
+    expected = min(
+        portfolio_value / config.TARGET_POSITION_COUNT,
+        portfolio_value * config.MAX_SINGLE_POSITION_WEIGHT,
+    )
+    assert orders[0][1] == pytest.approx(expected)
+
+
 def test_generate_buy_queue_ignores_a_top_up_gap_within_the_drift_band() -> None:
     # User request: daily rebalancing needs a tolerance band, or a
     # holding's dollar value drifting with ordinary daily price noise

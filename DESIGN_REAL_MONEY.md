@@ -886,3 +886,315 @@ Same category as §7's own live-account items: provisioning
 already has the underlying Alpaca IRA account; only the API key pair is
 new) and the GCS IAM widening (§8.4) are user-side steps, not something
 this session executes.
+
+---
+
+## 9. Small-account concentrated sizing (M48, 2026-09-13) — single-stock speculation for one small account, not a smaller version of Munger's concentration philosophy
+
+**warren-buffett-reviewer finding, applied here rather than left implicit
+in the sizing math:** this section's original framing ("a disclosed
+departure from the concentration discipline") understated what M48
+actually does. Munger's own concentration philosophy — the one
+`DESIGN.md` §1's "concentration over di-worse-ification (~15 positions,
+not 50)" invokes — presumes a *small number* of positions, each
+individually understood through real business judgment, so that being
+right about a handful of businesses compounds without one misjudgment
+sinking the whole portfolio. `EFFECTIVE_TARGET_POSITION_COUNT=1`/
+`EFFECTIVE_MAX_SINGLE_POSITION_WEIGHT=1.0` is not a smaller version of
+that: it is one ticker, chosen by the same mechanical composite score
+used for the 15-name book, with no incremental single-stock vetting,
+holding 100% of the account. That is single-stock speculation on a
+score's output, not "a concentrated portfolio of a few wonderful
+businesses after deep research." Named plainly here so a reader doesn't
+mistake the vocabulary ("concentrated") for the substance.
+
+**Finding, confirmed against the real account, not assumed:** the $100
+live account (funded per §3.3's own "start small, that's the blast-radius
+bound" interim default) placed **zero orders on every open-market weekday
+since going live** (2026-09-04). This was mistaken for an enablement bug
+at first — it is not. `bot.py`'s own logs show the screener finding
+buyable candidates every day ("Screen complete: 1506 tickers, 14
+buyable") followed by "Run complete: 0 liquidations, 0 buys planned,"
+even on days the market was open and `MUNGER_LIVE_TRADING_ENABLED` was
+set. The actual cause is a structural math conflict in `portfolio.py`'s
+`generate_buy_queue`: at $100.33 equity,
+
+```
+per_position_cap = min(equity / TARGET_POSITION_COUNT, equity * MAX_SINGLE_POSITION_WEIGHT)
+                 = min(100.33 / 15, 100.33 * 0.12) = min($6.69, $12.04) = $6.69
+```
+
+— both far under `MIN_ORDER_NOTIONAL=$50`. This holds for *any* buy
+candidate, on *every* run, regardless of screener output; it is not a
+timing issue, an enablement gap, or something that resolves itself with
+more waiting.
+
+### 9.1 The real fix is a concentration decision, not a budget-percentage tweak
+
+The first framing of a fix — raise `GLOBAL_NOTIONAL_BUDGET_PCT` (the
+run-level deployable-cash cap) — was checked against the actual code and
+found insufficient on its own: `per_position_cap` above is driven by
+`TARGET_POSITION_COUNT`/`MAX_SINGLE_POSITION_WEIGHT`, entirely
+independent of the run-level budget. Raising the budget percentage alone
+still caps any one order at $6.69. The only way *any* order clears $50 at
+this account's actual equity requires **both**
+`TARGET_POSITION_COUNT ≤ 2` **and** `MAX_SINGLE_POSITION_WEIGHT ≥ ~50%`
+simultaneously — i.e., going essentially all-in on one or two positions
+at a time. This is not "diversify differently"; it is a materially
+different risk profile from the 15-position, ≤12%-per-position discipline
+`DESIGN.md`'s own §1 (and this doc's inherited §1.4) treats as core to
+this strategy everywhere else.
+
+**Put to the user directly, with the real numbers, not glossed over --
+and, per the warren-buffett-reviewer finding, with this system's own
+recommendation stated, not left as a neutral menu.** Options offered:
+fund the account higher (no strategy change — at roughly $835+, one
+1/15th-sized position on its own clears $50); accept the concentration
+tradeoff for this account specifically; or leave it as-is.
+**This system's own recommendation was, and remains, to fund higher:**
+~$735 of additional capital is the entire distance between keeping every
+safeguard this project is built around (diversification, the
+per-position cap, the score never deciding more than 6.67% of an
+account) and discarding all of them for this one account. **User
+decision, made after that recommendation and the numbers above: accept
+the concentration tradeoff anyway, at the tightest end — 1 position,
+fully invested** (not 2 at ~50/50).
+
+**What this specific decision gives up, stated plainly, not left to be
+inferred from the arithmetic:**
+
+- **The score driving the single pick is the same one this project's own
+  more recent design doc says isn't validated.** `DESIGN_V2.md` §3.6
+  states directly that the composite score "has never been shown to
+  predict anything" — written when deciding to delete
+  `MAX_SINGLE_POSITION_WEIGHT` from the 15-name book specifically because
+  it never binds there (equal weight at 15 positions is already 6.67%,
+  under the 12% cap) and is therefore inert. M48 reuses that exact same
+  constant, but at `1.0`, in a context where it is no longer inert — it
+  is the *only* thing standing between the account and a single-name
+  wipeout, sized by a score this project itself has already disclaimed.
+- **No single misjudged business can sink the 15-name book; this account
+  has no such protection.** A margin-of-safety cushion (Graham's P/E and
+  P/E×P/B gates, `DESIGN.md` §3) and the two-strike quality-deterioration
+  sell discipline (`STRIKES_TO_LIQUIDATE`) both apply unchanged and
+  unweakened to whichever single name is chosen — but a cushion sized to
+  protect a *diversified* book from any one miss is not the same cushion
+  when it is the entire defense for one position holding 100% of an
+  account. One accounting restatement, one adverse litigation outcome,
+  one bad earnings print, one fraud — any single idiosyncratic event this
+  system's own screen cannot see coming (the same acknowledged blind spot
+  `DESIGN_V2.md` §6 already names for the mechanical screen generally) now
+  equals a full-account loss, not a one-fifteenth drag absorbed by
+  fourteen other names.
+- **The account is a sequence of single-stock all-in bets, not one buy-
+  and-hold position forever.** Confirmed (not assumed) against the actual
+  code: `generate_buy_queue` tops up an existing holding before ever
+  opening a new one, and at `EFFECTIVE_TARGET_POSITION_COUNT=1` a filled
+  position already consumes the whole target/cap, so there is no
+  deployable cash to chase a higher-ranked name the next day — this is
+  "one business, held until `process_sells`'s unmodified two-strike logic
+  says it's no longer a quality holding," not daily rotation. But when
+  the position *is* eventually replaced, the account rotates overnight
+  from one 100%-weighted name to a brand-new one with zero look-back,
+  entered cold — over the account's life, a sequence of single-stock
+  all-in bets, each one a fresh judgment call this screen makes with the
+  same unvalidated score every time.
+
+### 9.2 Mechanism: `SMALL_ACCOUNT_CONCENTRATED_MODE`, scoped to this one deployment
+
+A new env-gated toggle (`config.SMALL_ACCOUNT_CONCENTRATED_MODE`,
+`MUNGER_SMALL_ACCOUNT_CONCENTRATED_MODE`), deliberately **not** derived
+from `config.ACCOUNT_LABEL` — being "the live account" and being
+"currently funded small enough to need concentration" are different
+facts, and the second one is expected to change (the flag is designed to
+be deleted, a config-only edit, with no code change, once/if this account
+is funded larger). Set only on `daily-trade-live.yml` and
+`execute-trades-live.yml`'s own env blocks — never on the paper or ira
+workflows, whose sizing is completely unaffected.
+
+Three new constants, computed lazily via the same module `__getattr__`
+mechanism §8.1 built for `ACCOUNT_LABEL` (and for the identical reason:
+`TARGET_POSITION_COUNT`/`MAX_SINGLE_POSITION_WEIGHT`/
+`GLOBAL_NOTIONAL_BUDGET_PCT` are already directly
+`monkeypatch.setattr`'d by name throughout the existing test suite, so
+converting *those* names to `__getattr__`-only would have silently and
+permanently broken the override on the first such test's teardown — a new
+sibling name avoids this entirely, leaving the base constants and every
+existing reader/test untouched):
+
+- `EFFECTIVE_TARGET_POSITION_COUNT` → `1` under the flag, else
+  `TARGET_POSITION_COUNT`.
+- `EFFECTIVE_MAX_SINGLE_POSITION_WEIGHT` → `1.0` under the flag, else
+  `MAX_SINGLE_POSITION_WEIGHT`.
+- `EFFECTIVE_GLOBAL_NOTIONAL_BUDGET_PCT` → `1.0` under the flag, else
+  `GLOBAL_NOTIONAL_BUDGET_PCT`.
+
+`portfolio.py`'s `generate_buy_queue` (four read sites) and
+`trading_common.py`'s `cap_buy_orders_to_budget` (one read site) now read
+the `EFFECTIVE_*` names. **The `trading_common.py` site matters as much as
+`generate_buy_queue`'s own:** it is an independent defense-in-depth
+backstop that re-checks the *same* notional budget against the same
+portfolio value — reading the un-overridden base constant there would
+have silently truncated a concentrated-mode order right back down to 25%,
+defeating the fix while `generate_buy_queue`'s own logic looked correct
+in isolation. Caught by design, verified with a dedicated test
+(`test_cap_buy_orders_to_budget_does_not_truncate_a_concentrated_mode_order`),
+not discovered live.
+
+**"Remove this line, no code change needed" is true for the sizing math,
+not for an already-bought position (staff-engineer-reviewer finding).**
+`generate_buy_queue`'s own docstring already states this module "never
+sells to buy" — a rally is never a trim signal. Removing the workflow
+env var line resolves `EFFECTIVE_*` back to the base 15-position/12%/25%
+values on the *next* run, but the single position already bought under
+concentrated mode does not itself get automatically rebalanced down to a
+diversified weight the moment the flag is gone — it stays ~100%-weighted
+until it is liquidated via the two-strike quality discipline (or manual
+intervention), while any new cash only slowly builds out the other 14
+slots from there. "Revert" un-does the *setting* immediately; it does not
+un-do the *concentration* immediately.
+
+**Structural guard against a forgotten flag at a much larger equity
+(staff-engineer-reviewer finding).** `SMALL_ACCOUNT_CONCENTRATED_MODE` as
+first built was static and equity-unaware — nothing tied it to the
+account's actual current equity, so a deposit that grew this account well
+past its approved ~$100 scope would have silently placed an all-in
+single-stock order at whatever the *new*, larger equity was, if a human
+simply forgot to remove the one workflow line first. Fixed with
+`config.SMALL_ACCOUNT_CONCENTRATED_MODE_EQUITY_CEILING` (`$500`, well
+under the ~$835 point where diversified sizing would work on its own) and
+`trading_common.check_small_account_concentration_ceiling()`, called from
+both `bot.py` and `execute_trades.py` right before `generate_buy_queue`
+is even invoked: an alert-worthy abort (the same "screen-only, no orders
+placed" posture every other pre-trade gate uses), not a silent skip or a
+quietly-resized order, once equity exceeds the ceiling. If this account
+is ever funded past that ceiling, the correct response is to remove the
+flag entirely, not raise the ceiling to tolerate it.
+
+### 9.3 Explicitly not touched
+
+- `MAX_SINGLE_POSITION_WEIGHT` itself is not removed or altered.
+  `DESIGN_V2.md` §3.6 already plans its eventual deletion (a future
+  milestone, M41, not yet built, on the grounds that at equal weight it
+  never binds and "reads like a risk control and is not one") —
+  `EFFECTIVE_MAX_SINGLE_POSITION_WEIGHT`'s own comment flags that it needs
+  to move together with whatever M41 eventually does.
+- `process_sells`/liquidation logic is untouched (confirmed: it reads only
+  `config.STRIKES_TO_LIQUIDATE`) — this milestone only changes *buy*
+  sizing.
+- Paper's and the ira account's sizing are unaffected — the flag defaults
+  off, and the full pre-M48 test suite (690 tests, including every
+  existing `generate_buy_queue`/`cap_buy_orders_to_budget` test) passes
+  unchanged with it off, confirming no accidental behavior change to
+  either account.
+
+### 9.4 Verification bar (mirrors §4.1's own precedent)
+
+Watch the next real `daily-trade-live.yml` run (scheduled or a manual
+`workflow_dispatch` with `screen_only: false`) and confirm the account
+ends up holding exactly one position, sized close to the ~$98 deployable
+balance — the actual proof this milestone's fix works, not just that the
+unit tests pass against a synthetic $100.33 fixture.
+
+---
+
+## 10. Seeding `journal.py` with the IRA's pre-existing holdings (M49, 2026-09-13)
+
+M47's own screen-only `workflow_dispatch` verification of
+`daily-trade-ira.yml` (done to confirm the §8.4 GCS IAM widening actually
+worked, not just that it was applied) surfaced a real gap M47 didn't
+touch: the real IRA account already holds positions — GLAD, HRZN, SPYM,
+and more, ~$170,614 equity — this bot never placed. `journal.py`'s
+`account`-scoped `get_expected_holdings("ira")` is empty (a fresh
+journal), so the moment `MUNGER_IRA_TRADING_ENABLED` is ever set,
+`check_reconciliation`'s abort-on-mismatch (M27, applies to every
+non-paper account, no carve-out) fires on **every one** of these
+positions and blocks the run.
+
+**The one prior precedent for this exact failure mode doesn't transfer.**
+M20a's own live-account dry-run found an identical shape of problem — a
+pre-existing 1-share `G` holding (~$34) with zero journal history — and
+it was resolved by the user simply **selling** the position at the
+broker (TASKS.md, 2026-09-04). Applying that same fix here — liquidating
+$170k of real, presumably long-held IRA positions purely to satisfy this
+bot's bookkeeping — would be absurd; the right fix for an account this
+size with real existing holdings is to teach the journal what's actually
+true, not force a sale.
+
+### 10.1 Mechanism
+
+`get_expected_holdings()`/`check_reconciliation()` are confirmed (not
+assumed) to be a **pure symbol-set comparison** — `journal.py`'s own
+query derives held-or-not purely from the most recent `side` per symbol,
+never touching quantity or notional. This means seeding correctness only
+requires teaching the journal *which symbols* are held, not *how much* —
+no dollar amount needs to be invented for a position this bot never
+sized.
+
+New one-off script, `seed_holdings.py`, mirroring `record_override.py`'s
+own established shape (a module docstring framing it as "a deliberate
+human action, not a scheduled job," `argparse`, `main(argv) -> int`,
+`sys.exit(main())`):
+
+```
+python seed_holdings.py --account ira [--dry-run]
+```
+
+Reads the account's real current holdings via the *existing*
+`execution.ExecutionModule.get_current_holdings()` — the same method
+`portfolio.py` itself already calls every run, not a new broker
+integration. For every symbol not already in
+`journal.get_expected_holdings(account)`, inserts one `journal.record_
+order(symbol, "buy", "SEEDED: pre-existing {account} holding as of
+{date}, not placed by this bot", account=account)` row — `record_order`
+already accepts a call with `notional`/`qty` both omitted. Idempotent by
+construction: a symbol already expected-held is skipped, so an
+accidental or deliberate re-run never double-seeds (verified with a
+dedicated test, not just claimed).
+
+New one-off workflow, `.github/workflows/seed-holdings-ira.yml`
+(`workflow_dispatch`-only, `dry_run: boolean, default: true`) — restores/
+persists the **real** `bot-state-ira` branch, same shape as
+`evaluate-holdings-ira.yml`, since a local-only `journal.db` would seed
+nothing the next real scheduled/dispatched run actually reads. Only
+persists the branch on a real (non-dry-run) run; a dry run's whole point
+is writing nothing, so there is nothing to commit.
+
+**`--account` must match `config.ACCOUNT_LABEL`, checked before touching
+the broker or the journal at all (staff-engineer-reviewer finding, push
+review).** Unlike `record_override.py` — whose `--account` only labels a
+row it writes, with no live data fetch to disagree with — this script's
+`--account` also selects *which broker's holdings get read*, via whatever
+credentials this process's `config.ALPACA_API_KEY`/`ALPACA_SECRET_KEY`
+actually point at. Nothing originally enforced that the two agreed: a
+mismatched `--account` (wrong credentials loaded locally, or a typo)
+would have silently seeded one real account's holdings into a *different*
+account's journal partition. The existing reconciliation abort-on-mismatch
+would eventually surface the resulting divergence — but only after wrong
+rows already sat in a real account's append-only `orders` table with no
+delete/undo path, and only by blocking a possibly-unrelated account's own
+already-running automated pipeline until someone diagnosed why. Fixed:
+`main()` refuses immediately (before `ExecutionModule` is even
+constructed) if `args.account != config.ACCOUNT_LABEL`.
+
+### 10.2 Explicitly not in scope
+
+- Does not flip `MUNGER_IRA_TRADING_ENABLED` or add `daily-trade-ira.yml`'s
+  cron — those remain M47's own named, user-owned follow-ups, entirely
+  unaffected by this milestone.
+- No `warren-buffett` review needed — this is bookkeeping accuracy
+  (teaching the journal what the broker already, actually reports), not
+  a change to what the screener decides or how positions are sized.
+- Not built for the live or paper accounts — neither has this problem
+  today (paper started genuinely empty; live's one pre-existing holding
+  was sold, not seeded); nothing prevents reusing `seed_holdings.py` for
+  either later if the same situation ever arises there.
+
+### 10.3 Verification bar
+
+After a real (non-dry-run) `seed-holdings-ira.yml` run: pull the real
+`bot-state-ira` branch's `journal.db` and confirm
+`journal.get_expected_holdings("ira")` matches a fresh, independent
+`get_current_holdings()` call against the real account — the actual
+proof this unblocks the M47 gap, not just that the unit tests (which mock
+the broker call) pass.

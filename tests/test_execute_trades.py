@@ -213,6 +213,23 @@ def test_run_refuses_to_run_ira_without_the_ira_trading_flag(
     assert exit_code == 1
 
 
+def test_run_refuses_to_place_an_all_in_order_once_equity_exceeds_the_concentration_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M48 (staff-engineer-reviewer finding): same guard as bot.py's own --
+    # _FakeExecutionModule's default get_available_cash ($100,000) is
+    # already well past the $500 ceiling, so this fires with no override.
+    monkeypatch.setattr(config, "SMALL_ACCOUNT_CONCENTRATED_MODE", True)
+    monkeypatch.setattr(config, "SMALL_ACCOUNT_CONCENTRATED_MODE_EQUITY_CEILING", 500.0)
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    exit_code = execute_trades.run(run_date="2026-07-21")
+
+    fake_exec.market_buy.assert_not_called()
+    assert exit_code == 1
+
+
 def test_run_refuses_to_trade_when_the_market_is_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     # M45: same gate as bot.py's own -- expected/routine (weekends,
     # holidays), so NOT alert-worthy, unlike the live-trading-flag test

@@ -153,6 +153,41 @@ TARGET_POSITION_COUNT = 15
 MAX_SINGLE_POSITION_WEIGHT = 0.12
 CASH_BUFFER_PCT = 0.02
 MIN_ORDER_NOTIONAL = 50.0  # orders below this are skipped as dust
+# M48: a real, confirmed-not-assumed structural problem on the $100 live
+# account -- at that equity, min(equity/TARGET_POSITION_COUNT,
+# equity*MAX_SINGLE_POSITION_WEIGHT) and equity*GLOBAL_NOTIONAL_BUDGET_PCT
+# both land under MIN_ORDER_NOTIONAL above, so generate_buy_queue returns
+# zero orders every run, deterministically (confirmed against the real
+# account's GitHub Actions logs: "Screen complete... 14 buyable" ->
+# "0 buys planned" on every open-market weekday since the account went
+# live). Fixing this for a $100 account, under this strategy's own math,
+# requires going essentially all-in on very few positions -- a genuine
+# concentration/investment-thesis departure from the 15-position
+# discipline used everywhere else, not a budget-percentage tweak (see
+# EFFECTIVE_TARGET_POSITION_COUNT/EFFECTIVE_MAX_SINGLE_POSITION_WEIGHT/
+# EFFECTIVE_GLOBAL_NOTIONAL_BUDGET_PCT below, near __getattr__). Scoped
+# to this one specific, small, already-blast-radius-bounded deployment --
+# not derived from ACCOUNT_LABEL, since being "the live account" and
+# being "currently funded small enough to need concentration" are
+# different facts; this flag gets removed (a config-only, no-code-change
+# deploy edit) once/if the account is funded larger.
+SMALL_ACCOUNT_CONCENTRATED_MODE = (
+    os.environ.get("MUNGER_SMALL_ACCOUNT_CONCENTRATED_MODE", "") == "1"
+)
+# staff-engineer-reviewer finding (M48 push review): the flag above is
+# static and equity-unaware -- nothing stopped this account from going
+# all-in on a single stock at WHATEVER its current equity happened to be,
+# if the flag were ever left set past a large deposit (the manual
+# "remove this line once funded larger" revert lever depends entirely on
+# a human remembering to do it). This ceiling is the structural guard:
+# trading_common.check_small_account_concentration_ceiling() refuses
+# (alert-worthy abort, not a silent skip or a quiet resize) to place an
+# all-in order once equity exceeds it. Set well under the ~$835 point
+# (DESIGN_REAL_MONEY.md §9.1) where diversified sizing would clear
+# MIN_ORDER_NOTIONAL on its own -- if this account is ever funded that
+# far, the flag should be removed entirely, not merely tolerated by a
+# higher ceiling.
+SMALL_ACCOUNT_CONCENTRATED_MODE_EQUITY_CEILING = 500.0
 # Under daily rebalancing, a holding's dollar value drifts with price
 # every single run -- without a tolerance band, any drift past
 # MIN_ORDER_NOTIONAL alone would trigger a top-up trade most days on
@@ -762,4 +797,28 @@ def __getattr__(name: str) -> Any:
         # short-circuits first).
         account_trading_enabled_map = {"live": LIVE_TRADING_ENABLED, "ira": IRA_TRADING_ENABLED}
         return account_trading_enabled_map.get(__getattr__("ACCOUNT_LABEL"), False)
+    # M48: EFFECTIVE_* are new sibling names, deliberately NOT replacing
+    # TARGET_POSITION_COUNT/MAX_SINGLE_POSITION_WEIGHT/
+    # GLOBAL_NOTIONAL_BUDGET_PCT's own plain assignments above. Those three
+    # names are already monkeypatch.setattr'd directly, by that exact
+    # name, throughout tests/test_portfolio.py/test_bot.py/
+    # test_trading_common.py -- pytest's monkeypatch restores the old
+    # value via a real setattr() on teardown, which would permanently
+    # re-materialize a plain attribute in this module's __dict__ the first
+    # time any such existing test ran, silently and irreversibly disabling
+    # this __getattr__ path (and this override) for every later test in
+    # the same process, if these three names had no plain assignment of
+    # their own left to fall back to. Portfolio.py/trading_common.py read
+    # these EFFECTIVE_* names instead of the base ones; the base constants
+    # and every existing test/reader are completely unaffected.
+    #
+    # If SMALL_ACCOUNT_CONCENTRATED_MODE's own M41-eventual-removal note
+    # on MAX_SINGLE_POSITION_WEIGHT (DESIGN_V2.md §3.6) ever ships,
+    # EFFECTIVE_MAX_SINGLE_POSITION_WEIGHT needs to move with it.
+    if name == "EFFECTIVE_TARGET_POSITION_COUNT":
+        return 1 if SMALL_ACCOUNT_CONCENTRATED_MODE else TARGET_POSITION_COUNT
+    if name == "EFFECTIVE_MAX_SINGLE_POSITION_WEIGHT":
+        return 1.0 if SMALL_ACCOUNT_CONCENTRATED_MODE else MAX_SINGLE_POSITION_WEIGHT
+    if name == "EFFECTIVE_GLOBAL_NOTIONAL_BUDGET_PCT":
+        return 1.0 if SMALL_ACCOUNT_CONCENTRATED_MODE else GLOBAL_NOTIONAL_BUDGET_PCT
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

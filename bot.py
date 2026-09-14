@@ -39,6 +39,9 @@ import universe
 from trading_common import alert as _alert
 from trading_common import cap_buy_orders_to_budget as _cap_buy_orders_to_budget
 from trading_common import check_data_freshness as _check_data_freshness
+from trading_common import (
+    check_small_account_concentration_ceiling as _check_small_account_concentration_ceiling,
+)
 from trading_common import finish as _finish
 from trading_common import global_kill_switch_active as _global_kill_switch_active
 from trading_common import kill_switch_active as _kill_switch_active
@@ -362,6 +365,25 @@ def run(run_date: str | None = None) -> int:
         if t not in to_liquidate and t not in corporate_action
     }
     available_cash = exec_module.get_available_cash()
+    # Computed once, from remaining_holdings (not current_holdings) --
+    # staff-engineer-reviewer finding: using current_holdings here made
+    # the budget check's denominator larger than the one that actually
+    # constrained buy-order sizing, silently more permissive than
+    # intended. Reused below for both the M48 concentration-ceiling guard
+    # and the budget cap, matching generate_buy_queue's own internal
+    # portfolio_value exactly.
+    portfolio_value = available_cash + sum(remaining_holdings.values())
+
+    # M48 (staff-engineer-reviewer finding): SMALL_ACCOUNT_CONCENTRATED_MODE
+    # is a static, equity-unaware override -- this must run before
+    # generate_buy_queue even builds a queue, or a deposit that grew this
+    # account well past its approved scope would silently place an
+    # all-in single-stock order at whatever the new equity is.
+    ceiling_alert = _check_small_account_concentration_ceiling(portfolio_value)
+    if ceiling_alert:
+        _alert(alerts, ceiling_alert)
+        return _finish(alerts)
+
     # staff-engineer-reviewer finding: omitting corporate_action tickers
     # from remaining_holdings alone isn't enough -- generate_buy_queue's
     # new-position loop only checks current_holdings membership to avoid
@@ -372,12 +394,6 @@ def run(run_date: str | None = None) -> int:
         remaining_holdings, results, available_cash, exclude=set(corporate_action)
     )
 
-    # Matches generate_buy_queue's own internal portfolio_value (computed
-    # from remaining_holdings, not current_holdings) -- staff-engineer-
-    # reviewer finding: using current_holdings here made this budget
-    # check's denominator larger than the one that actually constrained
-    # buy-order sizing, silently more permissive than intended.
-    portfolio_value = available_cash + sum(remaining_holdings.values())
     buy_orders, deferred_symbols, bound_budgets = _cap_buy_orders_to_budget(
         buy_orders, len(to_liquidate), portfolio_value
     )

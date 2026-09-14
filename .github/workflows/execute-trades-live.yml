@@ -68,11 +68,15 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.screen_only
         run: touch KILL_SWITCH
 
+      # M48: same concentrated-sizing flag as daily-trade-live.yml -- this
+      # workflow also calls portfolio.generate_buy_queue, so it needs the
+      # identical override for consistent sizing if ever dispatched.
       - name: Run execute (live account)
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_LIVE_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
           MUNGER_PAPER_TRADING: "false"
+          MUNGER_SMALL_ACCOUNT_CONCENTRATED_MODE: "1"
         run: python execute_trades.py
 
       - name: Persist bot-state-live

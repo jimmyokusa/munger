@@ -1535,6 +1535,53 @@ def test_run_trades_ira_when_the_ira_trading_flag_is_set_independent_of_live(
     assert exit_code == 0
 
 
+def test_run_refuses_to_place_an_all_in_order_once_equity_exceeds_the_concentration_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M48 (staff-engineer-reviewer finding): the structural guard against
+    # a forgotten SMALL_ACCOUNT_CONCENTRATED_MODE flag going all-in at a
+    # much larger equity than approved. _FakeExecutionModule's default
+    # get_available_cash ($100,000) is already well past the $500
+    # ceiling, so this fires with no override needed.
+    monkeypatch.setattr(config, "SMALL_ACCOUNT_CONCENTRATED_MODE", True)
+    monkeypatch.setattr(config, "SMALL_ACCOUNT_CONCENTRATED_MODE_EQUITY_CEILING", 500.0)
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+    monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
+    monkeypatch.setattr(data, "fetch_all_metrics", lambda symbols, **_kwargs: {})
+    monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
+    monkeypatch.setattr(
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, period, corp_check=None: ([], [], []),
+    )
+
+    buy_queue_called = False
+
+    def _fail_if_called(
+        holdings: object, results: object, cash: float, exclude: object = None
+    ) -> list[object]:
+        nonlocal buy_queue_called
+        buy_queue_called = True
+        return []
+
+    monkeypatch.setattr(portfolio, "generate_buy_queue", _fail_if_called)
+
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    # The whole point: refuses before a buy queue is ever built, not
+    # merely defers/truncates one after building it.
+    assert buy_queue_called is False
+    assert exit_code == 1
+
+
 def test_run_fetches_holdings_metrics_through_xbrl_primary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

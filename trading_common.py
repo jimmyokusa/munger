@@ -231,11 +231,17 @@ def cap_buy_orders_to_budget(
     (many buyable candidates, zero holdings): zero orders means holdings
     stay at zero, so the next run builds the identical over-budget queue
     and aborts again, forever. generate_buy_queue already self-limits
-    notional to config.GLOBAL_NOTIONAL_BUDGET_PCT (see its docstring), so
-    in practice only the order-count budget should ever truncate here;
-    the notional check is kept as a defense-in-depth backstop, not the
-    active constraint. Liquidations are never truncated -- they're the
-    two-strike quality discipline (risk-reducing), not discretionary.
+    notional to config.EFFECTIVE_GLOBAL_NOTIONAL_BUDGET_PCT (see its
+    docstring), so in practice only the order-count budget should ever
+    truncate here; the notional check is kept as a defense-in-depth
+    backstop, not the active constraint. **Must read the same
+    EFFECTIVE_GLOBAL_NOTIONAL_BUDGET_PCT generate_buy_queue used to size
+    its own queue** (M48 finding) -- reading the bare
+    config.GLOBAL_NOTIONAL_BUDGET_PCT here instead would silently
+    truncate a concentrated-mode order right back down to the
+    un-overridden percentage, defeating that override entirely. Liquidations
+    are never truncated -- they're the two-strike quality discipline
+    (risk-reducing), not discretionary.
 
     Takes a strict prefix of buy_orders at each budget in turn (order
     count, then notional), rather than skipping an order that doesn't fit
@@ -253,7 +259,7 @@ def cap_buy_orders_to_budget(
     same regardless of which, much rarer, case actually occurred.
     """
     max_buy_orders = max(0, config.GLOBAL_ORDER_BUDGET - liquidation_count)
-    notional_budget = portfolio_value * config.GLOBAL_NOTIONAL_BUDGET_PCT
+    notional_budget = portfolio_value * config.EFFECTIVE_GLOBAL_NOTIONAL_BUDGET_PCT
 
     count_capped = buy_orders[:max_buy_orders]
     capped: list[tuple[str, float]] = []
@@ -271,3 +277,36 @@ def cap_buy_orders_to_budget(
     if len(capped) < len(count_capped):
         bound_budgets.append("notional")
     return capped, deferred, bound_budgets
+
+
+def check_small_account_concentration_ceiling(portfolio_value: float) -> str | None:
+    """None if fine to proceed; otherwise an alert message and the caller must abort.
+
+    M48 (staff-engineer-reviewer finding, push review):
+    config.SMALL_ACCOUNT_CONCENTRATED_MODE is a static, equity-unaware
+    override -- nothing else in this codebase ties it to the account's
+    actual current equity. Without this check, a deposit that grew the
+    account well past the ~$100 it was scoped and user-approved for would
+    silently place an all-in single-stock order at whatever the new,
+    larger equity is, if a human simply forgot to remove the one workflow
+    env var line first. This is the structural guard, called from
+    bot.py/execute_trades.py right before generate_buy_queue: an
+    alert-worthy abort (the same "screen-only, no orders placed" posture
+    every other pre-trade gate in those callers uses), not a silent skip
+    or a quietly-resized order.
+
+    No-op (returns None immediately) when the flag itself is off --
+    every other account is entirely unaffected by this check existing.
+    """
+    if not config.SMALL_ACCOUNT_CONCENTRATED_MODE:
+        return None
+    ceiling = config.SMALL_ACCOUNT_CONCENTRATED_MODE_EQUITY_CEILING
+    if portfolio_value <= ceiling:
+        return None
+    return (
+        f"MUNGER_SMALL_ACCOUNT_CONCENTRATED_MODE is set but equity (${portfolio_value:,.2f}) "
+        f"exceeds its ${ceiling:,.2f} ceiling -- refusing to place an all-in single-stock "
+        "order at this size. Remove MUNGER_SMALL_ACCOUNT_CONCENTRATED_MODE (the account no "
+        "longer needs it) or deliberately raise the ceiling, but do not let this pass "
+        "silently."
+    )

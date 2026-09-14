@@ -1084,6 +1084,12 @@ _This table's M47 is this file's own Epic F roadmap numbering, unrelated to `TAS
 | M48 | Retarget `news_update.py` to per-holding event extraction against the closed taxonomy | Taxonomy is an enumeration in code; every emitted record carries an event type, a date, and a working source URL; records failing any of the three are discarded, not downgraded. |
 | M49 | Backtest the taxonomy against known events | The Feb 2026 HRMY ruling, Takeda's competing orexin agonist, and the camera-monitor regulation changes are each surfaced from contemporaneous sources. |
 
+_This table's M48/M49 are this file's own Epic G roadmap numbering,
+unrelated to `TASKS.md`'s M48 ("Small-account concentrated sizing") and
+M49 ("Seed journal.py with the IRA's pre-existing holdings"), both
+2026-09-13 — same coincidental-collision note this file already makes
+for M46/M47 above._
+
 *If Tranche 4 never ships*, Epic E still closes the
 accounting-irregularity and auditor-change blind spots entirely, and the
 deterministic moat and trend work in Tranche 1's Epic D still corrects

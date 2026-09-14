@@ -210,3 +210,38 @@ def test_account_trading_enabled_follows_ira_flag_for_ira_account_independent_of
 
     monkeypatch.setattr(config, "IRA_TRADING_ENABLED", True)
     assert config.ACCOUNT_TRADING_ENABLED is True
+
+
+def test_small_account_concentrated_mode_defaults_to_false() -> None:
+    assert config.SMALL_ACCOUNT_CONCENTRATED_MODE is False
+
+
+def test_effective_sizing_constants_match_base_values_when_mode_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "SMALL_ACCOUNT_CONCENTRATED_MODE", False)
+    assert config.EFFECTIVE_TARGET_POSITION_COUNT == config.TARGET_POSITION_COUNT
+    assert config.EFFECTIVE_MAX_SINGLE_POSITION_WEIGHT == config.MAX_SINGLE_POSITION_WEIGHT
+    assert config.EFFECTIVE_GLOBAL_NOTIONAL_BUDGET_PCT == config.GLOBAL_NOTIONAL_BUDGET_PCT
+
+
+def test_effective_sizing_constants_go_fully_concentrated_when_mode_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M48 (user decision): 1 position, fully invested, for a small account
+    # that can never clear MIN_ORDER_NOTIONAL under the diversified math.
+    monkeypatch.setattr(config, "SMALL_ACCOUNT_CONCENTRATED_MODE", True)
+    assert config.EFFECTIVE_TARGET_POSITION_COUNT == 1
+    assert config.EFFECTIVE_MAX_SINGLE_POSITION_WEIGHT == 1.0
+    assert config.EFFECTIVE_GLOBAL_NOTIONAL_BUDGET_PCT == 1.0
+
+
+def test_effective_sizing_constants_do_not_mutate_the_base_constants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The base TARGET_POSITION_COUNT/etc. must stay exactly as configured
+    # for paper/ira -- only the EFFECTIVE_* siblings change under the flag.
+    monkeypatch.setattr(config, "SMALL_ACCOUNT_CONCENTRATED_MODE", True)
+    assert config.TARGET_POSITION_COUNT == 15
+    assert config.MAX_SINGLE_POSITION_WEIGHT == 0.12
+    assert config.GLOBAL_NOTIONAL_BUDGET_PCT == 0.25

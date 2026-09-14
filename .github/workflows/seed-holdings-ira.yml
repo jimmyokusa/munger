@@ -1,0 +1,101 @@
+name: Seed ira holdings (one-off)
+
+# M49 -- a one-off, human-dispatched tool (same "deliberate human action,
+# not a scheduled job" shape as record_override.py) that teaches
+# journal.py about real positions the ira account already held before
+# this bot ever touched it (see seed_holdings.py's own module docstring
+# for the full reasoning). Runs against the real, persisted
+# bot-state-ira branch -- restoring/persisting it exactly like
+# evaluate-holdings-ira.yml -- since a local-only journal.db would seed
+# nothing the next real daily/execute/evaluate run actually reads.
+#
+# No KILL_SWITCH handling here, unlike the other ira workflows: this
+# script never places a broker order (it only reads current holdings and
+# writes journal rows), so there is nothing for a kill switch to gate.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview what would be seeded without writing anything"
+        type: boolean
+        default: true
+
+# Shared with daily-trade-ira.yml/execute-trades-ira.yml/
+# evaluate-holdings-ira.yml (`bot-state-ira`) -- see daily-trade.yml's own
+# comment on its concurrency block for the full reasoning.
+concurrency:
+  group: bot-state-ira
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare persisted bot-state-ira branch
+        run: |
+          set -e
+          if git ls-remote --exit-code --heads origin bot-state-ira >/dev/null 2>&1; then
+            git fetch origin bot-state-ira
+            git worktree add ../bot-state-wt -b bot-state-ira origin/bot-state-ira
+          else
+            echo "No bot-state-ira branch yet -- nothing to seed against."
+            git worktree add --detach ../bot-state-wt
+            git -C ../bot-state-wt checkout --orphan bot-state-ira
+            git -C ../bot-state-wt rm -rf . >/dev/null 2>&1 || true
+          fi
+          for f in state.json journal.db munger.log; do
+            if [ -f "../bot-state-wt/$f" ]; then
+              cp "../bot-state-wt/$f" .
+              echo "Restored $f from bot-state-ira branch."
+            fi
+          done
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Seed ira holdings
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_IRA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_IRA_SECRET_KEY }}
+          MUNGER_PAPER_TRADING: "false"
+          MUNGER_ACCOUNT_LABEL: "ira"
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python seed_holdings.py --account ira --dry-run
+          else
+            python seed_holdings.py --account ira
+          fi
+
+      # Only persists on a real (non-dry-run) run -- a dry-run's whole
+      # point is writing nothing, so there is nothing to commit.
+      - name: Persist bot-state-ira
+        if: ${{ inputs.dry_run == 'false' }}
+        run: |
+          set -e
+          git config user.name "munger-bot-ira"
+          git config user.email "munger-bot@users.noreply.github.com"
+          [ -f journal.db ] && cp journal.db ../bot-state-wt/
+          cd ../bot-state-wt
+          git add -A
+          git commit -q -m "Seed ira holdings from run ${{ github.run_id }}" --allow-empty
+          git push origin HEAD:bot-state-ira
+
+      - name: Upload run artifacts for manual inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seed-holdings-ira-run-artifacts-${{ github.run_id }}
+          path: |
+            journal.db
+          if-no-files-found: ignore
+          retention-days: 400
