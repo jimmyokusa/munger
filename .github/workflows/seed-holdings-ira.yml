@@ -78,8 +78,17 @@ jobs:
 
       # Only persists on a real (non-dry-run) run -- a dry-run's whole
       # point is writing nothing, so there is nothing to commit.
+      #
+      # Real bug, found live: `inputs.dry_run == 'false'` compares a
+      # boolean-typed input to a string literal, which GitHub Actions'
+      # expression language coerces via loose-equality rules (boolean ->
+      # number, string -> NaN) -- `false == 'false'` evaluates to FALSE,
+      # so this step was silently skipped even on a real (dry_run=false)
+      # dispatch, losing every seeded row (written only to the ephemeral
+      # runner's local journal.db, never committed). `!inputs.dry_run`
+      # compares boolean-to-boolean directly and has no such trap.
       - name: Persist bot-state-ira
-        if: ${{ inputs.dry_run == 'false' }}
+        if: ${{ !inputs.dry_run }}
         run: |
           set -e
           git config user.name "munger-bot-ira"
