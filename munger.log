@@ -8429,3 +8429,133 @@ yfinance.exceptions.YFRateLimitError: Too Many Requests. Rate limited. Try after
 2026-09-20T17:39:19+0000 INFO screener: Screen complete: 1506 tickers, 15 buyable.
 2026-09-20T17:39:19+0000 INFO __main__: Screen complete: 1506 tickers, 15 buyable.
 2026-09-20T17:39:20+0000 INFO __main__: Market is closed -- screen-only run, no orders will be placed.
+2026-09-21T19:12:49+0000 INFO __main__: Starting run for 2026-09-21 (paper=True)
+2026-09-21T19:13:41+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:13:41+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:13:41+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:13:41+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:13:41+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-09-21T19:13:41+0000 INFO data: Waiting 44.5s for a shared yfinance rate limit to clear.
+2026-09-21T19:14:26+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:14:26+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:14:26+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:14:26+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:14:26+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:14:26+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:14:26+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:15:11+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-09-21T19:15:11+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:15:11+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:15:11+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:15:27+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:15:27+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:15:27+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:15:27+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:15:27+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:15:27+0000 INFO data: Waiting 44.9s for a shared yfinance rate limit to clear.
+2026-09-21T19:16:12+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:16:12+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:16:12+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:16:12+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:16:12+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:16:12+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:16:12+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:16:12+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:16:57+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:16:57+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:16:57+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:16:57+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:16:57+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:17:04+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-09-21T19:17:07+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-09-21T19:17:12+0000 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN-A"}}}
+2026-09-21T19:17:17+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:17:17+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:17:17+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:17:17+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:17:17+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:17:20+0000 INFO data: Waiting 41.7s for a shared yfinance rate limit to clear.
+2026-09-21T19:18:02+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-09-21T19:18:02+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:18:02+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:18:02+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:18:02+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:18:02+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:18:02+0000 WARNING data: CWEN-A: fetch failed after 4 attempts
+Traceback (most recent call last):
+  File "/home/runner/work/munger/munger/data.py", line 357, in _fetch_metrics_inner
+    info, net_income = _fetch_raw(symbol)
+                       ^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/munger/munger/data.py", line 258, in _fetch_raw
+    info = ticker.info
+           ^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/yfinance/ticker.py", line 159, in info
+    return self.get_info()
+           ^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/yfinance/base.py", line 282, in get_info
+    data = self._quote.info
+           ^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/yfinance/scrapers/quote.py", line 524, in info
+    self._fetch_info()
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/yfinance/scrapers/quote.py", line 682, in _fetch_info
+    result = self._fetch(modules=modules)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/yfinance/scrapers/quote.py", line 658, in _fetch
+    result = self._data.get_raw_json(_QUOTE_SUMMARY_URL_ + f"/{self._symbol}", params=params_dict)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/yfinance/data.py", line 482, in get_raw_json
+    response = self.get(url, params=params, timeout=timeout)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/yfinance/utils.py", line 124, in wrapper
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/yfinance/data.py", line 395, in get
+    response = self._make_request(url, request_method = self._session.get, params=params, timeout=timeout)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/yfinance/utils.py", line 124, in wrapper
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/yfinance/data.py", line 471, in _make_request
+    raise YFRateLimitError()
+yfinance.exceptions.YFRateLimitError: Too Many Requests. Rate limited. Try after a while.
+2026-09-21T19:18:02+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:18:02+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:18:02+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:18:47+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-09-21T19:18:47+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-09-21T19:18:47+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-09-21T19:18:47+0000 INFO data: Waiting 0.1s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:03+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:03+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:03+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:03+0000 INFO data: Waiting 44.8s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:03+0000 INFO data: Waiting 44.8s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:03+0000 INFO data: Waiting 44.8s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:48+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:48+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:48+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:48+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:48+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:48+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:48+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:19:48+0000 INFO data: Waiting 45.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:20:33+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:20:33+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:20:33+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:20:33+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:20:33+0000 INFO data: Waiting 0.0s for a shared yfinance rate limit to clear.
+2026-09-21T19:20:54+0000 INFO xbrl: CIK 0001569650: no XBRL companyfacts on EDGAR (404)
+2026-09-21T19:21:11+0000 WARNING xbrl: NISOURCE INC.: GrossProfit/Revenues|RevenueFromContractWithCustomerExcludingAssessedTax -- rejected implausible/non-positive-denominator year(s) ['2019-12-31', '2018-12-31'], using 2017-12-31 instead (ratio 1.0000)
+2026-09-21T19:24:05+0000 WARNING xbrl: CYTOKINETICS, INCORPORATED: OperatingIncomeLoss/Revenues|RevenueFromContractWithCustomerExcludingAssessedTax -- rejected implausible/non-positive-denominator year(s) ['2025-12-31', '2024-12-31', '2023-12-31'], using 2022-12-31 instead (ratio -3.4275)
+2026-09-21T19:25:26+0000 WARNING xbrl: Vir Biotechnology, Inc.: OperatingIncomeLoss/Revenues|RevenueFromContractWithCustomerExcludingAssessedTax -- rejected implausible/non-positive-denominator year(s) ['2025-12-31', '2024-12-31', '2023-12-31'], using 2022-12-31 instead (ratio 0.5156)
+2026-09-21T19:25:35+0000 WARNING xbrl: VERRA MOBILITY CORPORATION: OperatingIncomeLoss/Revenues|RevenueFromContractWithCustomerExcludingAssessedTax -- rejected implausible/non-positive-denominator year(s) ['2025-12-31', '2024-12-31', '2023-12-31', '2022-12-31', '2021-12-31', '2020-12-31'], using 2019-12-31 instead (ratio 0.2149)
+2026-09-21T19:27:12+0000 WARNING xbrl: ROIVANT SCIENCES LTD.: OperatingIncomeLoss/Revenues|RevenueFromContractWithCustomerExcludingAssessedTax -- every common year (['2026-03-31', '2025-03-31', '2024-03-31', '2023-03-31', '2022-03-31', '2021-03-31']) was implausible or had a non-positive denominator; no margin computed
+2026-09-21T19:29:00+0000 WARNING xbrl: EnerSys: GrossProfit/Revenues|RevenueFromContractWithCustomerExcludingAssessedTax -- every common year (['2020-03-31', '2019-03-31', '2018-03-31', '2017-03-31', '2016-03-31', '2015-03-31', '2014-03-31', '2013-03-31', '2012-03-31']) was implausible or had a non-positive denominator; no margin computed
+2026-09-21T19:30:18+0000 WARNING xbrl: FLOWSERVE CORP: GrossProfit/Revenues|RevenueFromContractWithCustomerExcludingAssessedTax -- every common year (['2025-12-31', '2024-12-31', '2023-12-31', '2022-12-31', '2021-12-31', '2020-12-31', '2019-12-31', '2018-12-31', '2017-12-31', '2016-12-31', '2015-12-31', '2014-12-31', '2013-12-31', '2012-12-31', '2011-12-31']) was implausible or had a non-positive denominator; no margin computed
+2026-09-21T19:30:18+0000 WARNING xbrl: FLOWSERVE CORP: OperatingIncomeLoss/Revenues|RevenueFromContractWithCustomerExcludingAssessedTax -- every common year (['2025-12-31', '2024-12-31', '2023-12-31', '2022-12-31', '2021-12-31', '2020-12-31', '2019-12-31', '2018-12-31', '2017-12-31', '2016-12-31', '2015-12-31', '2014-12-31', '2013-12-31', '2012-12-31', '2011-12-31']) was implausible or had a non-positive denominator; no margin computed
+2026-09-21T19:31:47+0000 WARNING xbrl: CROWN HOLDINGS, INC.: GrossProfit/Revenues|RevenueFromContractWithCustomerExcludingAssessedTax -- every common year (['2013-12-31', '2012-12-31', '2011-12-31']) was implausible or had a non-positive denominator; no margin computed
+2026-09-21T19:32:32+0000 INFO xbrl: CIK 0001492165: no XBRL companyfacts on EDGAR (404)
+2026-09-21T19:33:00+0000 WARNING xbrl: L3HARRIS TECHNOLOGIES, INC.: GrossProfit/Revenues|RevenueFromContractWithCustomerExcludingAssessedTax -- every common year (['2010-07-02']) was implausible or had a non-positive denominator; no margin computed
+2026-09-21T19:35:34+0000 INFO screener: Screen complete: 1504 tickers, 16 buyable.
+2026-09-21T19:35:34+0000 INFO __main__: Screen complete: 1504 tickers, 16 buyable.
+2026-09-21T19:35:43+0000 INFO __main__: Run complete: 0 liquidations, 0 buys planned.
