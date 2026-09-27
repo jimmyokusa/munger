@@ -721,6 +721,40 @@ Acting on it is a human decision, recorded in the journal as a manual
 override with a reason, so overrides are auditable and countable
 alongside the automated decisions.
 
+**M50 (2026-09-26, `TASKS.md`): one narrow, bounded exception for *new*
+purchases only.** A live performance/investment-thesis review found a
+real gap: GRBK carried a Critical-severity 4.02 filing (non-reliance on
+previously issued financials) that was structurally invisible to the
+buy decision, because this layer only ever polls *held* tickers.
+`material_events.check_buy_candidates` is narrower in scope than §3.5's
+own veto-capable filing agent, but not weaker in force once triggered
+(warren-buffett finding, corrected after an earlier draft's "one step
+weaker" framing overstated this) -- exclusion from the buy queue is
+exclusion, the same as any of §3.5's Tier-1 disqualifiers. What is
+actually narrower: it acts on only the single least-ambiguous severity
+tier (Critical -- non-reliance on financials, bankruptcy/receivership;
+never High/Medium/Low, unlike the filing agent's own broader Tier-1
+disqualifier list), for a bounded, per-item cooldown (a solvency event
+and a disclosure-quality event don't share a resolution timescale --
+see `config.MATERIAL_EVENT_BUY_COOLDOWN_DAYS_BANKRUPTCY`'s own comment),
+never touches an existing holding's sell/liquidation path, and is always
+paired with an alert-worthy notification rather than a silent skip --
+mirroring this section's own structural-threat precedent ("hold at last
+good decision... not-yet-held candidate: not opened... raise a named
+alert") rather than inventing a new mechanism. Critical-only is
+defensible as an unmeasured, unconditional veto for a semantic reason,
+not a borrowed one: unlike §3.5's free-text extraction of genuine
+judgment calls (which needs a measured >=90%/80% precision/recall bar
+precisely because a model call is unavoidable there), a 4.02/1.03
+classification here is a closed lookup against SEC's own structured
+item-number field -- no reasonable business files "don't rely on our own
+financials" or "we're insolvent" without a real, serious problem, so
+there's little of the ambiguity a precision/recall bar would even need
+to measure. High (4.01, auditor change) stays excluded for a plainer
+reason: auditor changes happen for many mundane reasons and are
+genuinely ambiguous in substance, not because this module lacks §3.5's
+measurement apparatus.
+
 **Alert fatigue is the failure mode to design against.** An alert
 channel that fires weekly gets ignored, which is worse than not having
 one, because it produces false confidence that something is watching.

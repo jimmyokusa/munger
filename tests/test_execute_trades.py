@@ -20,6 +20,7 @@ import config
 import execute_trades
 import execution
 import journal
+import material_events
 import portfolio
 import screener
 import trading_common
@@ -68,6 +69,9 @@ def _isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # trading path without reaching a real TradingClient -- tests that
     # want to exercise the closed-market path override this locally.
     monkeypatch.setattr(trading_common, "market_is_open", lambda: True)
+    # M50: default to "nothing blocked" (see test_bot.py's own fixture for
+    # the full reasoning) -- keeps existing tests off real SEC EDGAR.
+    monkeypatch.setattr(material_events, "check_buy_candidates", lambda tickers: {})
     monkeypatch.setattr(config, "KILL_SWITCH", False)
     monkeypatch.setattr(config, "KILL_SWITCH_FLAG_FILE_PATH", tmp_path / "KILL_SWITCH")
     monkeypatch.setattr(
@@ -228,6 +232,27 @@ def test_run_refuses_to_place_an_all_in_order_once_equity_exceeds_the_concentrat
 
     fake_exec.market_buy.assert_not_called()
     assert exit_code == 1
+
+
+def test_run_excludes_a_material_event_blocked_candidate_and_alerts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M50: same gate as bot.py's own -- see that module's test for the
+    # full reasoning. HIGH is blocked, LOW is bought normally.
+    monkeypatch.setattr(
+        material_events,
+        "check_buy_candidates",
+        lambda tickers: {"HIGH": "Critical 8-K filed 2026-04-29 (within 365-day cooldown)"},
+    )
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    exit_code = execute_trades.run(run_date="2026-07-21")
+
+    bought_symbols = {call.args[0] for call in fake_exec.market_buy.call_args_list}
+    assert "HIGH" not in bought_symbols
+    assert "LOW" in bought_symbols
+    assert exit_code == 1  # alert-worthy: a human should be told, not silently skipped
 
 
 def test_run_refuses_to_trade_when_the_market_is_closed(monkeypatch: pytest.MonkeyPatch) -> None:

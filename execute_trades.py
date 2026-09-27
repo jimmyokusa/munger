@@ -43,6 +43,7 @@ import pandas as pd
 import config
 import execution
 import journal
+import material_events
 import portfolio
 import screener
 import trading_common
@@ -243,8 +244,24 @@ def run(run_date: str | None = None) -> int:
         _alert(alerts, ceiling_alert)
         return trading_common.finish(alerts)
 
+    # M50: same buy-side material-event gate as bot.py's own -- see that
+    # module's comment for the full reasoning. `exclude` is checked in
+    # both of generate_buy_queue's loops, so this blocks a TOP_UP exactly
+    # as much as a NEW_POSITION.
+    buy_candidates = sorted(set(results.loc[results["buyable"], "symbol"].astype(str)))
+    material_event_blocks = material_events.check_buy_candidates(buy_candidates)
+    if material_event_blocks:
+        _alert(
+            alerts,
+            "New-buy candidate(s) blocked by an unresolved Critical-severity material "
+            "event: " + ", ".join(f"{t} ({r})" for t, r in sorted(material_event_blocks.items())),
+        )
+
     buy_orders = portfolio.generate_buy_queue(
-        remaining_holdings, results, available_cash, exclude=set(corporate_action)
+        remaining_holdings,
+        results,
+        available_cash,
+        exclude=set(corporate_action) | set(material_event_blocks),
     )
 
     buy_orders, deferred_symbols, bound_budgets = trading_common.cap_buy_orders_to_budget(

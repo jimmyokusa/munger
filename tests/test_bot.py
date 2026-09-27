@@ -28,6 +28,7 @@ import config
 import data
 import execution
 import journal
+import material_events
 import portfolio
 import screener
 import universe
@@ -90,6 +91,11 @@ def _isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # forbids). Tests that want to exercise the override itself
     # monkeypatch xbrl.apply_primary_metrics again, locally.
     monkeypatch.setattr(xbrl, "apply_primary_metrics", lambda metrics_by_symbol: metrics_by_symbol)
+    # M50: default to "nothing blocked" so existing tests keep exercising
+    # the buy path without reaching real SEC EDGAR (same reasoning as
+    # apply_primary_metrics above) -- tests that want to exercise the
+    # material-event buy gate itself override this locally.
+    monkeypatch.setattr(material_events, "check_buy_candidates", lambda tickers: {})
     # M45: default to market-open so existing tests keep exercising the
     # trading path without reaching a real TradingClient -- tests that
     # want to exercise the closed-market path override this locally.
@@ -578,6 +584,46 @@ def test_run_alerts_on_corporate_action_without_selling_or_topping_up(
     # NEW_POSITION purchase.
     assert captured_exclude == {"MRGD"}
     assert exit_code == 1  # alert-worthy
+
+
+def test_run_excludes_a_material_event_blocked_candidate_and_alerts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M50: HIGH carries an unresolved Critical-severity 8-K -- excluded
+    # from the buy queue (real portfolio.generate_buy_queue, not mocked,
+    # so this proves the exclude union actually takes effect end to end),
+    # while the unrelated LOW candidate is bought normally.
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+    monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
+    monkeypatch.setattr(
+        data, "fetch_all_metrics", lambda symbols, **_kwargs: {s: MagicMock() for s in symbols}
+    )
+    monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
+    monkeypatch.setattr(
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, period, corp_check=None: ([], [], []),
+    )
+    monkeypatch.setattr(
+        material_events,
+        "check_buy_candidates",
+        lambda tickers: {"HIGH": "Critical 8-K filed 2026-04-29 (within 365-day cooldown)"},
+    )
+
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    bought_symbols = {call.args[0] for call in fake_exec.market_buy.call_args_list}
+    assert "HIGH" not in bought_symbols
+    assert "LOW" in bought_symbols
+    assert exit_code == 1  # alert-worthy: a human should be told, not silently skipped
 
 
 def test_run_reproduces_the_fox_lpg_shape_and_does_not_reset_strikes_on_an_unfilled_order(

@@ -7,21 +7,62 @@ a fixed, closed taxonomy, and alerts on the ones that matter. This is
 per the design doc's own words -- structured data straight from SEC,
 free, and available within days of the actual event.
 
-The hard constraint, enforced structurally rather than by convention:
-alert-only, never trade-triggering. This module never imports
-execution.py or portfolio.py, and no function here returns anything an
-order, a score, or a strike could be derived from -- see
-tests/test_material_events.py's own "no code path" test for the
-regression check.
+The hard constraint, enforced structurally rather than by convention,
+for every *existing holding*: alert-only, never sell-triggering. This
+module never imports execution.py or portfolio.py -- see
+tests/test_material_events.py's own "no code path" test, which checks
+the import graph directly, for the regression check.
 
 Tier 2 (model-assisted third-party event extraction) and Tier 3
 (everything else, filtered out) are explicitly out of scope here --
 they are Tranche 4's optional qualitative layer (M44-M49), gated far
 later. This module is Tier 1 only.
+
+**M50 (TASKS.md, 2026-09-26 performance review) adds one narrow,
+deliberate exception, scoped to *new* purchases only.**
+`check_buy_candidates` below is read by bot.py/execute_trades.py to keep
+a symbol out of this run's buy queue (a NEW_POSITION or a TOP_UP -- never
+an already-committed share) when it has an unresolved Critical-severity
+8-K on record. DESIGN_V2.md §3.5 already establishes the precedent this
+follows: a structural-threat-class finding "holds the candidate at its
+last good decision... not-yet-held candidate: not opened" and raises a
+named alert for a human, rather than silently resolving itself.
+
+Narrower in scope than §3.5's own veto-capable filing agent, but NOT
+weaker in force once triggered (warren-buffett finding, corrected after
+an earlier draft's "one step weaker" framing overstated this) -- for the
+one case this gate fires, exclusion from the buy queue is exclusion,
+full stop, the same as any of §3.5's own Tier-1 disqualifiers. What is
+actually narrower: only the single most unambiguous severity tier
+(Critical -- non-reliance on previously issued financials, bankruptcy/
+receivership; never High/Medium/Low), and never an existing holding's
+sell/liquidation path (still exactly the quarterly quality-floor check
+it always was). The reason Critical-only is defensible as an unmeasured,
+unconditional veto is semantic, not a borrowed authority argument: unlike
+§3.5's free-text extraction of genuinely judgment-call disclosures (a
+model call is unavoidable there, hence that layer's precision/recall
+gate), a 4.02 or 1.03 classification here is a closed lookup against
+SEC's own structured item-number field -- no reasonable business files
+"don't rely on our own financials" or "we're insolvent" without a real,
+serious problem, so there's little of the ambiguity a precision/recall
+bar would even need to measure. High (4.01, auditor change) is excluded
+for a different, plainer reason: auditor changes happen for many mundane
+reasons (fee disputes, M&A) and are genuinely ambiguous in substance,
+not because this module lacks §3.5's measurement apparatus.
+
+Never bans a symbol permanently -- a bounded cooldown, per-item (not
+uniform) since a disclosure-quality problem (4.02) and a solvency event
+(1.03) resolve on different timescales and a mechanical timer expiring
+on the latter has nothing to do with whether the actual capital
+structure risk resolved; see `_ITEM_COOLDOWN_DAYS_OVERRIDE` below. And
+always paired with an alert-worthy notification, not a silent skip --
+this is investigated new-money due diligence, not a reaction to an
+existing commitment.
 """
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import urllib.error
@@ -65,6 +106,19 @@ _ITEM_SEVERITY: dict[str, tuple[str, str]] = {
 # design doc's own table ("Low -- routine, usually suppressed"), so it's
 # classified (for completeness/audit) but never sent to Discord.
 _SUPPRESSED_ITEMS = frozenset({"2.02"})
+
+# M50: which severities check_buy_candidates treats as blocking a fresh
+# buy. Critical only (4.02 non-reliance on financials, 1.03 bankruptcy/
+# receivership) -- deliberately NOT High (4.01 auditor change), which is
+# real signal but comparatively ambiguous (auditor changes happen for
+# many mundane reasons: fee disputes, M&A, a firm dropping a client
+# segment, not just a discovered problem). Restricting to the one tier
+# closest to "no reasonable business triggers this without a real,
+# serious problem" keeps this module's unmeasured deterministic taxonomy
+# from taking on veto authority broader than the module docstring's M50
+# section justifies. Widening to High is a plain one-line change here if
+# a future review decides the taxonomy's real-world precision supports it.
+_BUY_BLOCKING_SEVERITIES = frozenset({"Critical"})
 
 
 def classify_items(items_field: str) -> list[tuple[str, str, str]]:
@@ -247,6 +301,118 @@ def poll_holdings(tickers: list[str]) -> list[dict[str, object]]:
             continue
         all_new_events.extend(poll_ticker(ticker, cik))
     return all_new_events
+
+
+# M50 (warren-buffett finding): 1.03 (bankruptcy/receivership) gets a
+# materially longer cooldown than the default -- see config.py's own
+# comment on MATERIAL_EVENT_BUY_COOLDOWN_DAYS_BANKRUPTCY for why a
+# solvency event and a disclosure-quality event (4.02) don't share a
+# resolution timescale. Keyed by item number, not severity: both items
+# are "Critical" (_ITEM_SEVERITY), but only 1.03 gets the override.
+_ITEM_COOLDOWN_DAYS_OVERRIDE: dict[str, int] = {
+    "1.03": config.MATERIAL_EVENT_BUY_COOLDOWN_DAYS_BANKRUPTCY,
+}
+
+
+def _first_blocking_reason(cik: str) -> str | None:
+    """The first Critical-severity item, within its own cooldown, across `cik`'s recent 8-Ks.
+
+    Checks each filing's classified items directly (not a pre-built
+    severity set) so the match is always attributable to one specific
+    item number -- staff-engineer-reviewer finding on an earlier draft:
+    building a `severities` set and picking an arbitrary member of its
+    intersection with the blocking set loses which item actually matched
+    and would silently mis-report a Critical item as some other severity
+    the moment _BUY_BLOCKING_SEVERITIES ever grows past one element.
+    Checking items directly is correct at any set size, not just today's.
+    """
+    today = datetime.date.today()
+    for filing in fetch_recent_8k_filings(cik):
+        for item, _meaning, severity in classify_items(filing["items"]):
+            if severity not in _BUY_BLOCKING_SEVERITIES:
+                continue
+            cooldown_days = _ITEM_COOLDOWN_DAYS_OVERRIDE.get(
+                item, config.MATERIAL_EVENT_BUY_COOLDOWN_DAYS
+            )
+            cutoff = (today - datetime.timedelta(days=cooldown_days)).isoformat()
+            if filing["filing_date"] < cutoff:
+                continue
+            return (
+                f"{severity} 8-K filed {filing['filing_date']} (Item {item}, "
+                f"within {cooldown_days}-day cooldown)"
+            )
+    return None
+
+
+def check_buy_candidates(tickers: list[str]) -> dict[str, str]:
+    """Which of `tickers` carry an unresolved Critical-severity 8-K (M50).
+
+    Returns {ticker: reason} for every ticker that should be excluded
+    from THIS RUN's buy queue (a NEW_POSITION or a TOP_UP) -- never an
+    instruction to sell anything already held. See the module docstring's
+    "M50" section for why this is a narrow, bounded exception to the
+    alert-only invariant rather than a violation of it.
+
+    Deliberately independent of poll_holdings/journal's alerted-events
+    log: a buy candidate is not necessarily an existing holding (the only
+    input poll_holdings ever sees, via pnl.json), so there is no
+    guarantee any prior run has ever recorded an event for it. This does
+    its own live, per-candidate fetch instead -- the same live-check-at-
+    decision-time idiom execution.is_corporate_action already uses for
+    an analogous "must never trade this symbol regardless of score"
+    question, rather than trusting a stored log that may simply have
+    never seen this ticker. Not persisted to journal.material_events --
+    that table exists to dedupe repeated *alerts* on the same accession
+    number (poll_holdings' concern); this function re-answers "is there
+    an unresolved Critical filing right now" fresh every run, and has
+    nothing to dedupe.
+
+    No CIK on EDGAR, or a fetch/parse failure for a ticker EDGAR does
+    recognize, both resolve to "no qualifying filing found" -- NOT
+    excluded -- because fetch_recent_8k_filings itself already fails
+    soft (catches and logs every fetch/parse error, returns []; see its
+    own docstring), the same tested contract poll_holdings already
+    relies on. This function does not attempt to distinguish "confirmed
+    clean" from "couldn't check" beneath that (an operator cannot tell
+    the two apart from the log alone) -- doing so would mean duplicating
+    fetch_recent_8k_filings' own request/parse logic with a different
+    error contract, which is more new surface area than this milestone's
+    actual finding (one dated, on-the-books Critical filing) justifies.
+    The accepted consequence: a transient EDGAR outage during a
+    buy-candidate check has exactly the risk profile this system already
+    had before M50 existed -- no signal either way, buy proceeds -- not
+    a regression, just not a strictly-better failure mode either. A
+    No-CIK candidate specifically is expected to recur every run (an
+    EDGAR-coverage gap doesn't resolve itself the way a transient network
+    error does), so it is not retried into blocking on some later run
+    either -- consistently "not applicable" every time, matching
+    poll_holdings' own treatment of the identical situation for a held
+    ticker.
+
+    Also relies on fetch_recent_8k_filings reading only EDGAR's "recent"
+    submissions page (staff-engineer-reviewer finding) -- fine for
+    poll_holdings, whose docstring notes it only needs to catch filings
+    *since the last run*, but this function has no "last run" for a
+    ticker never checked before and wants a real
+    MATERIAL_EVENT_BUY_COOLDOWN_DAYS(_BANKRUPTCY)-long lookback. For a
+    filer with a high enough filing cadence, a qualifying filing old
+    enough to have scrolled off the "recent" page (SEC paginates into
+    `files[]` beyond that) would be silently missed -- the same
+    "confirmed clean" vs. "couldn't fully check" gap as above, not a new
+    one, and not expected to matter at this bot's actual universe/filing
+    cadence, but a real, disclosed limitation, not an oversight.
+    """
+    cik_lookup = xbrl.load_cik_lookup()
+    blocked: dict[str, str] = {}
+    for ticker in tickers:
+        cik = xbrl.get_cik(ticker, cik_lookup)
+        if cik is None:
+            continue
+        reason = _first_blocking_reason(cik)
+        if reason is not None:
+            logger.warning("%s: blocking new buy -- %s", ticker, reason)
+            blocked[ticker] = reason
+    return blocked
 
 
 def _held_symbols_from_pnl_snapshot() -> list[str]:

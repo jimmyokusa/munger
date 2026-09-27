@@ -33,6 +33,7 @@ import config
 import data
 import execution
 import journal
+import material_events
 import portfolio
 import screener
 import universe
@@ -384,6 +385,28 @@ def run(run_date: str | None = None) -> int:
         _alert(alerts, ceiling_alert)
         return _finish(alerts)
 
+    # M50: a buy candidate carrying an unresolved Critical-severity 8-K
+    # (e.g. a non-reliance-on-financials restatement) is excluded from
+    # this run's buy queue the same way a corporate-action ticker already
+    # is -- generate_buy_queue's `exclude` set is checked in both its
+    # top-up and new-position loops, so union'ing this in blocks a
+    # TOP_UP exactly as much as a NEW_POSITION, with no extra code there.
+    # Scoped to this run's actual buyable candidates, not the whole
+    # universe -- see material_events.check_buy_candidates's own
+    # docstring for why this is a live per-candidate check, not a stored-
+    # history lookup. Alert-worthy (unlike a routine buyability skip):
+    # this is genuinely rare and a human should be told, not routine
+    # noise like a workflow with no fixed cadence tripping a staleness
+    # check -- see TASKS.md's M47 section for that contrasting case.
+    buy_candidates = sorted(set(results.loc[results["buyable"], "symbol"].astype(str)))
+    material_event_blocks = material_events.check_buy_candidates(buy_candidates)
+    if material_event_blocks:
+        _alert(
+            alerts,
+            "New-buy candidate(s) blocked by an unresolved Critical-severity material "
+            "event: " + ", ".join(f"{t} ({r})" for t, r in sorted(material_event_blocks.items())),
+        )
+
     # staff-engineer-reviewer finding: omitting corporate_action tickers
     # from remaining_holdings alone isn't enough -- generate_buy_queue's
     # new-position loop only checks current_holdings membership to avoid
@@ -391,7 +414,10 @@ def run(run_date: str | None = None) -> int:
     # looked identical to "never held" and could be selected as a fresh
     # NEW_POSITION. Passed explicitly now.
     buy_orders = portfolio.generate_buy_queue(
-        remaining_holdings, results, available_cash, exclude=set(corporate_action)
+        remaining_holdings,
+        results,
+        available_cash,
+        exclude=set(corporate_action) | set(material_event_blocks),
     )
 
     buy_orders, deferred_symbols, bound_budgets = _cap_buy_orders_to_budget(

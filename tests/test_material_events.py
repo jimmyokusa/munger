@@ -12,6 +12,7 @@ criteria ("a synthetic/injected 8-K fixture per item type").
 from __future__ import annotations
 
 import ast
+import datetime
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -325,6 +326,204 @@ def test_poll_holdings_skips_a_ticker_with_no_cik_and_continues(
 
     assert len(events) == 1
     assert events[0]["ticker"] == "AAPL"
+
+
+# --- check_buy_candidates (M50: the buy-side gate) ---
+
+
+def test_check_buy_candidates_blocks_a_critical_filing_within_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Reproduces the real motivating case: a Critical-severity 4.02
+    # (non-reliance on previously issued financials) inside the cooldown
+    # window must exclude the ticker from this run's buy queue.
+    monkeypatch.setattr(material_events.xbrl, "load_cik_lookup", lambda: {"GRBK": "0000320193"})
+    recent_date = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
+    monkeypatch.setattr(
+        material_events,
+        "fetch_recent_8k_filings",
+        lambda cik: [{"accession_number": "acc-1", "filing_date": recent_date, "items": "4.02"}],
+    )
+
+    blocked = material_events.check_buy_candidates(["GRBK"])
+
+    assert "GRBK" in blocked
+    assert "Critical" in blocked["GRBK"]
+    assert recent_date in blocked["GRBK"]
+
+
+def test_check_buy_candidates_does_not_block_a_filing_outside_the_cooldown_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(material_events.xbrl, "load_cik_lookup", lambda: {"GRBK": "0000320193"})
+    stale_date = (
+        datetime.date.today() - datetime.timedelta(days=config.MATERIAL_EVENT_BUY_COOLDOWN_DAYS + 1)
+    ).isoformat()
+    monkeypatch.setattr(
+        material_events,
+        "fetch_recent_8k_filings",
+        lambda cik: [{"accession_number": "acc-1", "filing_date": stale_date, "items": "4.02"}],
+    )
+
+    assert material_events.check_buy_candidates(["GRBK"]) == {}
+
+
+def test_check_buy_candidates_does_not_block_high_severity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Deliberate scope decision (module docstring): only Critical blocks
+    # a buy. An auditor change (4.01, High) is real signal but too
+    # ambiguous for an unmeasured, unconditional veto -- confirms it does
+    # NOT exclude the ticker.
+    monkeypatch.setattr(material_events.xbrl, "load_cik_lookup", lambda: {"ACME": "0000320193"})
+    recent_date = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
+    monkeypatch.setattr(
+        material_events,
+        "fetch_recent_8k_filings",
+        lambda cik: [{"accession_number": "acc-1", "filing_date": recent_date, "items": "4.01"}],
+    )
+
+    assert material_events.check_buy_candidates(["ACME"]) == {}
+
+
+def test_check_buy_candidates_bankruptcy_gets_the_longer_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # warren-buffett finding: 1.03 (bankruptcy/receivership) is a solvency
+    # event, not a disclosure-quality event -- past the DEFAULT cooldown
+    # but still within its own, longer BANKRUPTCY cooldown, so it must
+    # still block.
+    monkeypatch.setattr(material_events.xbrl, "load_cik_lookup", lambda: {"ACME": "0000320193"})
+    past_default_cooldown = (
+        datetime.date.today()
+        - datetime.timedelta(days=config.MATERIAL_EVENT_BUY_COOLDOWN_DAYS + 30)
+    ).isoformat()
+    monkeypatch.setattr(
+        material_events,
+        "fetch_recent_8k_filings",
+        lambda cik: [
+            {"accession_number": "acc-1", "filing_date": past_default_cooldown, "items": "1.03"}
+        ],
+    )
+
+    blocked = material_events.check_buy_candidates(["ACME"])
+
+    assert "ACME" in blocked
+    assert "Item 1.03" in blocked["ACME"]
+
+
+def test_check_buy_candidates_bankruptcy_still_expires_past_its_own_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(material_events.xbrl, "load_cik_lookup", lambda: {"ACME": "0000320193"})
+    past_bankruptcy_cooldown = (
+        datetime.date.today()
+        - datetime.timedelta(days=config.MATERIAL_EVENT_BUY_COOLDOWN_DAYS_BANKRUPTCY + 1)
+    ).isoformat()
+    monkeypatch.setattr(
+        material_events,
+        "fetch_recent_8k_filings",
+        lambda cik: [
+            {"accession_number": "acc-1", "filing_date": past_bankruptcy_cooldown, "items": "1.03"}
+        ],
+    )
+
+    assert material_events.check_buy_candidates(["ACME"]) == {}
+
+
+def test_check_buy_candidates_attributes_the_correct_item_in_a_multi_critical_filing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # staff-engineer-reviewer regression: an earlier draft built a
+    # `severities` set and picked an arbitrary member of its intersection
+    # with the blocking set, losing which item actually matched. A filing
+    # carrying both 1.03 and 4.02 (both Critical, different cooldowns) at
+    # a date past the default cooldown but within the bankruptcy one must
+    # still block, attributed to 1.03 specifically -- not silently
+    # resolved via 4.02's shorter window.
+    monkeypatch.setattr(material_events.xbrl, "load_cik_lookup", lambda: {"ACME": "0000320193"})
+    past_default_cooldown = (
+        datetime.date.today()
+        - datetime.timedelta(days=config.MATERIAL_EVENT_BUY_COOLDOWN_DAYS + 30)
+    ).isoformat()
+    monkeypatch.setattr(
+        material_events,
+        "fetch_recent_8k_filings",
+        lambda cik: [
+            {
+                "accession_number": "acc-1",
+                "filing_date": past_default_cooldown,
+                "items": "1.03,4.02",
+            }
+        ],
+    )
+
+    blocked = material_events.check_buy_candidates(["ACME"])
+
+    assert "Item 1.03" in blocked["ACME"]
+    assert str(config.MATERIAL_EVENT_BUY_COOLDOWN_DAYS_BANKRUPTCY) in blocked["ACME"]
+
+
+def test_check_buy_candidates_skips_a_ticker_with_no_cik(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(material_events.xbrl, "load_cik_lookup", lambda: {})
+    fetch_mock = MagicMock()
+    monkeypatch.setattr(material_events, "fetch_recent_8k_filings", fetch_mock)
+
+    assert material_events.check_buy_candidates(["UNKNOWN_TICKER"]) == {}
+    fetch_mock.assert_not_called()
+
+
+def test_check_buy_candidates_returns_empty_for_a_clean_ticker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(material_events.xbrl, "load_cik_lookup", lambda: {"AAPL": "0000320193"})
+    monkeypatch.setattr(material_events, "fetch_recent_8k_filings", lambda cik: [])
+
+    assert material_events.check_buy_candidates(["AAPL"]) == {}
+
+
+def test_check_buy_candidates_does_not_write_to_journal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # This is a live re-check, not an alerted-events log entry -- unlike
+    # poll_ticker, it must never touch journal.material_events (that
+    # table dedupes repeated *alerts*, a different concern -- see the
+    # function's own docstring).
+    monkeypatch.setattr(material_events.xbrl, "load_cik_lookup", lambda: {"GRBK": "0000320193"})
+    recent_date = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    monkeypatch.setattr(
+        material_events,
+        "fetch_recent_8k_filings",
+        lambda cik: [{"accession_number": "acc-1", "filing_date": recent_date, "items": "4.02"}],
+    )
+
+    material_events.check_buy_candidates(["GRBK"])
+
+    assert journal.has_alerted_on_filing("acc-1") is False
+
+
+def test_check_buy_candidates_handles_multiple_tickers_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        material_events.xbrl,
+        "load_cik_lookup",
+        lambda: {"GRBK": "0000320193", "AAPL": "0000320194"},
+    )
+    recent_date = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+
+    def _fake_fetch(cik: str) -> list[dict[str, str]]:
+        if cik == "0000320193":
+            return [{"accession_number": "acc-1", "filing_date": recent_date, "items": "4.02"}]
+        return []
+
+    monkeypatch.setattr(material_events, "fetch_recent_8k_filings", _fake_fetch)
+
+    blocked = material_events.check_buy_candidates(["GRBK", "AAPL"])
+
+    assert set(blocked) == {"GRBK"}
 
 
 # --- Discord alert config-gating ---

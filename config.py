@@ -736,6 +736,36 @@ MIN_UNIVERSE_FETCH_FRACTION = 0.90  # abort if fewer tickers than this fetch cle
 # other optional integration here.
 DISCORD_MATERIAL_EVENT_WEBHOOK_URL = os.environ.get("DISCORD_MATERIAL_EVENT_WEBHOOK_URL", "")
 
+# M50 (2026-09-26 performance review): how long a Critical-severity 8-K
+# (material_events._BUY_BLOCKING_SEVERITIES) blocks a symbol from a fresh
+# NEW_POSITION or TOP_UP buy, counted from that filing's own date. Not
+# tied to MIN_CONSECUTIVE_POSITIVE_EARNINGS_YEARS below (a category
+# mismatch -- that's a multi-year historical-consistency threshold, this
+# is "how long does one acute disclosure taint a specific buy decision")
+# and deliberately not derived from the filing's own text (extracting
+# which fiscal periods a restatement actually covers would need to parse
+# the 8-K body, not just its item numbers -- out of scope here). The
+# default: long enough for a plausible restatement cycle (item 4.02,
+# typically resolved within one to a few fiscal quarters) to have run its
+# course, short enough that a stale filing doesn't exclude a symbol
+# forever. Cheap to retune -- a plain constant, no code change.
+MATERIAL_EVENT_BUY_COOLDOWN_DAYS = 365
+# warren-buffett finding: a flat cooldown conflates "how long does a
+# disclosure-quality problem take to resolve" (4.02, the constant above)
+# with "how long does a solvency event take to resolve" (1.03,
+# bankruptcy/receivership) -- a real Chapter 11 case can easily still be
+# open past 365 days, and a mechanical timer expiring at that point isn't
+# evidence the capital-structure risk actually resolved, only that the
+# clock ran out. The portfolio holds ~15 positions out of ~1500
+# candidates (no capacity pressure arguing for a short reentry window),
+# so this is set materially longer rather than attempting to detect
+# actual resolution (e.g. a subsequent 10-K without a going-concern
+# qualification) -- that would need parsing filing text, a materially
+# bigger lift this milestone's actual finding doesn't justify. ~3 years:
+# long enough that a still-open case at this point is the rare exception,
+# not a claim that bankruptcies reliably resolve by then.
+MATERIAL_EVENT_BUY_COOLDOWN_DAYS_BANKRUPTCY = 1095
+
 
 # --- Account identity (M47), computed lazily via module __getattr__ ---
 #
