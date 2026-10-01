@@ -55,13 +55,24 @@ uniform) since a disclosure-quality problem (4.02) and a solvency event
 (1.03) resolve on different timescales and a mechanical timer expiring
 on the latter has nothing to do with whether the actual capital
 structure risk resolved; see `_ITEM_COOLDOWN_DAYS_OVERRIDE` below. And
-always paired with an alert-worthy notification, not a silent skip --
-this is investigated new-money due diligence, not a reaction to an
+paired with an alert-worthy notification rather than a silent skip -- on
+first discovery and then once every
+config.MATERIAL_EVENT_BUY_BLOCK_REALERT_DAYS while the block stays
+active (M50a; see trading_common.check_material_event_buy_blocks).
+This is investigated new-money due diligence, not a reaction to an
 existing commitment.
+
+One thing this function cannot do is distinguish "checked everything and
+found nothing" from "could not check" when SEC's ticker index itself is
+unavailable -- so it raises MaterialEventCheckUnavailableError in that
+case rather than returning an innocuous-looking empty result. See
+check_buy_candidates' own comment on why that matters more now than it
+did under M50.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import json
 import logging
@@ -314,7 +325,33 @@ _ITEM_COOLDOWN_DAYS_OVERRIDE: dict[str, int] = {
 }
 
 
-def _first_blocking_reason(cik: str) -> str | None:
+class MaterialEventCheckUnavailableError(RuntimeError):
+    """The buy-candidate material-event check could not run at all (M50a).
+
+    Distinct from "ran and found nothing to block": raised when the SEC
+    ticker index resolved no CIKs for a non-empty candidate list, i.e. the
+    check was structurally unable to look at anything. Callers must decide
+    deliberately what to do with that -- see
+    trading_common.check_material_event_buy_blocks, which alerts loudly
+    rather than letting an unchecked run pass for a clean one.
+    """
+
+
+@dataclasses.dataclass(frozen=True)
+class BuyBlock:
+    """One symbol's reason for exclusion from this run's buy queue (M50).
+
+    `accession_number` is SEC's own globally-unique id for the blocking
+    filing -- carried alongside the human-readable reason so a caller can
+    tell a newly-discovered block from one it has already alerted a human
+    about (M50a), without re-deriving which filing matched.
+    """
+
+    accession_number: str
+    reason: str
+
+
+def _first_blocking_filing(cik: str) -> BuyBlock | None:
     """The first Critical-severity item, within its own cooldown, across `cik`'s recent 8-Ks.
 
     Checks each filing's classified items directly (not a pre-built
@@ -337,17 +374,20 @@ def _first_blocking_reason(cik: str) -> str | None:
             cutoff = (today - datetime.timedelta(days=cooldown_days)).isoformat()
             if filing["filing_date"] < cutoff:
                 continue
-            return (
-                f"{severity} 8-K filed {filing['filing_date']} (Item {item}, "
-                f"within {cooldown_days}-day cooldown)"
+            return BuyBlock(
+                accession_number=filing["accession_number"],
+                reason=(
+                    f"{severity} 8-K filed {filing['filing_date']} (Item {item}, "
+                    f"within {cooldown_days}-day cooldown)"
+                ),
             )
     return None
 
 
-def check_buy_candidates(tickers: list[str]) -> dict[str, str]:
+def check_buy_candidates(tickers: list[str]) -> dict[str, BuyBlock]:
     """Which of `tickers` carry an unresolved Critical-severity 8-K (M50).
 
-    Returns {ticker: reason} for every ticker that should be excluded
+    Returns {ticker: BuyBlock} for every ticker that should be excluded
     from THIS RUN's buy queue (a NEW_POSITION or a TOP_UP) -- never an
     instruction to sell anything already held. See the module docstring's
     "M50" section for why this is a narrow, bounded exception to the
@@ -361,11 +401,14 @@ def check_buy_candidates(tickers: list[str]) -> dict[str, str]:
     decision-time idiom execution.is_corporate_action already uses for
     an analogous "must never trade this symbol regardless of score"
     question, rather than trusting a stored log that may simply have
-    never seen this ticker. Not persisted to journal.material_events --
-    that table exists to dedupe repeated *alerts* on the same accession
-    number (poll_holdings' concern); this function re-answers "is there
-    an unresolved Critical filing right now" fresh every run, and has
-    nothing to dedupe.
+    never seen this ticker. Writes nothing and reads no journal table at
+    all -- the block is always re-derived live. Alert *suppression* for a
+    block a human has already been told about is a separate concern,
+    deliberately kept out of this function and handled by
+    trading_common.check_material_event_buy_blocks (M50a) against its own
+    journal table, so "should this be excluded" stays answerable without
+    any stored state and can never be wrong because a journal didn't
+    persist.
 
     No CIK on EDGAR, or a fetch/parse failure for a ticker EDGAR does
     recognize, both resolve to "no qualifying filing found" -- NOT
@@ -403,15 +446,41 @@ def check_buy_candidates(tickers: list[str]) -> dict[str, str]:
     cadence, but a real, disclosed limitation, not an oversight.
     """
     cik_lookup = xbrl.load_cik_lookup()
-    blocked: dict[str, str] = {}
+    # M50a (staff-engineer-reviewer, 2nd pass): the gate's single fail-open
+    # point, closed here. xbrl.load_cik_lookup() fails soft to {} on any
+    # transient SEC failure, and its cache is NOT restored by either trading
+    # workflow, so the real ~800KB fetch runs on every scheduled run -- one
+    # URLError or 429 there resolved zero CIKs, blocked nothing, and looked
+    # exactly like a clean run. Tolerable while M50 alerted every run (a
+    # green run would itself have been anomalous); actively dangerous once
+    # M50a made silence the designed steady state. This is the "couldn't
+    # check" vs. "nothing to block" distinction
+    # config.MIN_UNIVERSE_FETCH_FRACTION already draws for the universe
+    # fetch, and it is RAISED rather than returned as an empty dict so a
+    # caller cannot silently treat it as "clean" by forgetting to look.
+    #
+    # Keyed on the lookup table being empty, NOT on "zero candidates
+    # resolved" (the reviewer's suggested shape, corrected after it broke a
+    # real existing test): a one-ticker candidate list whose single ticker
+    # is genuinely untracked by EDGAR -- a thin foreign issuer, or a fresh
+    # listing -- also resolves zero, and would have false-alarmed every run.
+    # An empty lookup table is unambiguous: the index fetch itself failed,
+    # since EDGAR's real index carries ~10,000 tickers and is never legitimately
+    # empty. A per-ticker miss stays a per-ticker skip, as before.
+    if tickers and not cik_lookup:
+        raise MaterialEventCheckUnavailableError(
+            f"SEC ticker index came back empty, so none of {len(tickers)} buy candidate(s) "
+            "could be checked for material events"
+        )
+    blocked: dict[str, BuyBlock] = {}
     for ticker in tickers:
         cik = xbrl.get_cik(ticker, cik_lookup)
         if cik is None:
             continue
-        reason = _first_blocking_reason(cik)
-        if reason is not None:
-            logger.warning("%s: blocking new buy -- %s", ticker, reason)
-            blocked[ticker] = reason
+        block = _first_blocking_filing(cik)
+        if block is not None:
+            logger.warning("%s: blocking new buy -- %s", ticker, block.reason)
+            blocked[ticker] = block
     return blocked
 
 

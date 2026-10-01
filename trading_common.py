@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import sqlite3
 import time
 from collections.abc import Callable
 
@@ -20,6 +21,8 @@ from alpaca.trading.models import Clock, Order
 
 import config
 import execution
+import journal
+import material_events
 import settlement
 
 # mypy strict (no_implicit_reexport): re-exported so tests can patch
@@ -310,3 +313,154 @@ def check_small_account_concentration_ceiling(portfolio_value: float) -> str | N
         "longer needs it) or deliberately raise the ceiling, but do not let this pass "
         "silently."
     )
+
+
+def check_material_event_buy_blocks(candidates: list[str], alerts: list[str]) -> set[str]:
+    """Symbols to keep out of this run's buy queue; alerts into `alerts` as needed.
+
+    Returns the FULL current block set, re-derived live from EDGAR every
+    run and returned unconditionally -- the exclusion never depends on
+    journal state, so a journal that fails to *persist* can only ever cost
+    an operator a duplicate notification, never let a blocked symbol
+    through. (A journal that raises is different: that propagates and
+    fails the run closed, before any order -- see the per-ticker
+    exception handling below for why that can't happen on this path.)
+
+    M50a (2026-10-01, found by reading the first real runs after M50
+    shipped, not in review): M50 as first built alerted on every block on
+    every run, which marks the whole workflow run failed (non-zero exit,
+    per finish's own "alert-worthy == exit non-zero" contract) and emails
+    the operator. The real GRBK block correctly fired -- and then kept
+    firing daily, for a condition already known, for as long as the
+    filing stayed inside its cooldown (~7 more months, since GRBK sits
+    below target weight and so comes up for a top-up every run). That is
+    precisely the alert-fatigue failure mode Design v2.2 §3.8 names as the
+    thing to design against ("an alert channel that fires weekly gets
+    ignored, which is worse than not having one, because it produces false
+    confidence that something is watching") -- and worse here, since an
+    indistinguishable red X every day trains an operator to ignore exactly
+    the channel a genuinely new Critical filing would arrive on.
+
+    So: alert when a block is first seen, then again only once every
+    config.MATERIAL_EVENT_BUY_BLOCK_REALERT_DAYS while it stays active. A
+    genuinely NEW filing (different accession number, or the same filing
+    on a different account) is a different key and alerts immediately.
+    Every block, new or not, is logged at WARNING every run, so the
+    current state is always visible in the run log.
+
+    **Alerts are emitted here, per ticker, immediately BEFORE recording
+    that ticker (staff-engineer-reviewer finding on the first M50a
+    draft, which had this exactly backwards and would have been a real
+    silent-failure bug).** That draft recorded inside this loop but
+    returned one aggregated message for the caller to alert with
+    afterwards, reasoning that nothing after the record could fail. Wrong:
+    alert() runs in the caller, after this function returns, and each
+    record commits immediately -- so a crash, a sqlite lock timeout on the
+    next ticker, or the job's own 45-minute timeout landing mid-loop would
+    commit a dedup row whose alert was never emitted, and (because the
+    workflows persist journal.db with `if: always()`, even on the failure
+    path) permanently suppress the one notification the entire gate exists
+    to produce. Alerting first bounds the worst case at one duplicate
+    alert for one ticker, which is the cost already accepted elsewhere
+    here, instead of indefinite silence on a real Critical filing.
+    """
+    try:
+        blocks = material_events.check_buy_candidates(candidates)
+    except material_events.MaterialEventCheckUnavailableError as exc:
+        # The gate could not look at anything (SEC ticker index down). Loud,
+        # because silence here is indistinguishable from a clean run now that
+        # suppression is the steady state -- see the exception's own docstring.
+        # Deliberately does NOT abort the run: that would be a real change to
+        # trading behavior (an EDGAR hiccup would stop all buying for the day),
+        # which is a decision for the user, not a side effect of a milestone
+        # about alert volume. Tracked as an open question in TASKS.md's M50a
+        # section instead.
+        alert(
+            alerts,
+            f"Material-event buy gate did not run this cycle: {exc}. No candidate was "
+            "checked, so buys this run are UNGATED for Critical-severity filings.",
+        )
+        return set()
+    for ticker, block in sorted(blocks.items()):
+        # Per-ticker fault isolation (same staff-engineer finding): one
+        # ticker's journal failure must not swallow another ticker's alert,
+        # and an unreadable journal must fail toward telling the operator,
+        # never toward silence -- the block applies either way, so the only
+        # thing at stake in these except branches is the notification.
+        try:
+            last_alerted = journal.get_buy_block_last_alerted(ticker, block.accession_number)
+            read_failed = False
+        except sqlite3.Error:
+            logger.exception(
+                "%s: buy-block alert state unreadable -- alerting rather than risking silence",
+                ticker,
+            )
+            last_alerted = None
+            read_failed = True
+        if last_alerted is not None and not _realert_interval_elapsed(last_alerted):
+            logger.warning(
+                "%s: still blocked from a buy (%s) -- already alerted %s, not re-alerting",
+                ticker,
+                block.reason,
+                last_alerted,
+            )
+            continue
+        # staff-engineer-reviewer (2nd pass): a persistently broken journal
+        # would otherwise re-alert every run with the first-discovery wording,
+        # i.e. look exactly like a genuinely new Critical filing -- the one
+        # case where the operator most needs the two told apart. Say so.
+        if read_failed:
+            prefix = "blocked (alert history unreadable, so this may be a repeat)"
+        elif last_alerted:
+            prefix = "still blocked"
+        else:
+            prefix = "blocked"
+        alert(
+            alerts,
+            f"New-buy candidate {prefix} by an unresolved Critical-severity material event: "
+            f"{ticker} ({block.reason})",
+        )
+        try:
+            journal.record_buy_block_alert(ticker, block.accession_number)
+        except sqlite3.Error:
+            logger.exception(
+                "%s: buy-block alert recorded nowhere -- may re-alert next run", ticker
+            )
+    return set(blocks)
+
+
+def _realert_interval_elapsed(last_alerted: str) -> bool:
+    """True if config.MATERIAL_EVENT_BUY_BLOCK_REALERT_DAYS has passed since `last_alerted`.
+
+    An unusable stored timestamp resolves to True (re-alert) rather than
+    False: the same fail-toward-telling-the-operator posture the caller's
+    own except branches use, since the alternative is silently never
+    mentioning an active block again because of a bad string.
+
+    Catches TypeError alongside ValueError (pm-reviewer finding on an
+    earlier draft that claimed this posture while only catching the
+    latter): a timezone-NAIVE stored string parses fine and then raises
+    TypeError on the subtraction below. Unreachable today -- every write
+    goes through record_buy_block_alert's datetime.now(UTC).isoformat() --
+    but the guarantee this docstring makes should actually hold rather
+    than depend on that staying true.
+    """
+    try:
+        previous = datetime.datetime.fromisoformat(last_alerted)
+        elapsed = datetime.datetime.now(datetime.UTC) - previous
+    except (ValueError, TypeError):
+        logger.warning("Unusable buy-block alert timestamp %r -- re-alerting", last_alerted)
+        return True
+    if elapsed < datetime.timedelta(0):
+        # A future timestamp would otherwise suppress the alert until
+        # wall-clock time caught up -- silently, for however long it is set
+        # ahead (staff-engineer-reviewer, 2nd pass). Reachable: hand-editing
+        # this column forward is the most obvious ad-hoc snooze an operator
+        # has today, and the intuitive direction to edit it.
+        logger.warning(
+            "Buy-block alert timestamp %r is in the future -- re-alerting rather than "
+            "going silent until it elapses",
+            last_alerted,
+        )
+        return True
+    return elapsed >= datetime.timedelta(days=config.MATERIAL_EVENT_BUY_BLOCK_REALERT_DAYS)

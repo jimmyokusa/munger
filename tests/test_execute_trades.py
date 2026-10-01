@@ -242,7 +242,12 @@ def test_run_excludes_a_material_event_blocked_candidate_and_alerts(
     monkeypatch.setattr(
         material_events,
         "check_buy_candidates",
-        lambda tickers: {"HIGH": "Critical 8-K filed 2026-04-29 (within 365-day cooldown)"},
+        lambda tickers: {
+            "HIGH": material_events.BuyBlock(
+                accession_number="acc-grbk-1",
+                reason="Critical 8-K filed 2026-04-29 (Item 4.02, within 365-day cooldown)",
+            )
+        },
     )
     fake_exec = _FakeExecutionModule("2026-07-21")
     monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
@@ -253,6 +258,33 @@ def test_run_excludes_a_material_event_blocked_candidate_and_alerts(
     assert "HIGH" not in bought_symbols
     assert "LOW" in bought_symbols
     assert exit_code == 1  # alert-worthy: a human should be told, not silently skipped
+
+
+def test_run_still_excludes_a_suppressed_material_event_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M50a: same caller-level invariant as bot.py's own equivalent test --
+    # the block set must still reach `exclude` on the suppressed path.
+    monkeypatch.setattr(
+        material_events,
+        "check_buy_candidates",
+        lambda tickers: {
+            "HIGH": material_events.BuyBlock(
+                accession_number="acc-grbk-1",
+                reason="Critical 8-K filed 2026-04-29 (Item 4.02, within 365-day cooldown)",
+            )
+        },
+    )
+    journal.record_buy_block_alert("HIGH", "acc-grbk-1")
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    exit_code = execute_trades.run(run_date="2026-07-21")
+
+    bought_symbols = {call.args[0] for call in fake_exec.market_buy.call_args_list}
+    assert "HIGH" not in bought_symbols
+    assert "LOW" in bought_symbols
+    assert exit_code == 0
 
 
 def test_run_refuses_to_trade_when_the_market_is_closed(monkeypatch: pytest.MonkeyPatch) -> None:

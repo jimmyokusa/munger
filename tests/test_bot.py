@@ -612,7 +612,12 @@ def test_run_excludes_a_material_event_blocked_candidate_and_alerts(
     monkeypatch.setattr(
         material_events,
         "check_buy_candidates",
-        lambda tickers: {"HIGH": "Critical 8-K filed 2026-04-29 (within 365-day cooldown)"},
+        lambda tickers: {
+            "HIGH": material_events.BuyBlock(
+                accession_number="acc-grbk-1",
+                reason="Critical 8-K filed 2026-04-29 (Item 4.02, within 365-day cooldown)",
+            )
+        },
     )
 
     fake_exec = _FakeExecutionModule("2026-07-21")
@@ -624,6 +629,58 @@ def test_run_excludes_a_material_event_blocked_candidate_and_alerts(
     assert "HIGH" not in bought_symbols
     assert "LOW" in bought_symbols
     assert exit_code == 1  # alert-worthy: a human should be told, not silently skipped
+
+
+def test_run_still_excludes_a_suppressed_material_event_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M50a, staff-engineer-reviewer finding: the trading_common-level tests
+    # cannot prove the CALLER still unions the block set into `exclude` on
+    # the suppressed (already-alerted) path. Without this, a refactor
+    # returning set() instead of the full block set when the alert is
+    # suppressed -- exactly what this milestone's central invariant forbids
+    # -- would pass the entire rest of the suite. Constructs the
+    # already-alerted state directly rather than producing it with a second
+    # run() (that approach was tried and deleted: the first run's journaled
+    # buys make the second abort on reconciliation, so the exit code came
+    # from an unrelated cause -- see TASKS.md's M50a section).
+    monkeypatch.setattr(
+        universe,
+        "get_universe_with_diagnostics",
+        lambda: universe.UniverseResult(tickers=["HIGH", "LOW"]),
+    )
+    monkeypatch.setattr(screener, "run_screen", lambda tickers: _clean_results())
+    monkeypatch.setattr(journal, "check_reconciliation", lambda holdings: [])
+    monkeypatch.setattr(
+        data, "fetch_all_metrics", lambda symbols, **_kwargs: {s: MagicMock() for s in symbols}
+    )
+    monkeypatch.setattr(portfolio, "StateTracker", lambda: MagicMock())
+    monkeypatch.setattr(
+        portfolio,
+        "process_sells",
+        lambda holdings, metrics, state, period, corp_check=None: ([], [], []),
+    )
+    monkeypatch.setattr(
+        material_events,
+        "check_buy_candidates",
+        lambda tickers: {
+            "HIGH": material_events.BuyBlock(
+                accession_number="acc-grbk-1",
+                reason="Critical 8-K filed 2026-04-29 (Item 4.02, within 365-day cooldown)",
+            )
+        },
+    )
+    journal.record_buy_block_alert("HIGH", "acc-grbk-1")  # already reported to the operator
+
+    fake_exec = _FakeExecutionModule("2026-07-21")
+    monkeypatch.setattr(execution, "ExecutionModule", lambda run_date: fake_exec)
+
+    exit_code = bot.run(run_date="2026-07-21")
+
+    bought_symbols = {call.args[0] for call in fake_exec.market_buy.call_args_list}
+    assert "HIGH" not in bought_symbols  # still excluded, though no longer alerted
+    assert "LOW" in bought_symbols
+    assert exit_code == 0  # and no longer fails the run
 
 
 def test_run_reproduces_the_fox_lpg_shape_and_does_not_reset_strikes_on_an_unfilled_order(

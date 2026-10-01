@@ -737,11 +737,34 @@ never High/Medium/Low, unlike the filing agent's own broader Tier-1
 disqualifier list), for a bounded, per-item cooldown (a solvency event
 and a disclosure-quality event don't share a resolution timescale --
 see `config.MATERIAL_EVENT_BUY_COOLDOWN_DAYS_BANKRUPTCY`'s own comment),
-never touches an existing holding's sell/liquidation path, and is always
-paired with an alert-worthy notification rather than a silent skip --
-mirroring this section's own structural-threat precedent ("hold at last
-good decision... not-yet-held candidate: not opened... raise a named
-alert") rather than inventing a new mechanism. Critical-only is
+never touches an existing holding's sell/liquidation path, and is paired
+with an alert-worthy notification rather than a silent skip (on first
+discovery and then on the M50a interval below -- this sentence read
+"always paired" until M50a made that false, and was amended rather than
+left standing, since this is a living spec and the stale version was the
+one a reader would hit first) -- mirroring this section's own
+structural-threat precedent ("hold at last good decision... not-yet-held
+candidate: not opened... raise a named alert") rather than inventing a
+new mechanism.
+
+**M50a (2026-10-01) paces that notification rather than repeating it
+every run.** M50 as first shipped alerted on every blocking run, and
+since an alert is by contract a non-zero exit, a single long-lived block
+(the real GRBK 4.02, cooldown running to 2027-04-29) produced a failed
+workflow run and an operator email *every day* on two accounts, for a
+condition already known and deliberately handled. That is this section's
+own named failure mode, not diligence. The gate now alerts when a block
+is first seen and then again only once every
+`config.MATERIAL_EVENT_BUY_BLOCK_REALERT_DAYS` (30) while it stays
+active; a genuinely new filing is a different key and alerts at once.
+Deliberately an interval rather than a once-ever dedup: a block means
+real capital is being withheld from a real position for months, which is
+a standing fact worth periodically re-surfacing, and a pure once-ever
+notification would make an active block invisible from the second run
+onward (`report.py` has no material-event surface, so the run log would
+be the only trace). Paced reminders also preserve §3.7's
+alerts-per-quarter metric as a meaningful number instead of one
+dominated by a single repeating condition. Critical-only is
 defensible as an unmeasured, unconditional veto for a semantic reason,
 not a borrowed one: unlike §3.5's free-text extraction of genuine
 judgment calls (which needs a measured >=90%/80% precision/recall bar

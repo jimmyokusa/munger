@@ -153,6 +153,47 @@ def _connect() -> sqlite3.Connection:
         """
     )
 
+    # material_event_buy_blocks: one row per (account, ticker, filing) that
+    # has ever blocked a buy, carrying when it was first seen and when it
+    # was last alerted on (M50a). Exists purely to pace the
+    # operator-facing *alert*, never the block itself -- the exclusion is
+    # re-derived live from EDGAR every run by
+    # material_events.check_buy_candidates and does not consult this table.
+    #
+    # last_alerted_timestamp, not just a first-seen marker: a block stays
+    # true for months, and config.MATERIAL_EVENT_BUY_BLOCK_REALERT_DAYS
+    # re-surfaces it periodically rather than announcing it once and then
+    # going permanently silent (pm-reviewer finding -- see that constant's
+    # own comment for why once-ever overcorrects).
+    #
+    # Deliberately NOT the existing material_events table above, despite
+    # both being "have we already alerted on this accession number"
+    # questions (M50a staff-engineer reasoning, recorded here because the
+    # distinction is subtle and a future reader would otherwise reasonably
+    # try to merge them): sharing one dedup key would mean a buy-block
+    # alert silently suppresses poll_ticker's own holdings-monitor alert
+    # for the same filing, and vice versa. Those are two different
+    # notifications to a human -- "don't open a position in this" vs.
+    # "something happened to something you already hold" -- and either one
+    # firing must not consume the other's one-time alert. The composite
+    # primary key also differs: material_events is keyed on
+    # accession_number alone (one global alert per filing), while a buy
+    # block is per (account, ticker, filing), since the same filing can
+    # legitimately block the same ticker on paper, live, and ira as three
+    # independent operator-facing facts.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS material_event_buy_blocks (
+            account TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            accession_number TEXT NOT NULL,
+            first_blocked_timestamp TEXT NOT NULL,
+            last_alerted_timestamp TEXT NOT NULL,
+            PRIMARY KEY (account, ticker, accession_number)
+        )
+        """
+    )
+
     # manual_overrides: a human acting on a material-event alert (or any
     # other reason) records it here with a reason, per §3.8's own
     # requirement that overrides be "journaled with a reason and counted
@@ -373,6 +414,66 @@ def record_material_event(
                 severity,
                 datetime.datetime.now(datetime.UTC).isoformat(),
             ),
+        )
+
+
+def get_buy_block_last_alerted(
+    ticker: str, accession_number: str, account: str | None = None
+) -> str | None:
+    """When this (account, ticker, filing) buy block was last alerted on, or None (M50a).
+
+    Pure storage read -- the "has enough time passed to re-alert" policy
+    lives in trading_common.check_material_event_buy_blocks against
+    config.MATERIAL_EVENT_BUY_BLOCK_REALERT_DAYS, not here, so the
+    interval can change without touching the schema or this function.
+
+    A None return only ever means "the operator has never been told about
+    this particular block," never "this ticker is buyable" -- the block
+    itself is re-derived live from EDGAR every run and never reads this
+    table. See the material_event_buy_blocks table comment in _connect for
+    why this is deliberately a separate namespace from
+    has_alerted_on_filing's material_events table.
+    """
+    account = account or _current_account()
+    if account not in _VALID_ACCOUNTS:
+        raise ValueError(f"account must be one of {_VALID_ACCOUNTS}, got {account!r}")
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT last_alerted_timestamp FROM material_event_buy_blocks "
+            "WHERE account = ? AND ticker = ? AND accession_number = ?",
+            (account, ticker, accession_number),
+        ).fetchone()
+    return str(row[0]) if row else None
+
+
+def record_buy_block_alert(ticker: str, accession_number: str, account: str | None = None) -> None:
+    """Record that this (account, ticker, filing) buy block was just alerted on (M50a).
+
+    Upsert, not a plain INSERT: unlike record_material_event's
+    once-per-filing-globally contract, this is called again every time the
+    re-alert interval lapses on a still-active block, so the row must
+    accumulate a moving last_alerted_timestamp while preserving the
+    original first_blocked_timestamp (the only record of how long a block
+    has actually been standing). ON CONFLICT updates only the former.
+
+    Deliberately not INSERT OR IGNORE (an earlier M50a draft's choice,
+    corrected): that would silently keep the FIRST alert's timestamp
+    forever, so the re-alert interval would elapse once and then fire on
+    every subsequent run -- quietly restoring the every-run alert spam
+    M50a exists to remove.
+    """
+    account = account or _current_account()
+    if account not in _VALID_ACCOUNTS:
+        raise ValueError(f"account must be one of {_VALID_ACCOUNTS}, got {account!r}")
+    now = datetime.datetime.now(datetime.UTC).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO material_event_buy_blocks "
+            "(account, ticker, accession_number, first_blocked_timestamp, last_alerted_timestamp) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(account, ticker, accession_number) "
+            "DO UPDATE SET last_alerted_timestamp = excluded.last_alerted_timestamp",
+            (account, ticker, accession_number, now, now),
         )
 
 

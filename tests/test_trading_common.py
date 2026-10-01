@@ -12,6 +12,7 @@ both depend on this module being correct on its own.
 from __future__ import annotations
 
 import datetime
+import sqlite3
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -21,6 +22,8 @@ from alpaca.trading.enums import OrderStatus
 from alpaca.trading.models import Clock, Order
 
 import config
+import journal
+import material_events
 import trading_common
 
 
@@ -365,3 +368,336 @@ def test_market_is_open_fails_closed_after_a_second_clock_failure(
 
     with pytest.raises(ConnectionError, match="still broken"):
         trading_common.market_is_open()
+
+
+# --- check_material_event_buy_blocks (M50a: paced alerts, block always) ---
+
+
+def _block(accession_number: str = "acc-1") -> material_events.BuyBlock:
+    return material_events.BuyBlock(
+        accession_number=accession_number,
+        reason="Critical 8-K filed 2026-04-29 (Item 4.02, within 365-day cooldown)",
+    )
+
+
+def test_material_event_buy_blocks_alerts_the_first_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(material_events, "check_buy_candidates", lambda tickers: {"GRBK": _block()})
+    alerts: list[str] = []
+
+    blocked = trading_common.check_material_event_buy_blocks(["GRBK"], alerts)
+
+    assert blocked == {"GRBK"}
+    assert len(alerts) == 1
+    assert "GRBK" in alerts[0]
+
+
+def test_material_event_buy_blocks_does_not_realert_within_the_interval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The core M50a fix: the same block on a later run still excludes the
+    # symbol but no longer alerts (which would fail the run and email the
+    # operator, every single day, for a known condition).
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(material_events, "check_buy_candidates", lambda tickers: {"GRBK": _block()})
+
+    trading_common.check_material_event_buy_blocks(["GRBK"], [])
+    alerts: list[str] = []
+    blocked = trading_common.check_material_event_buy_blocks(["GRBK"], alerts)
+
+    assert blocked == {"GRBK"}  # still blocked -- the exclusion never lapses
+    assert alerts == []  # but no longer alert-worthy
+
+
+def test_material_event_buy_blocks_realerts_once_the_interval_elapses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A months-long block must not go permanently silent after one alert
+    # (pm-reviewer finding) -- it resurfaces on the re-alert interval.
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(material_events, "check_buy_candidates", lambda tickers: {"GRBK": _block()})
+    monkeypatch.setattr(config, "MATERIAL_EVENT_BUY_BLOCK_REALERT_DAYS", 30)
+
+    trading_common.check_material_event_buy_blocks(["GRBK"], [])
+    # Backdate the stored alert past the interval, rather than sleeping.
+    stale = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=31)).isoformat()
+    with journal._connect() as conn:
+        conn.execute("UPDATE material_event_buy_blocks SET last_alerted_timestamp = ?", (stale,))
+
+    alerts: list[str] = []
+    blocked = trading_common.check_material_event_buy_blocks(["GRBK"], alerts)
+
+    assert blocked == {"GRBK"}
+    assert len(alerts) == 1
+    assert "still blocked" in alerts[0]  # distinguishable from a first-time discovery
+
+
+def test_material_event_buy_blocks_realert_resets_the_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression guard for an earlier draft's INSERT OR IGNORE: if the
+    # re-alert didn't update last_alerted_timestamp, the interval would
+    # elapse once and then fire on EVERY subsequent run, quietly restoring
+    # the every-run spam this milestone exists to remove.
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(material_events, "check_buy_candidates", lambda tickers: {"GRBK": _block()})
+    monkeypatch.setattr(config, "MATERIAL_EVENT_BUY_BLOCK_REALERT_DAYS", 30)
+
+    trading_common.check_material_event_buy_blocks(["GRBK"], [])
+    stale = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=31)).isoformat()
+    with journal._connect() as conn:
+        conn.execute("UPDATE material_event_buy_blocks SET last_alerted_timestamp = ?", (stale,))
+    trading_common.check_material_event_buy_blocks(["GRBK"], [])  # re-alerts, resets the clock
+
+    alerts: list[str] = []
+    trading_common.check_material_event_buy_blocks(["GRBK"], alerts)
+
+    assert alerts == []  # silent again, not spamming every run
+
+
+def test_material_event_buy_blocks_preserves_first_blocked_timestamp_across_realerts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # first_blocked_timestamp is the only record of how long a block has
+    # actually been standing -- a re-alert must not overwrite it.
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(material_events, "check_buy_candidates", lambda tickers: {"GRBK": _block()})
+    monkeypatch.setattr(config, "MATERIAL_EVENT_BUY_BLOCK_REALERT_DAYS", 0)
+
+    trading_common.check_material_event_buy_blocks(["GRBK"], [])
+    with journal._connect() as conn:
+        first = conn.execute(
+            "SELECT first_blocked_timestamp FROM material_event_buy_blocks"
+        ).fetchone()[0]
+    trading_common.check_material_event_buy_blocks(["GRBK"], [])
+    with journal._connect() as conn:
+        row = conn.execute(
+            "SELECT first_blocked_timestamp, last_alerted_timestamp FROM material_event_buy_blocks"
+        ).fetchone()
+
+    assert row[0] == first  # unchanged
+    assert row[1] >= first  # moved forward
+
+
+def test_material_event_buy_blocks_realerts_on_a_genuinely_new_filing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A different accession number is a different operator-facing fact,
+    # even on the same ticker -- it must alert immediately, not wait out
+    # the re-alert interval.
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(
+        material_events, "check_buy_candidates", lambda tickers: {"GRBK": _block("acc-1")}
+    )
+    trading_common.check_material_event_buy_blocks(["GRBK"], [])
+
+    monkeypatch.setattr(
+        material_events, "check_buy_candidates", lambda tickers: {"GRBK": _block("acc-2")}
+    )
+    alerts: list[str] = []
+    blocked = trading_common.check_material_event_buy_blocks(["GRBK"], alerts)
+
+    assert blocked == {"GRBK"}
+    assert len(alerts) == 1
+
+
+def test_material_event_buy_blocks_alerts_only_for_the_new_ticker_in_a_mixed_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(
+        material_events, "check_buy_candidates", lambda tickers: {"GRBK": _block("acc-1")}
+    )
+    trading_common.check_material_event_buy_blocks(["GRBK"], [])
+
+    monkeypatch.setattr(
+        material_events,
+        "check_buy_candidates",
+        lambda tickers: {"GRBK": _block("acc-1"), "NEWCO": _block("acc-2")},
+    )
+    alerts: list[str] = []
+    blocked = trading_common.check_material_event_buy_blocks(["GRBK", "NEWCO"], alerts)
+
+    assert blocked == {"GRBK", "NEWCO"}  # both still excluded
+    assert len(alerts) == 1
+    assert "NEWCO" in alerts[0]
+    assert "GRBK" not in alerts[0]  # already reported, not repeated
+
+
+def test_material_event_buy_blocks_is_a_noop_when_nothing_is_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(material_events, "check_buy_candidates", lambda tickers: {})
+    alerts: list[str] = []
+
+    assert trading_common.check_material_event_buy_blocks(["AAPL"], alerts) == set()
+    assert alerts == []
+
+
+def test_material_event_buy_blocks_dedup_is_per_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The same filing blocking the same ticker on a DIFFERENT account is a
+    # separate operator-facing fact, so it alerts again rather than being
+    # suppressed by another account's earlier alert.
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(material_events, "check_buy_candidates", lambda tickers: {"GRBK": _block()})
+
+    monkeypatch.setattr(config, "ACCOUNT_LABEL", "paper")
+    first: list[str] = []
+    trading_common.check_material_event_buy_blocks(["GRBK"], first)
+    monkeypatch.setattr(config, "ACCOUNT_LABEL", "live")
+    second: list[str] = []
+    trading_common.check_material_event_buy_blocks(["GRBK"], second)
+
+    assert len(first) == 1
+    assert len(second) == 1
+
+
+def test_material_event_buy_blocks_still_alerts_when_the_journal_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # staff-engineer finding: an unreadable journal must fail toward
+    # telling the operator, never toward silence -- the block applies
+    # either way, so only the notification is at stake.
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(material_events, "check_buy_candidates", lambda tickers: {"GRBK": _block()})
+
+    def _boom(*_args: object, **_kwargs: object) -> str | None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(journal, "get_buy_block_last_alerted", _boom)
+    alerts: list[str] = []
+
+    blocked = trading_common.check_material_event_buy_blocks(["GRBK"], alerts)
+
+    assert blocked == {"GRBK"}
+    assert len(alerts) == 1
+
+
+def test_material_event_buy_blocks_one_tickers_journal_failure_does_not_swallow_another_alert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # staff-engineer finding: per-ticker fault isolation. A write failure
+    # on the first ticker must not prevent the second ticker's alert.
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(
+        material_events,
+        "check_buy_candidates",
+        lambda tickers: {"AAA": _block("acc-1"), "BBB": _block("acc-2")},
+    )
+
+    def _boom_on_aaa(ticker: str, accession_number: str, account: str | None = None) -> None:
+        if ticker == "AAA":
+            raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(journal, "record_buy_block_alert", _boom_on_aaa)
+    alerts: list[str] = []
+
+    blocked = trading_common.check_material_event_buy_blocks(["AAA", "BBB"], alerts)
+
+    assert blocked == {"AAA", "BBB"}
+    assert len(alerts) == 2  # both alerted despite AAA's write failing
+
+
+def test_material_event_buy_blocks_realerts_on_an_unusable_stored_timestamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # pm-reviewer finding: _realert_interval_elapsed claimed a
+    # fail-toward-alerting posture but only caught ValueError, so a
+    # timezone-NAIVE stored string (parses fine, then raises TypeError on
+    # the subtraction) would have failed the run instead of re-alerting.
+    # Unreachable via the normal write path; pinned here so the documented
+    # guarantee doesn't silently depend on that staying true.
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(material_events, "check_buy_candidates", lambda tickers: {"GRBK": _block()})
+
+    trading_common.check_material_event_buy_blocks(["GRBK"], [])
+    with journal._connect() as conn:
+        conn.execute(
+            "UPDATE material_event_buy_blocks SET last_alerted_timestamp = ?",
+            ("2026-01-01T00:00:00",),  # naive -- no tzinfo
+        )
+
+    alerts: list[str] = []
+    blocked = trading_common.check_material_event_buy_blocks(["GRBK"], alerts)
+
+    assert blocked == {"GRBK"}
+    assert len(alerts) == 1  # re-alerted, did not raise
+
+    with journal._connect() as conn:
+        conn.execute(
+            "UPDATE material_event_buy_blocks SET last_alerted_timestamp = ?", ("not-a-date",)
+        )
+    more_alerts: list[str] = []
+    assert trading_common.check_material_event_buy_blocks(["GRBK"], more_alerts) == {"GRBK"}
+    assert len(more_alerts) == 1
+
+
+def test_material_event_buy_blocks_alerts_loudly_when_the_check_could_not_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # staff-engineer-reviewer (2nd pass): the gate's single fail-open point.
+    # A SEC ticker-index outage resolves zero CIKs, which would otherwise
+    # look identical to a clean run now that suppression is the steady
+    # state. Must alert, and must not be mistaken for "nothing blocked".
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+
+    def _unavailable(tickers: list[str]) -> dict[str, material_events.BuyBlock]:
+        raise material_events.MaterialEventCheckUnavailableError("no CIK resolved for any of 3")
+
+    monkeypatch.setattr(material_events, "check_buy_candidates", _unavailable)
+    alerts: list[str] = []
+
+    blocked = trading_common.check_material_event_buy_blocks(["A", "B", "C"], alerts)
+
+    assert blocked == set()
+    assert len(alerts) == 1
+    assert "UNGATED" in alerts[0]  # says plainly that buys were not screened
+
+
+def test_material_event_buy_blocks_realerts_on_a_future_timestamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # staff-engineer-reviewer (2nd pass): a future last_alerted would
+    # otherwise suppress silently until wall-clock caught up -- the same
+    # outcome as the silent-failure bug, by a different door. Reachable by
+    # hand-editing the column, the obvious ad-hoc snooze available today.
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(material_events, "check_buy_candidates", lambda tickers: {"GRBK": _block()})
+
+    trading_common.check_material_event_buy_blocks(["GRBK"], [])
+    future = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=200)).isoformat()
+    with journal._connect() as conn:
+        conn.execute("UPDATE material_event_buy_blocks SET last_alerted_timestamp = ?", (future,))
+
+    alerts: list[str] = []
+    blocked = trading_common.check_material_event_buy_blocks(["GRBK"], alerts)
+
+    assert blocked == {"GRBK"}
+    assert len(alerts) == 1  # re-alerted rather than going silent for 200 days
+
+
+def test_material_event_buy_blocks_says_so_when_the_alert_history_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # staff-engineer-reviewer (2nd pass): a persistently broken journal
+    # re-alerts every run, which is the safe direction -- but it must not
+    # use the first-discovery wording, or it reads as a genuinely new
+    # Critical filing every single time.
+    monkeypatch.setattr(config, "JOURNAL_DB_PATH", tmp_path / "journal.db")
+    monkeypatch.setattr(material_events, "check_buy_candidates", lambda tickers: {"GRBK": _block()})
+
+    def _boom(*_args: object, **_kwargs: object) -> str | None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(journal, "get_buy_block_last_alerted", _boom)
+    alerts: list[str] = []
+
+    trading_common.check_material_event_buy_blocks(["GRBK"], alerts)
+
+    assert len(alerts) == 1
+    assert "unreadable" in alerts[0]  # distinguishable from a real first discovery

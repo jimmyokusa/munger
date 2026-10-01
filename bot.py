@@ -33,13 +33,15 @@ import config
 import data
 import execution
 import journal
-import material_events
 import portfolio
 import screener
 import universe
 from trading_common import alert as _alert
 from trading_common import cap_buy_orders_to_budget as _cap_buy_orders_to_budget
 from trading_common import check_data_freshness as _check_data_freshness
+from trading_common import (
+    check_material_event_buy_blocks as _check_material_event_buy_blocks,
+)
 from trading_common import (
     check_small_account_concentration_ceiling as _check_small_account_concentration_ceiling,
 )
@@ -394,18 +396,15 @@ def run(run_date: str | None = None) -> int:
     # Scoped to this run's actual buyable candidates, not the whole
     # universe -- see material_events.check_buy_candidates's own
     # docstring for why this is a live per-candidate check, not a stored-
-    # history lookup. Alert-worthy (unlike a routine buyability skip):
-    # this is genuinely rare and a human should be told, not routine
-    # noise like a workflow with no fixed cadence tripping a staleness
-    # check -- see TASKS.md's M47 section for that contrasting case.
+    # history lookup. Alert-worthy when a block is first seen and then
+    # again once every config.MATERIAL_EVENT_BUY_BLOCK_REALERT_DAYS while
+    # it stays active -- still logged, and still blocking, on every run in
+    # between (M50a; see check_material_event_buy_blocks for why repeating
+    # a known block as a daily run-failure is the alert-fatigue failure
+    # mode §3.8 exists to avoid rather than diligence, and why a pure
+    # once-ever notification overcorrected).
     buy_candidates = sorted(set(results.loc[results["buyable"], "symbol"].astype(str)))
-    material_event_blocks = material_events.check_buy_candidates(buy_candidates)
-    if material_event_blocks:
-        _alert(
-            alerts,
-            "New-buy candidate(s) blocked by an unresolved Critical-severity material "
-            "event: " + ", ".join(f"{t} ({r})" for t, r in sorted(material_event_blocks.items())),
-        )
+    material_event_blocks = _check_material_event_buy_blocks(buy_candidates, alerts)
 
     # staff-engineer-reviewer finding: omitting corporate_action tickers
     # from remaining_holdings alone isn't enough -- generate_buy_queue's

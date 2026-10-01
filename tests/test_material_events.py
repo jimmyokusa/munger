@@ -348,8 +348,9 @@ def test_check_buy_candidates_blocks_a_critical_filing_within_cooldown(
     blocked = material_events.check_buy_candidates(["GRBK"])
 
     assert "GRBK" in blocked
-    assert "Critical" in blocked["GRBK"]
-    assert recent_date in blocked["GRBK"]
+    assert "Critical" in blocked["GRBK"].reason
+    assert recent_date in blocked["GRBK"].reason
+    assert blocked["GRBK"].accession_number == "acc-1"
 
 
 def test_check_buy_candidates_does_not_block_a_filing_outside_the_cooldown_window(
@@ -409,7 +410,7 @@ def test_check_buy_candidates_bankruptcy_gets_the_longer_cooldown(
     blocked = material_events.check_buy_candidates(["ACME"])
 
     assert "ACME" in blocked
-    assert "Item 1.03" in blocked["ACME"]
+    assert "Item 1.03" in blocked["ACME"].reason
 
 
 def test_check_buy_candidates_bankruptcy_still_expires_past_its_own_cooldown(
@@ -460,19 +461,49 @@ def test_check_buy_candidates_attributes_the_correct_item_in_a_multi_critical_fi
 
     blocked = material_events.check_buy_candidates(["ACME"])
 
-    assert "Item 1.03" in blocked["ACME"]
-    assert str(config.MATERIAL_EVENT_BUY_COOLDOWN_DAYS_BANKRUPTCY) in blocked["ACME"]
+    assert "Item 1.03" in blocked["ACME"].reason
+    assert str(config.MATERIAL_EVENT_BUY_COOLDOWN_DAYS_BANKRUPTCY) in blocked["ACME"].reason
 
 
 def test_check_buy_candidates_skips_a_ticker_with_no_cik(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(material_events.xbrl, "load_cik_lookup", lambda: {})
+    # A populated index that simply doesn't list this ticker -- a thin
+    # foreign issuer or a fresh listing. M50a note: this test previously
+    # expressed "no CIK for this ticker" by returning an EMPTY index, which
+    # is now the separate "the index fetch failed" signal below; the setup
+    # is explicit about which of the two it means.
+    monkeypatch.setattr(material_events.xbrl, "load_cik_lookup", lambda: {"AAPL": "0000320193"})
     fetch_mock = MagicMock()
     monkeypatch.setattr(material_events, "fetch_recent_8k_filings", fetch_mock)
 
     assert material_events.check_buy_candidates(["UNKNOWN_TICKER"]) == {}
     fetch_mock.assert_not_called()
+
+
+def test_check_buy_candidates_raises_when_the_cik_index_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # staff-engineer-reviewer (2nd pass): an empty index means the SEC fetch
+    # failed (xbrl.load_cik_lookup fails soft to {}), so NOTHING was
+    # checked. Must not be reported as "nothing to block" -- that is the
+    # gate's one fail-open path, and silence now looks like a clean run.
+    monkeypatch.setattr(material_events.xbrl, "load_cik_lookup", lambda: {})
+    fetch_mock = MagicMock()
+    monkeypatch.setattr(material_events, "fetch_recent_8k_filings", fetch_mock)
+
+    with pytest.raises(material_events.MaterialEventCheckUnavailableError):
+        material_events.check_buy_candidates(["GRBK", "AAPL"])
+    fetch_mock.assert_not_called()
+
+
+def test_check_buy_candidates_does_not_raise_for_an_empty_candidate_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A run with zero buyable candidates is a legitimate zero, not an
+    # outage -- it must not alert even if the index is also empty.
+    monkeypatch.setattr(material_events.xbrl, "load_cik_lookup", lambda: {})
+    assert material_events.check_buy_candidates([]) == {}
 
 
 def test_check_buy_candidates_returns_empty_for_a_clean_ticker(

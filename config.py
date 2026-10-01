@@ -765,6 +765,23 @@ MATERIAL_EVENT_BUY_COOLDOWN_DAYS = 365
 # long enough that a still-open case at this point is the rare exception,
 # not a claim that bankruptcies reliably resolve by then.
 MATERIAL_EVENT_BUY_COOLDOWN_DAYS_BANKRUPTCY = 1095
+# M50a: how long before an already-reported, still-active buy block is
+# re-alerted as a reminder. Not a toggle for the dedup itself (there is
+# deliberately no "turn dedup off" flag -- alerting every run is the
+# behavior M50a exists to remove, not a mode worth keeping reachable);
+# this is the interval between the "this is still true" reminders.
+#
+# pm-reviewer finding, and the reason this constant exists at all: a pure
+# once-ever dedup makes an active block invisible from the second run
+# onward (one WARNING line inside an otherwise-green log, no alert, and
+# report.py has no material-event surface at all). That overcorrects --
+# a block means real capital is being withheld from a real position for
+# months, which is a standing fact a human should keep being reminded of,
+# not a one-time notification. 30 days: frequent enough that a
+# multi-month block can't be silently forgotten, rare enough that it
+# can't train an operator to ignore the channel (the failure mode §3.8
+# names, and what the daily-email behavior this replaces actually did).
+MATERIAL_EVENT_BUY_BLOCK_REALERT_DAYS = 30
 
 
 # --- Account identity (M47), computed lazily via module __getattr__ ---
