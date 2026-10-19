@@ -2881,3 +2881,50 @@ different key and alerts again.
 | **User decision needed, no code should make it unilaterally:** should the gate FAIL CLOSED -- abort the run, placing no orders -- when it cannot check candidates at all, rather than proceeding with a loud UNGATED alert? | todo | **By 2026-10-31** (dated and given its own row per a pm-reviewer finding: this was buried as prose inside the `partially done` row above, and it is the one open *trading-behavior* decision in M50a -- exactly the pattern two earlier review rounds flagged on this section). The precedent cuts toward fail-closed: `config.MIN_UNIVERSE_FETCH_FRACTION` aborts the run outright when the universe fetch degrades. The argument against is that an EDGAR hiccup would then stop all buying for the day on an account whose buy queue is otherwise healthy. Deliberately left to the user because it changes whether real orders are placed, which is not something a milestone about alert volume should decide as a side effect. |
 | **Possible alert-volume regression in the fix itself, worth watching rather than pre-solving** -- the new UNGATED alert has no pacing of its own | todo | pm-reviewer finding, and a fair one against this milestone's own thesis: `load_cik_lookup()`'s cache is never restored by either trading workflow, so the ~800KB index fetch runs every scheduled run on two accounts. If it fails at any non-trivial rate, M50a reintroduces the daily-red-X pattern it exists to remove, just under a different message. Not pre-solved because the expected failure rate is unknown and guessing at a dedup for a hypothetical rate is how the original over-alerting got designed in. **Go look:** if more than ~2 UNGATED alerts appear in any 30-day window, it needs the same pacing treatment the block alerts just got. |
 | **Verify the dedup against real runs** -- the next scheduled `daily-trade.yml`/`daily-trade-live.yml` runs should be GREEN while still logging the GRBK block | todo | **Go look, by 2026-10-08** (GRBK recurs every open-market run, so this is falsifiable within days, not an open-ended wait -- pm-reviewer finding that M50's equivalent row lacked a date): the first run after this ships still alerts once (the journal has no prior record for it), which is correct and expected. Every run after that, until the 30-day re-alert interval lapses, should show `GRBK: still blocked from a buy (...) -- already alerted <timestamp>, not re-alerting` at WARNING, exit 0, no failure email, and GRBK absent from any buy order. Then one alert-worthy run ~30 days later, and silence again. **IRA is not covered by waiting** (pm-reviewer finding): `daily-trade-ira.yml` is still `workflow_dispatch`-only with no cron, so its leg of this is not-applicable until that cron lands (M47's own open item) -- not something to sit waiting on. |
+
+## M51 — P&L history dated by ET trading day, not UTC (added 2026-10-18, user request: "lets take a look at the performance of the stocks so far")
+
+**Found by comparing the paper account against SPY, not by review or
+tests.** The first pass at that comparison showed the bot's daily returns
+correlating -0.27 with SPY, which is implausible for a long-only stock
+portfolio. The cause was `pnl.py` turning Alpaca's 1D portfolio-history
+timestamps into dates in UTC. Alpaca stamps each close at 00:00 UTC of the
+*next* calendar day (Fri 2026-10-16's close arrives as `1792195200`, Sat
+00:00 UTC), so every `pnl_history.jsonl` row on all three accounts was
+labeled one day late. Fridays appeared as Saturdays, and Mondays never
+appeared at all. Proof it was the dating and not the portfolio: the paper
+account's daily returns correlate **-0.02** with its own held positions'
+closes when UTC-dated and **1.00** when ET-dated. The suite never caught
+it because the test helper `_epoch` encoded the same wrong timestamp
+assumption the code did.
+
+**The answer to the question that started this.** Paper account, Jul 23
+to Oct 16 2026, benchmarks dividend-adjusted (Yahoo adjusted closes,
+cross-checked against Alpaca IEX closes within 0.04%):
+
+| | Return | Max drawdown |
+|---|---|---|
+| Paper bot | +3.86% | -6.0% |
+| SPY | +3.65% | -3.1% |
+| RSP (equal-weight) | +1.40% | -6.3% |
+| IJR (small-cap) | -5.85% | -9.7% |
+
+With correct dates, the bot's daily correlation is 0.06 with SPY and 0.48
+with RSP. The near-zero SPY figure is real, not a data artifact: the
+held-stock basket itself correlates 0.07 with SPY. It trailed SPY through
+September (-4.6% vs -0.3%) and pulled ahead only on October (+7.3% vs
++0.1%), mostly SIG/URBN/ASO. About 12 weeks is far too short to read as
+skill, so this is a snapshot, not a verdict.
+
+| Task | Status | Date / Notes |
+|---|---|---|
+| `config.MARKET_TIMEZONE` + `pnl._market_date()`: history points and the "today" row dated in America/New_York | done | 2026-10-18 -- `7cdcdff`. ET maps 00:00 UTC D+1 to D under both EDT (20:00) and EST (19:00), and would still be right if Alpaca ever switched to ET-midnight stamps. Also fixes evening runs past 00:00 UTC filing that night's equity under tomorrow (this really happened: the IRA's 2026-09-22 row was a 20:56 ET Monday snapshot). |
+| Skip the "today" overlay on Sat/Sun | done | 2026-10-18 -- `staff-engineer-reviewer` finding. `daily-trade*.yml` run every day, and under ET dating no history point ever overwrites a weekend row, so each one would persist repeating Friday's equity and P/L. **Market holidays still slip through** (~9 rows/yr), on purpose: a weekday check needs no extra Alpaca call. Tracked below rather than pre-solved. |
+| Tests: `_epoch` now emits Alpaca's real format; regression cases from live timestamps, an EST case, an evening-run case, a weekend-skip case | done | 2026-10-18 -- 751 passed; ruff/mypy clean. |
+| One-off migration of the existing GCS `pnl_history.jsonl` files (paper 99→77 rows, live 91→70, IRA 30→29) | done | 2026-10-18 20:20 ET, after the push and ~14h before the next history writer. A row dated D where D-1 is an NYSE session was relabeled to D-1. Weekend and intraday overlay rows were dropped. The final row was re-dated by its `pnl.json` `generated_at` in ET. Built from three `staff-engineer-reviewer` findings: a guard that refuses old-vs-new-format ambiguity (verified a re-run is refused), sort-on-read, and an assert that every output date is a trading day. Uploads used `x-goog-if-generation-match` against the generations recorded at download. **Validation coverage was partial for live and IRA, stated plainly:** paper was checked on all 77 rows against a 6-month Alpaca fetch (local paper keys). Live (23 of 70 rows) and IRA (16 of 29) were checked only against the ~1-month history embedded in each account's latest `pnl.json`, because no live or IRA keys are available locally. Zero mismatches within that coverage. The other 47 live and 13 IRA rows were relabeled by the same rule that matched paper exactly, but were not checked against their own account. **Rollback** = restore the originals from `gs://munger-503515-data/backups/pre-et-dating-20261019/`. The script lived in the session scratchpad and was deliberately not committed, since it is only correct on old-format input. |
+| `staff-engineer-reviewer` pass | done | 2026-10-18 -- two rounds, LGTM on the second. **Round 1 corrected a wrong premise in my rollout plan**: I said the next history write was Monday 14:00 UTC, but the daily workflows also run on weekends. That is what surfaced the weekend-row finding above. Not taken: disabling the workflows for the migration, because the generation preconditions plus a ~14h quiet window covered the race. |
+| **User action, by 14:00 UTC 2026-10-19: GitHub paper secrets `ALPACA_API_KEY`/`ALPACA_SECRET_KEY`** | todo | New paper keys were generated on 2026-10-18 and put in local `.env`, but `gh secret list` still showed the Sep 2 values. **Unknown whether the old pair was revoked** (secret values can't be read back to test). **Done when** `gh secret list` shows a 2026-10-18-or-later date on both, and the 10-19 paper run doesn't 401. Paper-only: the live workflow uses `ALPACA_LIVE_*` and doesn't depend on this. |
+| **Verify Monday's real runs (2026-10-19, after ~14:30 UTC)** | todo | What a Monday can prove: (a) the paper and live rows for Fri 10-16 still equal the migrated values after being rewritten from Alpaca history; (b) a row dated Mon 10-19 exists, which the old code could never produce; (c) the last month's rows are otherwise unchanged. Live can pass on its own. If the paper run 401s (row above), paper is unverified, not passed. This does **not** test the weekend skip. |
+| **Verify the weekend skip (after 14:30 UTC 2026-10-25)** | todo | The first real exercise of the Sat/Sun skip: paper and live have no rows dated 10-24 or 10-25. |
+| EST spot check (on/after 2026-11-09) | todo | Every real timestamp this was validated against is from EDT. Done when the paper rows for 11-02 through 11-06 match a fresh Alpaca 1D history fetch exactly, with no extra or missing days. That is the same check the migration used, applied after the 2026-11-01 DST change. |
+| Holiday rows (check 2026-11-27) | todo | If a Thanksgiving row dated 11-26 exists with a nonzero daily P/L duplicating 11-25's, point the overlay check at Alpaca's trading calendar. If it exists but shows zero P/L, accept ~9 flat rows a year and close this row. |
