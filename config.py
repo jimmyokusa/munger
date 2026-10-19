@@ -378,6 +378,15 @@ REAL_MONEY_IRA_DATA_PATH: Path = DATA_DIR / "ira" / "pnl.json"
 # Lives in the same GCS bucket as pnl.json; read (never written) by the report
 # deployment. See DESIGN_DASHBOARDS.md 2.1.
 PNL_HISTORY_PATH: Path = DATA_DIR / "pnl_history.jsonl"
+# The exchange's own timezone, which pnl.py uses to turn a timestamp into a
+# trading date. Alpaca's 1D portfolio-history points are stamped 00:00 UTC
+# of the *following* calendar day (confirmed against the live paper account:
+# Friday 2026-10-16's close arrives as 1792195200 = Sat 00:00 UTC), so a UTC
+# date labeled every day's equity one day late -- Fridays showed up as
+# Saturdays, Mondays went missing. Read in ET, that same instant is 20:00 on
+# the trading day itself (19:00 under EST), so the date is right in both
+# DST regimes.
+MARKET_TIMEZONE = "America/New_York"
 # The GCS bucket pnl.py (GitHub Actions) writes pnl.json/pnl_history.jsonl
 # into. Read by gcs_bridge.py (k3s's read-only GCS->PVC CronJob, M17
 # DESIGN_DASHBOARDS.md 2.3) -- deliberately a plain constant, not env-gated,

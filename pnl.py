@@ -32,6 +32,7 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
+from zoneinfo import ZoneInfo
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.models import PortfolioHistory, Position, TradeAccount
@@ -171,8 +172,18 @@ def write_snapshot(path: Path | None = None, snapshot: dict[str, object] | None 
     tmp_path.replace(target)
 
 
+def _market_date(dt: datetime.datetime) -> str:
+    """ISO trading date an aware datetime falls on, in the exchange's timezone.
+
+    Not the UTC date: Alpaca stamps each daily history point 00:00 UTC of
+    the next calendar day, so a UTC date labels every close one day late
+    (see config.MARKET_TIMEZONE).
+    """
+    return dt.astimezone(ZoneInfo(config.MARKET_TIMEZONE)).date().isoformat()
+
+
 def _snapshot_date(generated_at: str) -> str:
-    """ISO date (UTC) a snapshot belongs to, from its generated_at string.
+    """ISO trading date a snapshot belongs to, from its generated_at string.
 
     A generated_at with no offset is treated as UTC rather than assumed
     local -- the same "a naive timestamp is not silently reinterpreted"
@@ -181,7 +192,7 @@ def _snapshot_date(generated_at: str) -> str:
     dt = datetime.datetime.fromisoformat(generated_at)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=datetime.UTC)
-    return dt.astimezone(datetime.UTC).date().isoformat()
+    return _market_date(dt)
 
 
 def _series_rows_from_snapshot(snapshot: dict[str, object]) -> dict[str, dict[str, object]]:
@@ -189,9 +200,10 @@ def _series_rows_from_snapshot(snapshot: dict[str, object]) -> dict[str, dict[st
 
     Past days come from Alpaca's portfolio history (end-of-day, authoritative);
     today is overlaid from the account snapshot (the freshest value, which
-    overwrites history's partial same-day point). Keyed by ISO date so the
-    caller can upsert idempotently. Days Alpaca reports with no data (None
-    timestamp or equity) are skipped, not fabricated as a zero point.
+    overwrites history's partial same-day point) -- on weekdays only. Keyed
+    by ISO date so the caller can upsert idempotently. Days Alpaca reports
+    with no data (None timestamp or equity) are skipped, not fabricated as a
+    zero point.
     """
     mode = snapshot.get("mode")
     rows: dict[str, dict[str, object]] = {}
@@ -214,7 +226,7 @@ def _series_rows_from_snapshot(snapshot: dict[str, object]) -> dict[str, dict[st
         profit_loss = profit_losses[i] if i < len(profit_losses) else None
         if ts is None or equity is None:
             continue
-        date = datetime.datetime.fromtimestamp(ts, datetime.UTC).date().isoformat()
+        date = _market_date(datetime.datetime.fromtimestamp(ts, datetime.UTC))
         rows[date] = {"date": date, "equity": equity, "profit_loss": profit_loss, "mode": mode}
 
     account = snapshot.get("account") or {}
@@ -223,6 +235,13 @@ def _series_rows_from_snapshot(snapshot: dict[str, object]) -> dict[str, dict[st
     generated_at = snapshot.get("generated_at")
     if equity is not None and isinstance(generated_at, str):
         today = _snapshot_date(generated_at)
+        # daily-trade*.yml run on weekends too. History never carries a
+        # Sat/Sun point to overwrite a weekend overlay later, so writing one
+        # would leave a permanent row repeating Friday's equity (and, via
+        # last_equity, Friday's daily P/L). Market holidays still slip
+        # through -- a weekday check needs no extra Alpaca call.
+        if datetime.date.fromisoformat(today).weekday() >= 5:
+            return rows
         last_equity = account.get("last_equity")
         profit_loss = None if last_equity is None else equity - last_equity
         rows[today] = {"date": today, "equity": equity, "profit_loss": profit_loss, "mode": mode}

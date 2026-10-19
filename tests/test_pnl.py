@@ -574,9 +574,15 @@ def test_main_runs_loss_alert_check_on_canonical_daily_runs(
 
 
 def _epoch(date_str: str) -> int:
-    """UTC-midnight epoch seconds for an ISO date, matching Alpaca's history
-    timestamp units."""
-    return int(datetime.datetime.fromisoformat(date_str + "T00:00:00+00:00").timestamp())
+    """Alpaca's real 1D history timestamp for a trading date's close.
+
+    Alpaca stamps it 00:00 UTC of the *next* calendar day (observed live:
+    Friday 2026-10-16 arrives as 1792195200, Sat 00:00 UTC). An earlier
+    version of this helper used the trading date's own UTC midnight, which
+    is why the suite never caught pnl.py labeling every day one day late.
+    """
+    next_day = datetime.date.fromisoformat(date_str) + datetime.timedelta(days=1)
+    return int(datetime.datetime.combine(next_day, datetime.time(), datetime.UTC).timestamp())
 
 
 def _series_snapshot(
@@ -819,3 +825,68 @@ def test_update_history_series_uses_config_path_by_default(
     pnl.update_history_series(snap)
 
     assert (tmp_path / "pnl_history.jsonl").exists()
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "expected_date"),
+    [
+        # verbatim from the live paper account's history: Fri 2026-10-16's
+        # close, stamped Sat 00:00 UTC (20:00 EDT Friday)
+        (1792195200, "2026-10-16"),
+        # Mon 2026-10-12's close, stamped Tue 00:00 UTC -- the UTC reading
+        # filed it as "Tuesday", so Mondays never appeared in the history
+        (1791849600, "2026-10-12"),
+        # the same convention under EST: 00:00 UTC Sat 2026-12-05 is 19:00
+        # EST Friday 12-04
+        (1796428800, "2026-12-04"),
+        # and if Alpaca ever switched to ET-midnight stamps, the trading date
+        # must still come out right
+        (1796446800, "2026-12-05"),
+    ],
+)
+def test_series_rows_date_history_points_by_market_trading_day(
+    timestamp: int, expected_date: str
+) -> None:
+    snap = _series_snapshot(
+        generated_at="2027-01-04T15:00:00+00:00",
+        equity=1.0,
+        last_equity=1.0,
+        timestamps=[timestamp],
+        equities=[100_000.0],
+        profit_losses=[0.0],
+    )
+
+    rows = pnl._series_rows_from_snapshot(snap)
+
+    assert expected_date in rows
+    assert rows[expected_date]["equity"] == 100_000.0
+
+
+def test_series_rows_date_todays_row_by_market_day_after_utc_midnight() -> None:
+    # 01:30 UTC on the 29th is still 21:30 EDT on the 28th -- an evening run
+    # (or a manual re-run) must not file tonight's equity under tomorrow
+    snap = _series_snapshot(
+        generated_at="2026-07-29T01:30:00+00:00",
+        equity=101_000.0,
+        last_equity=100_000.0,
+        timestamps=[],
+        equities=[],
+        profit_losses=[],
+    )
+
+    assert list(pnl._series_rows_from_snapshot(snap)) == ["2026-07-28"]
+
+
+def test_series_rows_skip_todays_overlay_on_a_weekend() -> None:
+    # Sun 2026-10-18: the daily workflows still run, but a Sunday row would
+    # never be overwritten by history and would repeat Friday's equity
+    snap = _series_snapshot(
+        generated_at="2026-10-18T17:32:10+00:00",
+        equity=103_856.96,
+        last_equity=103_856.96,
+        timestamps=[_epoch("2026-10-16")],
+        equities=[103_856.96],
+        profit_losses=[25.31],
+    )
+
+    assert list(pnl._series_rows_from_snapshot(snap)) == ["2026-10-16"]
