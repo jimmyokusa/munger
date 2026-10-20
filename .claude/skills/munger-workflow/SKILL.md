@@ -144,6 +144,15 @@ soundness are different questions. Details below.
 
 ## 8. CI/CD on the k3s cluster
 
+> **2026-10-20: the k3s cluster is retired; this section is history.**
+> Today's real gates: **CI** is `.github/workflows/ci.yml` on GitHub-hosted
+> `ubuntu-latest` (ruff, ruff format, mypy, pytest on every push to
+> `main`). **Prod** is Cloud Run, deployed with
+> `deploy/cloudrun/deploy.sh [daily-screen|report-web] --verify`. Trading
+> and P&L run in GitHub Actions from `main`. Where §9 says "in-cluster CI
+> Job" or `build-and-deploy.sh`, read "green `ci.yml` run" and
+> `deploy/cloudrun/deploy.sh`. A full rewrite is tracked in TASKS.md M52.
+
 Cluster facts (memory `pi-k3s-cluster`): k3s v1.30, nodes pi1–pi4 (arm64),
 control-plane **pi4** (`sudo kubectl` only works there), storage node
 **pi1** (PVC + pods pinned there via `nodeSelector`; local-path is

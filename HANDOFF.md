@@ -6,11 +6,21 @@ each section. Formal work log is in [TASKS.md](TASKS.md); durable facts are
 in Claude memory (`pi-k3s-cluster`, `pi-k3s-munger-deploy`). This file is
 the "what were we doing and what's next" narrative.
 
-_Last updated: 2026-07-26 (this update)._
+_Last updated: 2026-10-20 (dated note at the top of the TL;DR only; the rest is from 2026-07-26)._
 
 ---
 
 ## TL;DR — current state
+
+> **2026-10-20 update -- read this before anything below, which is from
+> 2026-07-26 and partly obsolete.** The Pi k3s cluster has been **retired**.
+> **Cloud Run is prod** (`report-web` service + `daily-screen` job, project
+> `munger-503515`, behind `gramunger.com`), deployed with
+> `deploy/cloudrun/deploy.sh [daily-screen|report-web] --verify`. Trading
+> and P&L run in GitHub Actions from `main`. CI (`ci.yml`) now runs on
+> GitHub-hosted `ubuntu-latest`. The "which target is canonical" question
+> below is settled. Push with `git push origin main` over SSH: the `gh`
+> token lacks the `workflow` scope. Details are in TASKS.md M51/M52.
 
 - **munger v1 (modular monolith): working.** Full test suite **215
   passing** locally.
