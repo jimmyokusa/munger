@@ -5,6 +5,8 @@
 # Ship source + static inputs + tests (the image runs pytest for CI).
 # Exclude secrets, local runtime artifacts, and caches.
 .env
+.env.*
+*.swp
 .git
 .venv
 venv

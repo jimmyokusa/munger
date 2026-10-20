@@ -29,6 +29,10 @@ __pycache__/
 .venv/
 venv/
 .env
+# Editor swap/backup copies of .env hold the same secrets, and gcloud
+# builds submit uploads whatever .gitignore doesn't exclude.
+.env.*
+*.swp
 
 # Test/tooling caches
 .pytest_cache/
