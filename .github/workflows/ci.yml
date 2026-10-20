@@ -1,16 +1,17 @@
 name: Munger CI
 
-# CI only -- no build/push/deploy. The self-hosted runner
-# (actions-runner/munger-ci-runner, a bare pod on pi4) has no Docker daemon
-# reachable, and no node in the cluster has Docker installed at all (image
-# builds have always run on the dev machine, via deploy/build-and-deploy.sh);
-# giving the runner that capability is a real infra decision -- see
-# DESIGN_CD_PIPELINE.md (still draft, not decided) -- not something this
-# workflow should quietly assume. This is the honest, currently-achievable
-# slice: run the real (non-neutered) quality gates on every push to main, so
-# a broken commit is visible here instead of only caught by a human looking
-# at the deployed site. Deploys stay manual (build-and-deploy.sh) until that
-# design lands.
+# CI only -- no build/push/deploy (deploys are manual, via
+# deploy/cloudrun/deploy.sh). Runs the real quality gates on every push to
+# main so a broken commit is visible here instead of only caught by a human
+# looking at the deployed site.
+#
+# GitHub-hosted, like every other workflow in this repo. This used to run on
+# a self-hosted pod on the Pi k3s cluster ([self-hosted, k3s, arm64]); when
+# that cluster was retired (2026-10), every push sat queued with no runner
+# until GitHub cancelled it 24h later -- CI silently stopped gating anything
+# while each run still looked merely "pending". The uv-based Python install
+# that runner needed (no prebuilt arm64 3.11 for actions/setup-python) went
+# with it.
 on:
   push:
     branches: [ main, master ]
@@ -18,35 +19,20 @@ on:
 jobs:
   ci:
     name: Lint, typecheck, and test
-    runs-on: [ self-hosted, k3s, arm64 ]
-    # This runs on the single self-hosted pod (actions-runner/munger-ci-runner,
-    # pinned to pi4) -- a hung step would otherwise tie up the only runner for
-    # up to GitHub's 360-minute default, silently stopping CI for every push
-    # after it. Matches the order of magnitude of the sibling trading
-    # workflows' own guards (daily-screen.yml: 30, daily-trade.yml: 45),
-    # scaled down since this job does far less.
+    runs-on: ubuntu-latest
+    # A hung step would otherwise run to GitHub's 360-minute default. Matches
+    # the order of magnitude of the sibling trading workflows' own guards
+    # (daily-screen.yml: 30, daily-trade.yml: 45), scaled down since this
+    # job does far less.
     timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install uv
-        # actions/setup-python has no prebuilt arm64 3.11 binary for this
-        # runner's Ubuntu 20.04 base (confirmed live -- that's why an
-        # earlier version of this workflow never got past this step), and
-        # the deadsnakes-PPA workaround also failed live in CI (its
-        # focal-codename detection breaks inside this container -- "Cannot
-        # add PPA: '~deadsnakes/ubuntu/ppa'"). uv sidesteps apt/PPA
-        # entirely: it fetches a standalone prebuilt CPython 3.11 for
-        # linux-aarch64 directly (confirmed working live via `kubectl exec`
-        # into the runner pod before wiring this in). Pinned to a specific
-        # release (astral's documented pinning mechanism -- a versioned
-        # install-script URL) rather than the unversioned latest, so a
-        # compromised or changed upstream script can't execute unpinned on
-        # every push to main.
-        run: |
-          curl -LsSf https://astral.sh/uv/0.12.3/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
         # ruff/mypy are pinned here (matching the dev machine's installed
@@ -56,11 +42,11 @@ jobs:
         # in the UI from an actual regression and defeats this workflow's
         # whole point. pytest's version already comes from requirements.txt
         # (pytest~=8.4.2) -- not re-specified here to avoid two sources of
-        # truth for the same pin.
+        # truth for the same pin. A venv at .venv keeps the step commands
+        # below identical to a local run.
         run: |
-          uv venv --python 3.11 .venv
-          uv pip install --python .venv/bin/python -r requirements.txt
-          uv pip install --python .venv/bin/python ruff==0.15.22 mypy==2.3.0
+          python -m venv .venv
+          .venv/bin/pip install -r requirements.txt ruff==0.15.22 mypy==2.3.0
 
       - name: Ruff
         run: .venv/bin/ruff check .
@@ -83,5 +69,5 @@ jobs:
         # repo root to sys.path the way `-m pytest` does, and there's no
         # conftest.py/pytest.ini establishing that -- so top-level imports
         # (`import config`, `import bot`, etc.) failed live here. Matches
-        # the invocation deploy/k8s/ci-test-job.yaml already uses.
+        # the invocation the old in-cluster deploy/k8s/ci-test-job.yaml used.
         run: .venv/bin/python -m pytest -v
