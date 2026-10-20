@@ -12,7 +12,7 @@
 # project's own established "don't rename a working thing, just document
 # it" convention (see the k3s "traefik" job-name precedent).
 #
-# Same transform as deploy/k8s/40-gcs-reader-cronjob.yaml/gcs_bridge.py
+# Same transform as deploy/archive/k3s/k8s/40-gcs-reader-cronjob.yaml/gcs_bridge.py
 # (pnl_history.jsonl -> .json array since Infinity parses JSON not NDJSON;
 # prices.json's nested-by-symbol shape -> a flat {symbol,date,close} array
 # since that's what Grafana's "Partition by values" transform needs) and

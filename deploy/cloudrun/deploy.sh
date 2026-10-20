@@ -45,7 +45,7 @@ PROJECT="${PROJECT:-munger-503515}"
 REGION="${REGION:-us-central1}"
 AR_REPO="${AR_REPO:-munger}"                # Artifact Registry repo name
 AR_HOST="${REGION}-docker.pkg.dev"
-VERIFY="${VERIFY:-0}"                       # trigger + poll a verification run after deploy (mirrors build-and-deploy.sh's SEED convention; default 0 here since a daily-screen execution fetches the full ticker universe and is comparatively slow/costly to run on every deploy -- opt in with --verify or VERIFY=1)
+VERIFY="${VERIFY:-0}"                       # trigger + poll a verification run after deploy (mirrors the archived deploy/archive/k3s/build-and-deploy.sh's SEED convention; default 0 here since a daily-screen execution fetches the full ticker universe and is comparatively slow/costly to run on every deploy -- opt in with --verify or VERIFY=1)
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-10}"
 POLL_MAX_ATTEMPTS="${POLL_MAX_ATTEMPTS:-180}"  # 180 * 10s = 30 min ceiling
 

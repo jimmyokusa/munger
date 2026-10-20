@@ -1,12 +1,14 @@
-# Munger application image (arm64 for the Raspberry Pi k3s cluster).
+# Munger application image: the Cloud Run `daily-screen` job.
 #
-# Runs two things on the cluster, both from this one image:
-#   * CI  -- `pytest` as a one-shot Job (deploy/k8s/ci-test-job.yaml)
-#   * CD  -- `python daily_screen.py` as a daily CronJob, screen-only,
-#            never importing execution.py so it cannot place an order.
+# Runs `python daily_screen.py` (the CMD below) on a daily Cloud Scheduler
+# trigger. Screen-only, never importing execution.py, so it cannot place an
+# order. Built by deploy/cloudrun/deploy.sh via Cloud Build. Until
+# 2026-10-20 this same image also ran on the retired Pi k3s cluster, as an
+# arm64 CronJob plus an in-cluster pytest Job (deploy/archive/k3s/).
 #
-# python:3.11-slim (Debian bookworm) has prebuilt manylinux aarch64 wheels
-# for pandas/numpy/lxml, so no compiler toolchain is needed in the image.
+# python:3.11-slim (Debian bookworm) has prebuilt manylinux wheels for
+# pandas/numpy/lxml on both amd64 and arm64, so no compiler toolchain is
+# needed in the image.
 FROM python:3.11-slim
 
 WORKDIR /app

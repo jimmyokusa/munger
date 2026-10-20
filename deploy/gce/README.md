@@ -1,7 +1,7 @@
 # M17 Phase 3: prod Grafana on a free-tier GCE e2-micro VM
 
 Per `DESIGN_DASHBOARDS.md` §2.4. Mirrors the k3s dev setup
-(`deploy/k8s/40-gcs-reader-cronjob.yaml` + `deploy/k8s/50-grafana.yaml`) but
+(`deploy/archive/k3s/k8s/40-gcs-reader-cronjob.yaml` + `deploy/archive/k3s/k8s/50-grafana.yaml`) but
 on a standalone Compute Engine VM instead of the Pi cluster, since prod
 (`gramunger.com`, Cloud Run) has no cluster to run a bridge CronJob in.
 
@@ -27,7 +27,7 @@ surface):
   while still getting a real LE cert. The report iframes
   `https://34-82-149-71.sslip.io/d/munger-account-pnl?kiosk`
   (`MUNGER_GRAFANA_URL` on the Cloud Run `daily-screen` Job).
-- **`grafana`** — anonymous Viewer-only (mirrors `deploy/k8s/50-grafana.yaml`
+- **`grafana`** — anonymous Viewer-only (mirrors `deploy/archive/k3s/k8s/50-grafana.yaml`
   exactly: no login form, no sign-up, Explore disabled, embedding allowed).
   Not published to the host; only reachable through `caddy` over the internal
   Docker network `munger-grafana-net`.

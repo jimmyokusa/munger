@@ -69,5 +69,5 @@ jobs:
         # repo root to sys.path the way `-m pytest` does, and there's no
         # conftest.py/pytest.ini establishing that -- so top-level imports
         # (`import config`, `import bot`, etc.) failed live here. Matches
-        # the invocation the old in-cluster deploy/k8s/ci-test-job.yaml used.
+        # the invocation the old in-cluster deploy/archive/k3s/k8s/ci-test-job.yaml used.
         run: .venv/bin/python -m pytest -v

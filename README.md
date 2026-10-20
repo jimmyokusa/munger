@@ -136,8 +136,9 @@ inspectable on its own before moving to the next.
       GitHub Actions workflow). `report.py` gains a calendar view
       (`calendar.html`) linking each day to its archived results, and copies
       archives under `report/` so the site is self-contained wherever it's
-      served. Runs both via `.github/workflows/daily-screen.yml` and as a
-      k3s CronJob (see Deployment).
+      served. Runs both via `.github/workflows/daily-screen.yml` and as the
+      Cloud Run `daily-screen` job (see Deployment; a k3s CronJob until
+      2026-10-20).
 
 - [x] **M15 — Report UX overhaul** *(user request)*. Visual badges
       (zero-debt/high-ROE/dividend highlights), plain-language metric
@@ -168,40 +169,42 @@ Backtesting is explicitly out of scope for v1 (see DESIGN.md §6/§9) —
 point-in-time fundamental data would be needed to avoid a misleading
 result.
 
-## Deployment (Raspberry Pi k3s cluster)
+## Deployment (Google Cloud Run)
 
-munger runs on a 4-node Raspberry Pi **k3s** cluster (arm64). One command,
-`deploy/build-and-deploy.sh`, builds the arm64 image (`deploy/Dockerfile`),
-side-loads it into the cluster's containerd (no registry), runs the full
-test suite as an **in-cluster CI Job**, and — only if CI is green — applies
-the CD workloads: an nginx **Deployment/Service** (report viewer, NodePort
-30080) and the daily-screen **CronJob**, both backed by a PVC. Writable
-paths are relocatable onto that PVC via the `MUNGER_DATA_DIR` env var
-(`config.py`). Manifests live in `deploy/k8s/`; the end-to-end workflow,
-review gates, and CI/CD flow are documented in the project skill,
-`.claude/skills/munger-workflow/SKILL.md`.
+Prod runs on Cloud Run in GCP project `munger-503515` (`us-central1`):
 
-A distributed **v2 architecture** — sharding the rate-limited data-fetch
-stage across all four nodes behind a shared fundamentals cache — is drafted
-in [DESIGN_DISTRIBUTED.md](DESIGN_DISTRIBUTED.md) (not yet built; gated on
-empirically confirming the yfinance rate limit is per-IP).
+- **`daily-screen`**, a Cloud Run **Job** on a daily Cloud Scheduler trigger
+  (`0 13 * * *`). It runs the screen-only entrypoint (`daily_screen.py`,
+  built from `deploy/Dockerfile`), which never imports `execution.py`, and
+  regenerates the report.
+- **`report-web`**, a Cloud Run **service** (`deploy/cloudrun/report-web/`).
+  It serves that report at **gramunger.com**, with Cloudflare in front and
+  the real-money pages behind a login.
 
-## Deployment (Google Cloud Run) — in progress
+Writable state lives in the GCS bucket `munger-503515-data`, mounted via
+`gcsfuse` at `MUNGER_DATA_DIR` (`config.py`). Deploy either target with:
 
-A second target stood up alongside the Pi cluster: GCP project
-`munger-503515` (`us-central1`), same screen-only image and
-`MUNGER_DATA_DIR` mechanism, with writable state on a GCS bucket
-(`munger-503515-data`) mounted via `gcsfuse` instead of a k8s PVC. A Cloud
-Run **service** (`report-web`, `deploy/cloudrun/report-web/`) serves the
-report and is live at **gramunger.com** (registered and domain-mapped
-2026-07-25); a Cloud Run **Job** (`daily-screen`) runs the same screen-only
-entrypoint as the k3s CronJob on a daily Cloud Scheduler trigger. Two real
-GCS-specific bugs (a per-object mutation rate limit on the live-progress
-file, and `chmod` calls during archival that GCS FUSE rejects) were found,
-fixed, and redeployed — the two most recent executions (2026-07-25 and the
-first scheduled run, 2026-07-26) both completed end-to-end, so
-`gramunger.com` is now serving real, current screen data. Unlike the k3s
-side, there's no one-command deploy script for this target yet, and
-whether it replaces or supplements the k3s CronJob long-term isn't decided.
-See the Infra — Google Cloud Run section of `TASKS.md` for the full
-detail.
+```bash
+deploy/cloudrun/deploy.sh [daily-screen|report-web] [--verify]
+```
+
+The script builds via Cloud Build, pins the Cloud Run resource to the exact
+image digest, and with `--verify` runs a check: a full screen execution for
+`daily-screen`, or an HTTP 200 check for `report-web`. Cloud Build uploads
+whatever `.gitignore` doesn't exclude, so keep secrets ignored there.
+
+Trading, P&L snapshots and alerts run in **GitHub Actions** from `main`
+(`.github/workflows/`), against Alpaca. A second, independent screen-only
+run also happens there daily (`daily-screen.yml`, same `0 13 * * *` time as
+the Cloud Run job), archiving to its own branch. CI (`ci.yml`, on
+GitHub-hosted `ubuntu-latest`) runs ruff, ruff format, mypy and pytest on
+every push to `main`. The
+Grafana dashboards run on a small GCE VM (`deploy/gce/`). The review gates
+and workflow are documented in `.claude/skills/munger-workflow/SKILL.md`.
+
+**History:** until 2026-10-20 munger also ran on a 4-node Raspberry Pi k3s
+cluster. That setup is archived, with a map of what replaced each piece, in
+[`deploy/archive/k3s/`](deploy/archive/k3s/README.md). The distributed v2
+design in [DESIGN_DISTRIBUTED.md](DESIGN_DISTRIBUTED.md) targeted that
+cluster and was never built.
+

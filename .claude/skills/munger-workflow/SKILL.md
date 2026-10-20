@@ -6,16 +6,19 @@ description: >-
   defines the three review gates (staff-engineer for design/code,
   pm-reviewer for scope, warren-buffett for investment thesis), Google-style
   Python, end-to-end testing, the modular-monolith / distributed-v2
-  architecture stance, and how the app ships to the Raspberry Pi k3s cluster
-  (build → in-cluster pytest CI → CronJob + nginx CD, staging → prod).
+  architecture stance, and how the app ships to prod (GitHub CI on
+  ubuntu-latest → Cloud Run via deploy/cloudrun/deploy.sh; trading runs in
+  GitHub Actions from main).
   Invoke before starting a change, before committing/pushing, and before
   deploying.
 ---
 
 # Munger engineering workflow & CI/CD
 
-munger is a modular monolith deployed to a 4-node Raspberry Pi **k3s**
-cluster. This skill is the single source of truth for *how we work* on it.
+munger is a modular monolith deployed to **Cloud Run** (screen + report),
+with trading in **GitHub Actions**. Until 2026-10-20 it ran on a 4-node
+Raspberry Pi k3s cluster, now retired and archived under `deploy/archive/k3s/`
+(see the note atop §8). This skill is the single source of truth for *how we work* on it.
 The rules below are enforced partly by git hooks (`.claude/settings.json`
 + `.claude/hooks/`) and partly by discipline — follow them even where a
 hook wouldn't catch a lapse. Living session context is in `HANDOFF.md`; the
@@ -117,9 +120,10 @@ soundness are different questions. Details below.
   `_isolate_config`) so a test never writes into the real repo — this also
   keeps them green as a non-root container (the CI Job caught two tests that
   escaped this).
-- The **same suite runs in-cluster as CI** on the arm64 image
-  (`deploy/k8s/ci-test-job.yaml`) — a green local run and a green in-cluster
-  run are both required before shipping.
+- The **same suite runs as CI** (`.github/workflows/ci.yml`, GitHub-hosted
+  `ubuntu-latest`, on every push to `main`). A green local run and a green
+  `ci.yml` run are both required before shipping. (Until 2026-10-20 this
+  was an in-cluster Job on the retired k3s cluster.)
 
 ## 7. Architecture: modular monolith; distribute only when justified
 
@@ -161,7 +165,7 @@ node-local), containerd runtime — **no registry, images are side-loaded**.
 ### One-command pipeline
 
 ```bash
-./deploy/build-and-deploy.sh
+./deploy/archive/k3s/build-and-deploy.sh
 ```
 
 1. **Build** the arm64 image from `deploy/Dockerfile` (tags `latest` + git
@@ -230,5 +234,5 @@ ssh pi4 'sudo kubectl -n munger create job manual --from=cronjob/munger-daily-sc
 4. `staff-engineer-reviewer` pass on the `.py` diff; marker updated.
    Investment-logic changes also get a `warren-buffett` pass.
 5. In-cluster CI Job green on the arm64 image.
-6. Deployed via `deploy/build-and-deploy.sh`; report verified at `:30080`
+6. Deployed via `deploy/archive/k3s/build-and-deploy.sh`; report verified at `:30080`
    (and, once built, promoted staging → prod).

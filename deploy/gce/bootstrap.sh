@@ -40,7 +40,7 @@ docker run -d --name json-server --restart=always \
 
 # grafana: anonymous Viewer-only, embedding allowed, not published to
 # the host -- only reachable through caddy. Mirrors
-# deploy/k8s/50-grafana.yaml's container env exactly, including the
+# deploy/archive/k3s/k8s/50-grafana.yaml's container env exactly, including the
 # Infinity plugin version pin -- see that file's "INFINITY PLUGIN"
 # comment for why (a real, currently-unfixed v3.11.2 regression breaks
 # the plugin's frontend entirely). This VM's --restart=always container

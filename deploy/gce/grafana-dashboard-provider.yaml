@@ -1,4 +1,4 @@
-# Identical to deploy/k8s/50-grafana.yaml's dashboard-provider ConfigMap.
+# Identical to deploy/archive/k3s/k8s/50-grafana.yaml's dashboard-provider ConfigMap.
 apiVersion: 1
 providers:
   - name: munger
