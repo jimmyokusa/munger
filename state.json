@@ -1,1 +1,1 @@
-{"version": 2, "strikes": {}, "holding_states": {"TROW": "healthy"}, "pending_liquidations": []}
+{"version": 2, "strikes": {"TROW": ["2026Q4"]}, "holding_states": {"TROW": "deteriorating"}, "pending_liquidations": []}
